@@ -1,0 +1,3913 @@
+#!/usr/bin/env bash
+# Regression tests for check-records.sh.
+#
+# The checker is the only mechanically enforced constraint behind the record convention, so its
+# failure mode is the dangerous one: reporting a clean run over nothing. Every rule it
+# claims has a case here, and every case asserts the exit status rather than the output,
+# because a green exit is exactly what an erasure attempt is trying to obtain.
+#
+# Each case builds a throwaway git repo under a scratch directory, runs the real
+# checker against it, and compares the exit status to the expectation. Nothing here
+# touches the repository it lives in.
+#
+# Usage: check-records-test.sh [scratch-dir]
+#
+# A run builds roughly seven thousand files, and the scratch tree it created is removed when
+# every case passes. A red or aborted run keeps it, because those fixtures are the only record
+# of what failed. An explicitly supplied scratch-dir is the caller's and is never removed.
+#
+# Needs bash, git, and POSIX find/sed/awk/grep/sort/uniq/diff/mktemp/date — nothing else.
+# No perl, no Python, no GNU-only flags, no bash-4 constructs: an adopter's gate must not go
+# red for a missing interpreter. It resolves the workflow template from either the
+# publishing layout (beside the scripts) or the adopted one (../workflows/).
+#
+# It also needs the rest of the gate beside it — the checker, the migrator, and both profiles
+# (see REQUIRED_ASSETS). An install that omitted one exits 2 before the first case rather than
+# deriving failures from it.
+
+set -euo pipefail
+
+# Hook runners can export repository-local Git variables such as GIT_DIR and
+# GIT_WORK_TREE. Clear them before creating fixtures so each `git -C` command
+# targets the disposable repository named by the suite.
+#
+# The list is captured rather than read through a process substitution: that loop reports
+# its own status and never rev-parse's, so a git that could not answer would leave the loop
+# reading nothing, nothing unset, and every case below building fixtures with the ambient
+# GIT_DIR still set — a scan that could not run read as one that found nothing (ADR 0005).
+# clear_git_env in scripts/test-fixture-helpers.sh is the same fix at the same call; this
+# suite cannot source it, because `just records` compares .github/scripts/ against
+# skills/tome-of-lore/assets/ byte for byte and the two sit at different depths, so no one
+# relative source path resolves from both.
+#
+# Exit 2, for the reason require_assets exits 2: a git that cannot answer is a statement
+# about the environment, not a finding about the records, and 1 is this suite's code for
+# cases that failed.
+local_env_vars=$(git rev-parse --local-env-vars) || {
+  printf 'check-records-test: cannot read git local env vars\n' >&2
+  exit 2
+}
+# Empty output is the same failure wearing a zero exit status: git has always named at least
+# GIT_DIR here, so nothing to clear means the answer did not arrive rather than that there
+# was nothing to do.
+[ -n "$local_env_vars" ] || {
+  printf 'check-records-test: git reported no local env vars\n' >&2
+  exit 2
+}
+while IFS= read -r variable; do
+  [ -n "$variable" ] || continue
+  unset "$variable"
+done <<<"$local_env_vars"
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+CHECKER="$SCRIPT_DIR/check-records.sh"
+
+allocate_owned_scratch() {
+  mktemp -d "${TMPDIR:-/tmp}/check-records-test.XXXXXX"
+}
+
+# Whether the scratch tree is this script's to delete. A caller who names one owns it, and
+# gets it back either way; the default one is ours and is cleaned up on a green run.
+if [ "$#" -ge 1 ]; then
+  SCRATCH=$1
+  SCRATCH_OWNED=no
+else
+  SCRATCH=$(allocate_owned_scratch)
+  SCRATCH_OWNED=yes
+fi
+
+passed=0
+failed=0
+# Read by on_exit to tell an abort from a completed run. Not derivable from passed/failed: a run
+# that dies mid-way has both, and so does one that finished with failures.
+summary_reached=no
+
+# A fresh repo containing one valid record, committed, with BASE pointing at it.
+new_repo() {
+  local dir=$1
+  mkdir -p "$dir/docs/debt"
+  git -C "$dir" init -q .
+  git -C "$dir" config user.email test@example.invalid
+  git -C "$dir" config user.name "check-records test"
+  mkdir -p "$dir/.github/scripts" "$dir/.github/workflows"
+  cp "$CHECKER" "$dir/.github/scripts/check-records.sh"
+  mkdir -p "$dir/.github/scripts/profiles"
+  cp "$SCRIPT_DIR/profiles/debt.sh" "$dir/.github/scripts/profiles/debt.sh"
+  # A realistic stub: the checker derives its protected workflow set by finding workflows
+  # that invoke it, so a stub that never mentions it would not be protected.
+  cat >"$dir/.github/workflows/records.yml" <<'YAML'
+name: records
+on: pull_request
+jobs:
+  records:
+    runs-on: ubuntu-latest
+    steps:
+      - run: ./.github/scripts/check-records.sh
+YAML
+}
+
+write_record() {
+  local dir=$1 name=$2 status=${3:-Open} target=${4:-docs/debt} review=${5:-2099-01-01}
+  cat >"$dir/docs/debt/$name" <<EOF
+# ${name%%-*} — test record
+
+## Status
+
+$status
+review-by: $review
+
+## Concern
+
+A real concern with a body.
+
+## Why deferred
+
+Valid but outside the charter.
+
+## Non-regression boundary
+
+Must not make it worse.
+
+## What would resolve it
+
+A specific fix.
+
+## Provenance
+
+target: $target
+Found by a test.
+EOF
+}
+
+# The workflow template lives beside the scripts when they ship together (publishing
+# layout) and at ../workflows/ once a repo has adopted them. Assuming the former is what
+# made this suite abort in the layout it exists to verify.
+find_template() {
+  local candidate
+  for candidate in "$SCRIPT_DIR/records.yml" "$SCRIPT_DIR/../workflows/records.yml"; do
+    if [ -f "$candidate" ]; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Every asset this suite resolves out of its own directory. An adopting repo's copy of the suite
+# sits in .github/scripts/, so "beside me" is where the install put things, and a row the install
+# table omitted is a file that is simply not there.
+#
+# Without this, an incomplete install reported as a handful of `cp: No such file or directory`
+# lines on stderr, four derived case failures, and then an abort under set -e at the one fixture
+# that copies outside a command substitution — none of which names the install. That was the
+# failure shape for every repo that followed a table listing five of the six files.
+#
+# Two shipped files are deliberately absent from the list. records.yml, because find_template
+# resolves it from either layout and already fails with a message at its use site, so naming it
+# here would duplicate a live check rather than add one. And this script, because it is the one
+# running — do not "complete" the list by adding it.
+#
+# Newline-delimited rather than an array, matching GATE_PREDECESSORS in the checker and for the
+# same reason: bash 3.2 is the macOS system shell, where "${arr[@]}" on an empty array is fatal
+# under set -u.
+REQUIRED_ASSETS="check-records.sh
+migrate-records.sh
+profiles/adr.sh
+profiles/debt.sh"
+
+require_assets() {
+  local asset missing=""
+  while IFS= read -r asset; do
+    [ -n "$asset" ] || continue
+    [ -f "$SCRIPT_DIR/$asset" ] || missing="$missing $asset"
+  done <<<"$REQUIRED_ASSETS"
+  [ -n "$missing" ] || return 0
+
+  printf 'error: incomplete install — missing beside this suite:%s\n' "$missing" >&2
+  printf 'error: looked in %s\n' "$SCRIPT_DIR" >&2
+  printf "error: the tome-of-lore skill's install table lists every file the gate needs;\n" >&2
+  printf "error: copy the missing one(s) from that skill's assets/ and re-run.\n" >&2
+  return 1
+}
+
+# Every assertion in this file decides its verdict by scanning a file the run captured or
+# wrote, and grep answers three ways: it matched (0), it read the file and found nothing
+# (1), or it could not finish reading it (2 or more). `if grep -q ... "$f"` folds the third
+# into the second, so a capture the suite could not read scores exactly like one that held
+# no such line — and at the second scan in case_why below, that verdict is `pass`, for
+# every case in this file. ADR 0005 rules that a scan whose result feeds a verdict captures
+# its own exit status and branches three ways, reporting the third through the channel the
+# script already fails through. This suite's channel is a FAIL line and the failed counter,
+# and these two helpers plus the `case $status in` at every call site are where it obeys.
+#
+# The capture is written `status=0; grep -q ... || status=$?`: under `set -euo pipefail` a
+# bare call aborts the run and a following `; status=$?` never executes, so the `||` that
+# assigns rather than branches is the required form, not merely a permitted one.
+#
+# `cmp -s` is a scan too and converts with the rest: measured on macOS it exits 1 for "the
+# files differ" and 2 for a file it could not read, and the migrator cases turn that answer
+# straight into a verdict about whether a run wrote to a record — so a fault would arrive
+# labelled "wrote despite a dirty worktree", a claim the run never established.
+#
+# Three shapes elsewhere in this file are deliberately left alone, so the next reader does
+# not have to work out which half they are in. A `grep -v ... >"$f"` that transforms a
+# fixture decides no verdict, and `set -euo pipefail` already stops the run on either
+# non-zero status. A match run over a shell variable rather than a file — `printf '%s\n'
+# "$x" | grep -q` — is the in-memory case ADR 0005 names as outside the rule: its failure
+# modes are not the scan-could-not-run case. And `[ -e ]`/`[ -s ]` are metadata tests, not
+# reads — they answer "is there anything there", which is the question rather than a proxy
+# for it. migrator_why is where that distinction matters: absent and empty are different
+# answers there, so it asks both rather than letting the first fall into the second.
+#
+# The list covers the scans that decide a verdict. Everything else that reads a file here —
+# the `sed`/`head`/`cat` command substitutions that build a diagnostic — runs after the
+# verdict is settled and aborts the run under `set -e` rather than quietly changing one.
+
+# The FAIL a scan fault takes in place of the verdict it never reached. The bespoke cases
+# have already printed their name column by the time they scan, so this prints the reason
+# alone — the same shape their ordinary failures print.
+fail_scan() {
+  local what=$1 status=$2 tool=${3:-grep}
+  failed=$((failed + 1))
+  printf 'FAIL could not scan %s (%s exit %s)\n' "$what" "$tool" "$status"
+}
+
+# expect_unchanged <before-copy> <record> <ok-note> <changed-note> — the three migrator
+# write guards. Deletion is separated out before the comparison: `cmp -s` reports an absent
+# file with the same status it reports for one it could not read, and "the run removed the
+# record" is the worse of the two outcomes these guards exist to catch, not an environment
+# problem. Both paths are named either way.
+expect_unchanged() {
+  local before=$1 rec=$2 ok=$3 changed=$4 scan=0
+  if [ ! -e "$rec" ]; then
+    failed=$((failed + 1))
+    printf 'FAIL the run removed %s\n' "$rec"
+    return 0
+  fi
+  cmp -s "$before" "$rec" || scan=$?
+  case $scan in
+  0)
+    passed=$((passed + 1))
+    printf 'ok   %s\n' "$ok"
+    ;;
+  1)
+    failed=$((failed + 1))
+    printf 'FAIL %s\n' "$changed"
+    ;;
+  *) fail_scan "$before vs $rec" "$scan" cmp ;;
+  esac
+}
+
+# expect_match <file> <ok-note> <missing-note> [grep-option]... <pattern>, and
+# expect_no_match for the assertions where the *absence* of a line is what passes. Same
+# three arms as expect_error_code, carried once instead of at every call site. Two helpers
+# rather than one with a polarity flag: at the call site "expect_no_match" states the
+# assertion, where a boolean argument would only encode it.
+expect_match() {
+  local file=$1 ok=$2 missing=$3 scan=0
+  shift 3
+  grep -q "$@" "$file" || scan=$?
+  case $scan in
+  0)
+    passed=$((passed + 1))
+    printf 'ok   %s\n' "$ok"
+    ;;
+  1)
+    failed=$((failed + 1))
+    printf 'FAIL %s\n' "$missing"
+    ;;
+  *) fail_scan "$file" "$scan" ;;
+  esac
+}
+
+expect_no_match() {
+  local file=$1 ok=$2 present=$3 scan=0
+  shift 3
+  grep -q "$@" "$file" || scan=$?
+  case $scan in
+  0)
+    failed=$((failed + 1))
+    printf 'FAIL %s\n' "$present"
+    ;;
+  1)
+    passed=$((passed + 1))
+    printf 'ok   %s\n' "$ok"
+    ;;
+  *) fail_scan "$file" "$scan" ;;
+  esac
+}
+
+# expect_error_code <stderr-file> <code> [pattern] — the verdict the bespoke `::error::`
+# cases share: the named code fired, the run failed for some other reason (named, so the
+# output says which), or the capture could not be scanned at all. <pattern> defaults to the code's own
+# `::error::<code>: ` line; pass one only where the assertion is narrower than the code.
+expect_error_code() {
+  local err=$1 code=$2 pattern=${3:-"::error::$2: "} scan=0
+  grep -q "$pattern" "$err" || scan=$?
+  case $scan in
+  0)
+    passed=$((passed + 1))
+    printf 'ok   exit=1 %s\n' "$code"
+    ;;
+  1)
+    failed=$((failed + 1))
+    printf 'FAIL failed for another reason: %s\n' "$(sed -n 's/^::error:://p' "$err" | head -1)"
+    ;;
+  *) fail_scan "$err" "$scan" ;;
+  esac
+}
+
+# scan_into_verdict <tag> <file> [grep-option]... <pattern> — the same three-way scan for
+# the accumulator cases, which collect one tag per unmet expectation and report them
+# together. A fault gets its own tag naming the file and the status, so it can never be
+# read as the ordinary "this line was not there".
+scan_into_verdict() {
+  local tag=$1 file=$2 status=0
+  shift 2
+  grep -q "$@" "$file" || status=$?
+  case $status in
+  0) ;;
+  1) verdict="$verdict $tag" ;;
+  *) verdict="$verdict scan-fault($file exit $status)" ;;
+  esac
+}
+
+# scan_count <file> [grep-option]... <pattern> — the counting form. `grep -c` prints 0 and
+# exits 1 when it read the file and matched nothing, so `$(grep -c ... || true)` cannot tell
+# that from a read that never happened. Leaves the count in $scan_hits, or leaves it empty
+# and tags $verdict when the scan faulted.
+scan_hits=0
+scan_count() {
+  local file=$1 status=0
+  shift
+  scan_hits=$(grep -c "$@" "$file") || status=$?
+  case $status in
+  0 | 1) ;;
+  *)
+    scan_hits=""
+    verdict="$verdict scan-fault($file exit $status)"
+    ;;
+  esac
+}
+
+# case_why <expected-exit> <got-exit> <expected-code|-> <err-file> — run_case's verdict,
+# printed as the reason the case failed or as nothing when it passed.
+#
+# Hoisted out of run_case for the reason should_clean_scratch and should_report_abort are:
+# these two scans gate every case in this suite, and a live run cannot observe its own
+# verdict without failing itself, so the fault arm would otherwise be unreachable from
+# inside a run. "an unreadable capture faults, never passes" below is what reaches it.
+case_why() {
+  local expected=$1 got=$2 code=$3 err=$4 status=0
+  if [ "$got" != "$expected" ]; then
+    printf 'expected exit=%s got=%s' "$expected" "$got"
+    return 0
+  fi
+  if [ "$code" != "-" ]; then
+    grep -q "::[a-z]*::$code: " "$err" || status=$?
+    case $status in
+    0) ;;
+    1) printf 'exit=%s but %s never fired' "$got" "$code" ;;
+    *) printf 'could not scan %s for %s (grep exit %s)' "$err" "$code" "$status" ;;
+    esac
+    return 0
+  fi
+  grep -q '::error::' "$err" || status=$?
+  case $status in
+  0) printf 'unexpected error: %s' "$(sed -n 's/^::error:://p' "$err" | head -1)" ;;
+  1) ;;
+  *) printf 'could not scan %s for errors (grep exit %s)' "$err" "$status" ;;
+  esac
+}
+
+# migrator_why <expected-exit> <got-exit> <expected-code|-> <stderr-file> — the same for
+# run_migrator, hoisted for the same reason. Its no-code arm tests the capture's presence
+# and size rather than scanning it, but it still reads a line to report, and that read gets
+# its own status: an unreadable capture must not arrive as an error the migrator emitted.
+migrator_why() {
+  local expected=$1 got=$2 code=$3 err=$4 status=0
+  if [ "$got" != "$expected" ]; then
+    printf 'expected exit=%s got=%s' "$expected" "$got"
+    return 0
+  fi
+  if [ "$code" != "-" ]; then
+    grep -q "^error: $code: " "$err" || status=$?
+    case $status in
+    0) ;;
+    1) printf 'exit=%s but %s never fired' "$got" "$code" ;;
+    *) printf 'could not scan %s for %s (grep exit %s)' "$err" "$code" "$status" ;;
+    esac
+    return 0
+  fi
+  if [ ! -e "$err" ]; then
+    printf 'could not read %s (capture missing)' "$err"
+    return 0
+  fi
+  [ -s "$err" ] || return 0
+  local first=""
+  first=$(head -1 "$err") || status=$?
+  if [ "$status" -ne 0 ]; then
+    printf 'could not read %s (head exit %s)' "$err" "$status"
+    return 0
+  fi
+  printf 'unexpected error: %s' "$first"
+}
+
+# run_case <name> <expected-exit> <expected-code|-> <repo-dir> [env assignments...]
+#
+# The expected code matters as much as the exit status. Asserting only the status lets a
+# case pass because some *other* rule fired, which is how a suite goes green against a
+# checker whose anti-erasure rules have been removed. `-` means "assert no code".
+#
+# GITHUB_ACTIONS is unset for every case and set explicitly by the ones that test CI
+# behavior, so the suite behaves identically on a laptop and on a runner. Inheriting it
+# made two cases fail inside CI, which failed the job before the gate ever ran.
+run_case() {
+  local name=$1 expected=$2 code=$3 dir=$4
+  shift 4
+  local got=0
+  if (cd "$dir" && env -u GITHUB_ACTIONS RECORD_PROFILES=debt "$@" ./.github/scripts/check-records.sh) \
+    >"$dir/.out" 2>"$dir/.err"; then
+    got=0
+  else
+    got=1
+  fi
+
+  local why=""
+  why=$(case_why "$expected" "$got" "$code" "$dir/.err")
+
+  if [ -z "$why" ]; then
+    passed=$((passed + 1))
+    printf '  ok   %-44s exit=%s %s\n' "$name" "$got" "$code"
+  else
+    failed=$((failed + 1))
+    printf '  FAIL %-44s %s\n' "$name" "$why"
+    if [ -r "$dir/.err" ]; then
+      head -3 "$dir/.err" | sed 's/^/         /'
+    fi
+  fi
+}
+
+# A case that starts from a committed valid record and mutates the working tree.
+# case_dir <name> [status] [target] [review-by]
+#
+# The record is written with its final content *before* the base commit. Fixtures used to
+# commit a default record and edit it afterwards, which now trips the append-only rule —
+# correctly, since that is the rewrite vector.
+case_dir() {
+  local name=$1
+  local dir="$SCRATCH/$name"
+  new_repo "$dir"
+  write_record "$dir" "0001-valid.md" "${2:-Open}" "${3:-docs/debt}" "${4:-2099-01-01}"
+  git -C "$dir" add -A
+  git -C "$dir" commit -qm base
+  printf '%s' "$dir"
+}
+
+base_of() { git -C "$1" rev-parse HEAD; }
+
+# A `git` stub in <dir> that faults on `ls-files` for the one <path> and defers everything else
+# to the real git, for the fixtures that exercise a failed index query.
+#
+# Keyed on the path as well as the subcommand: tracked_in_index is the checker's only
+# `git ls-files` caller, so a stub keyed on the subcommand alone would fault at whichever of its
+# call sites ran first rather than the one the fixture is aimed at.
+write_ls_files_stub() { # dir path
+  local dir=$1 path=$2 real_git
+  real_git=$(command -v git)
+  mkdir -p "$dir"
+  cat >"$dir/git" <<STUB
+#!/usr/bin/env bash
+if [ "\$1" = ls-files ]; then
+  for arg in "\$@"; do
+    if [ "\$arg" = $path ]; then
+      printf 'fatal: fixture-fault: simulated index read error\n' >&2
+      exit 128
+    fi
+  done
+fi
+exec "$real_git" "\$@"
+STUB
+  chmod +x "$dir/git"
+}
+
+# An ADR fixture: docs/adr/ instead of docs/debt/, both profiles installed, and a README.md in
+# the record directory, which is the exempt non-record the ADR convention puts there.
+new_adr_repo() {
+  local dir=$1
+  mkdir -p "$dir/docs/adr"
+  git -C "$dir" init -q .
+  git -C "$dir" config user.email test@example.invalid
+  git -C "$dir" config user.name "check-records test"
+  mkdir -p "$dir/.github/scripts/profiles" "$dir/.github/workflows"
+  cp "$CHECKER" "$dir/.github/scripts/check-records.sh"
+  cp "$SCRIPT_DIR/profiles/adr.sh" "$SCRIPT_DIR/profiles/debt.sh" \
+    "$dir/.github/scripts/profiles/"
+  cat >"$dir/.github/workflows/records.yml" <<'YAML'
+name: records
+on: pull_request
+jobs:
+  records:
+    runs-on: ubuntu-latest
+    steps:
+      - run: ./.github/scripts/check-records.sh
+YAML
+  cat >"$dir/docs/adr/README.md" <<'MD'
+# Architecture Decision Records
+
+The files in this directory are the index. There is deliberately no summary table.
+MD
+}
+
+# write_adr <dir> <name> [status-body] [extra-status-line]
+write_adr() {
+  local dir=$1 name=$2 status=${3:-Accepted (2026-01-01)} extra=${4:-}
+  cat >"$dir/docs/adr/$name" <<EOF
+# ${name%%-*} — test decision
+
+## Status
+
+$status
+$extra
+
+## Context
+
+Why this came up.
+
+## Decision
+
+What we decided.
+
+## Consequences
+
+What follows from it.
+
+## Considered & rejected
+
+- Something else, because it was worse.
+EOF
+}
+
+# adr_dir <name> [status-body] [extra-status-line] — a committed ADR repo with one record.
+adr_dir() {
+  local name=$1
+  local dir="$SCRATCH/$name"
+  new_adr_repo "$dir"
+  write_adr "$dir" "0001-first.md" "${2:-Accepted (2026-01-01)}" "${3:-}"
+  git -C "$dir" add -A
+  git -C "$dir" commit -qm base
+  printf '%s' "$dir"
+}
+
+# migrator_dir <name> — a committed repo whose one record carries every legacy marker shape
+# at once, with the migrator installed beside the checker. Beside is not incidental: the
+# migrator sources the checker out of its own directory for canonicalise and the allowance.
+migrator_dir() {
+  local name=$1
+  local dir="$SCRATCH/$name"
+  new_repo "$dir"
+  cp "$SCRIPT_DIR/migrate-records.sh" "$dir/.github/scripts/migrate-records.sh"
+  chmod +x "$dir/.github/scripts/migrate-records.sh"
+  write_record "$dir" "0001-valid.md"
+  sed -e 's/^# 0001 — /# 1. /' -e 's/^## Status$/## status:/' -e 's/^Open$/open/' \
+    -e 's/^target: /- target: /' "$dir/docs/debt/0001-valid.md" >"$dir/.rec"
+  mv "$dir/.rec" "$dir/docs/debt/0001-valid.md"
+  git -C "$dir" add -A
+  git -C "$dir" commit -qm base
+  printf '%s' "$dir"
+}
+
+# run_migrator <name> <expected-exit> <expected-code|-> <repo-dir> [args...]
+#
+# Output goes to siblings of the repo rather than into it: the migrator refuses a dirty
+# worktree, and run_case's own `.out`/`.err` inside the fixture would be exactly that.
+run_migrator() {
+  local name=$1 expected=$2 code=$3 dir=$4
+  shift 4
+  local got=0
+  if (cd "$dir" && env -u GITHUB_ACTIONS RECORD_PROFILES="${MIGRATE_PROFILES-debt}" \
+    ./.github/scripts/migrate-records.sh "$@") >"$dir.mout" 2>"$dir.merr"; then
+    got=0
+  else
+    got=1
+  fi
+
+  local why=""
+  why=$(migrator_why "$expected" "$got" "$code" "$dir.merr")
+
+  if [ -z "$why" ]; then
+    passed=$((passed + 1))
+    printf '  ok   %-44s exit=%s %s\n' "$name" "$got" "$code"
+  else
+    failed=$((failed + 1))
+    printf '  FAIL %-44s %s\n' "$name" "$why"
+    if [ -r "$dir.merr" ]; then
+      head -3 "$dir.merr" | sed 's/^/         /'
+    fi
+  fi
+}
+
+# should_clean_scratch <exit-code> <owned> <dir> — the scratch-removal decision, hoisted out of
+# on_exit so the suite can assert it. Removal happens after the summary line, so no case can
+# observe its own scratch tree being removed; only the decision is reachable from inside a run.
+should_clean_scratch() {
+  [ "$1" -eq 0 ] && [ "$2" = yes ] && [ -n "$3" ]
+}
+
+# should_report_abort <exit-code> <summary-reached> — the abort-notice decision, hoisted for the
+# same reason should_clean_scratch is: a decision taken inside a trap is otherwise unobservable
+# from inside a run, and this one shipped wrong because no case asserted it.
+#
+# The condition is "did the summary print", which is what the notice claims. It used to be
+# "were there zero failures", a proxy that agrees only when the abort precedes every failure —
+# exactly the run that needs the notice least. A run that recorded failures and *then* died
+# printed neither the notice nor the summary, so five FAIL lines and silence was
+# indistinguishable from a run that finished with five failures. Reproducible by dropping
+# migrate-records.sh from REQUIRED_ASSETS and running a five-file install: 118 cases pass, 5
+# fail, the rest never run, and the old guard called that a finished run.
+should_report_abort() {
+  [ "$1" -ne 0 ] && [ "$2" = no ]
+}
+
+# An abort under set -e printed no summary at all, so a suite that died at case 38 of 48
+# looked like one that had finished. Always report where it got to.
+#
+# The tree also has to go. Each run leaves about seven thousand files behind, and repeated runs
+# exhausted a tmpfs inode table and blocked every tool on the machine. Only a green run of a
+# scratch tree this script created is removed — see should_clean_scratch.
+on_exit() {
+  local code=$?
+  if should_report_abort "$code" "$summary_reached"; then
+    printf '\nABORTED after %d passing and %d failing case(s) — exit %d, no summary reached\n' \
+      "$passed" "$failed" "$code"
+  fi
+  if should_clean_scratch "$code" "$SCRATCH_OWNED" "$SCRATCH"; then
+    rm -rf "$SCRATCH"
+  elif [ -n "$SCRATCH" ] && [ -d "$SCRATCH" ]; then
+    printf 'scratch retained at %s\n' "$SCRATCH"
+  fi
+}
+
+# Its own function, not inline in main: a `return` here must skip only these cases. Inline,
+# a template-resolution failure returned from main, silently skipping every later case and
+# exiting 0 — which is how a mutation sweep came back with 31 survivors and no explanation.
+adoption_cases() {
+  local d b template
+  d="$SCRATCH/adoption"
+  mkdir -p "$d/docs/debt" "$d/.github/scripts" "$d/.github/workflows"
+  git -C "$d" init -q .
+  git -C "$d" config user.email test@example.invalid
+  git -C "$d" config user.name "check-records test"
+  cp "$SCRIPT_DIR/check-records.sh" "$SCRIPT_DIR/check-records-test.sh" "$d/.github/scripts/"
+  mkdir -p "$d/.github/scripts/profiles"
+  cp "$SCRIPT_DIR/profiles/debt.sh" "$d/.github/scripts/profiles/"
+  if ! template=$(find_template); then
+    printf '  FAIL %-44s cannot locate records.yml from %s\n' "adoption fixture" "$SCRIPT_DIR"
+    failed=$((failed + 1))
+    return 0
+  fi
+  cp "$template" "$d/.github/workflows/records.yml"
+  chmod +x "$d/.github/scripts"/*.sh
+  write_record "$d" "0001-adopted.md"
+  git -C "$d" add -A
+  git -C "$d" commit -qm "adopt the deferral gate"
+  b=$(base_of "$d")
+  run_case "adopted gate validates a good record" 0 - "$d" BASE_SHA="$b"
+
+  # And that the installed copy protects the installed workflow, which is only true if the
+  # derivation found it at the adopted paths.
+  git -C "$d" rm -q .github/workflows/records.yml
+  run_case "adopted gate protects its own workflow" 1 E-GATE-GONE "$d" BASE_SHA="$b"
+
+  # The trap the installation procedure now warns about: an adopter that installs the four
+  # files but skips the first-record commit passes the local smoke test (no BASE_SHA, so an
+  # absent docs/debt/ is not yet a failure) and then goes red on every PR once CI supplies
+  # one. write_record is deliberately not called here.
+  d="$SCRATCH/adoption_no_records"
+  mkdir -p "$d/.github/scripts" "$d/.github/workflows"
+  git -C "$d" init -q .
+  git -C "$d" config user.email test@example.invalid
+  git -C "$d" config user.name "check-records test"
+  cp "$SCRIPT_DIR/check-records.sh" "$SCRIPT_DIR/check-records-test.sh" "$d/.github/scripts/"
+  mkdir -p "$d/.github/scripts/profiles"
+  cp "$SCRIPT_DIR/profiles/debt.sh" "$d/.github/scripts/profiles/"
+  cp "$template" "$d/.github/workflows/records.yml"
+  chmod +x "$d/.github/scripts"/*.sh
+  git -C "$d" add -A
+  git -C "$d" commit -qm "adopt the deferral gate, no record yet"
+  b=$(base_of "$d")
+  run_case "adoption with no first record passes locally with no BASE_SHA" 0 - "$d" BASE_SHA=
+  run_case "same adoption fails once CI supplies BASE_SHA" 1 E-PROFILE-DIR-MISSING "$d" BASE_SHA="$b"
+}
+
+main() {
+  trap on_exit EXIT
+  mkdir -p "$SCRATCH"
+  printf 'check-records.sh regression tests\nscratch: %s\n\n' "$SCRATCH"
+
+  # Both sides of this placement carry weight. After the scratch line, because that line is the
+  # only affordance pointing an operator at a retained tree and the cleanup case reads it back;
+  # before the first case, because the message an adopter needs is about their install, not the
+  # four case failures a missing asset derives. Exit rather than count a failure: an incomplete
+  # install is not a finding about the records, and a partial run over the wrong asset set is
+  # the clean-run-over-nothing this suite exists to prevent.
+  require_assets || exit 2
+
+  printf -- '-- valid input --\n'
+  d=$(case_dir valid)
+  run_case "valid record" 0 - "$d" BASE_SHA="$(base_of "$d")"
+
+  d=$(case_dir resolved "> **Resolved by PR #12** (2026-01-01)")
+  run_case "resolved via banner" 0 - "$d" BASE_SHA="$(base_of "$d")"
+
+  printf -- '-- record structure --\n'
+  d=$(case_dir missing_section)
+  sed '/^## Why deferred$/d' "$d/docs/debt/0001-valid.md" >"$d/.tmp" && mv "$d/.tmp" "$d/docs/debt/0001-valid.md"
+  run_case "missing required section" 1 E-SECTION-MISSING "$d" BASE_SHA="$(base_of "$d")"
+
+  d=$(case_dir empty_section)
+  sed '/^Valid but outside the charter\.$/d' "$d/docs/debt/0001-valid.md" >"$d/.tmp" && mv "$d/.tmp" "$d/docs/debt/0001-valid.md"
+  run_case "section present but empty" 1 E-SECTION-EMPTY "$d" BASE_SHA="$(base_of "$d")"
+
+  d=$(case_dir bad_status)
+  write_record "$d" "0001-valid.md" "Maybe"
+  run_case "unreadable status" 1 E-STATUS "$d" BASE_SHA="$(base_of "$d")"
+
+  d=$(case_dir banner_no_referent)
+  write_record "$d" "0001-valid.md" "> **Resolved by** (2026-01-01)"
+  run_case "banner naming nothing" 1 E-BANNER-FORM "$d" BASE_SHA="$(base_of "$d")"
+
+  d=$(case_dir banner_future)
+  write_record "$d" "0001-valid.md" "> **Resolved by nothing at all** (2999-01-01)"
+  run_case "banner dated in the future" 1 E-BANNER-FUTURE "$d" BASE_SHA="$(base_of "$d")"
+
+  d=$(case_dir banner_double)
+  write_record "$d" "0001-valid.md" "> **Resolved by PR #1** (2999-01-01)
+> **Resolved by PR #2** (2026-01-01)"
+  run_case "two resolution banners" 1 E-BANNER-COUNT "$d" BASE_SHA="$(base_of "$d")"
+
+  d=$(case_dir no_target)
+  sed '/^target: /d' "$d/docs/debt/0001-valid.md" >"$d/.tmp" && mv "$d/.tmp" "$d/docs/debt/0001-valid.md"
+  run_case "no target line" 1 E-TARGET-MISSING "$d" BASE_SHA="$(base_of "$d")"
+
+  d=$(case_dir target_wrong_section)
+  sed -e '/^target: /d' -e 's|^## Concern$|## Concern\
+\
+target: docs/debt|' "$d/docs/debt/0001-valid.md" >"$d/.tmp" && mv "$d/.tmp" "$d/docs/debt/0001-valid.md"
+  run_case "target line outside Provenance" 1 E-TARGET-MISSING "$d" BASE_SHA="$(base_of "$d")"
+
+  d=$(case_dir bad_reviewby)
+  write_record "$d" "0001-valid.md" Open docs/debt "July 2026"
+  run_case "malformed review-by" 1 E-REVIEWBY-FORM "$d" BASE_SHA="$(base_of "$d")"
+
+  d=$(case_dir missing_reviewby)
+  sed '/^review-by: /d' "$d/docs/debt/0001-valid.md" >"$d/.tmp" &&
+    mv "$d/.tmp" "$d/docs/debt/0001-valid.md"
+  run_case "missing review-by on open record" 1 E-REVIEWBY-MISSING "$d" \
+    BASE_SHA="$(base_of "$d")"
+
+  d=$(case_dir resolved_without_reviewby "> **Resolved by PR #12** (2026-01-01)")
+  sed '/^review-by: /d' "$d/docs/debt/0001-valid.md" >"$d/.tmp" &&
+    mv "$d/.tmp" "$d/docs/debt/0001-valid.md"
+  run_case "resolved record without review-by" 0 - "$d" BASE_SHA="$(base_of "$d")"
+
+  d=$(case_dir stale_reviewby Open docs/debt "2020-01-01")
+  run_case "stale review-by warns only" 0 W-REVIEWBY-STALE "$d" BASE_SHA="$(base_of "$d")"
+
+  # A resolution banner discharges the concern, so the re-evaluation date stops meaning anything
+  # and the warning must not fire. Bespoke, because run_case asserts a code is present and the
+  # whole assertion here is that none is. It greps the bare code rather than
+  # `::warning::W-REVIEWBY-STALE`: a downgraded finding is relabelled W-LEGACY-SHAPE and keeps
+  # the original code in parentheses, so matching only the reported form would pass on a
+  # grandfathered record that still warned.
+  d=$(case_dir resolved_stale_reviewby "> **Resolved by PR #12** (2026-01-01)" docs/debt "2020-01-01")
+  printf '  %-4s %-44s ' "" "resolved record with a passed review-by"
+  if (cd "$d" && env -u GITHUB_ACTIONS RECORD_PROFILES=debt BASE_SHA="$(base_of "$d")" \
+    ./.github/scripts/check-records.sh) >"$d/.out" 2>"$d/.err"; then
+    expect_no_match "$d/.err" 'exit=0 no staleness warning' \
+      'W-REVIEWBY-STALE fired on a discharged concern' 'REVIEWBY-STALE'
+  else
+    failed=$((failed + 1))
+    printf 'FAIL %s\n' "$(sed -n 's/^::error:://p' "$d/.err" | head -1)"
+  fi
+
+  # The guard above suppresses the staleness rule only. A malformed date is a malformed field
+  # whichever state the record is in, and this case is what stops the guard being widened to the
+  # whole check: moved above the form rule, it would turn this exit-1 green.
+  d=$(case_dir resolved_bad_reviewby "> **Resolved by PR #12** (2026-01-01)")
+  write_record "$d" "0001-valid.md" "> **Resolved by PR #12** (2026-01-01)" docs/debt "July 2026"
+  run_case "malformed review-by when resolved" 1 E-REVIEWBY-FORM "$d" BASE_SHA="$(base_of "$d")"
+
+  # The resolved verdict is per record, and every other case here holds one record, so nothing
+  # else would notice it leaking. Records are enumerated in sorted order, which makes 0001
+  # resolved and 0002 open the direction a leak would travel: 0002's warning would vanish.
+  # Code and path are matched by separate greps rather than one pattern: a downgraded finding is
+  # relabelled and moves the code from the front of the line to the end, so no positional regex
+  # spans both shapes. The assertion is about which record was named, not how.
+  d="$SCRATCH/reviewby_no_leak"
+  new_repo "$d"
+  write_record "$d" "0001-resolved.md" "> **Resolved by PR #12** (2026-01-01)" docs/debt "2020-01-01"
+  write_record "$d" "0002-open.md" Open docs/debt "2020-01-01"
+  git -C "$d" add -A
+  git -C "$d" commit -qm base
+  printf '  %-4s %-44s ' "" "resolved verdict does not leak to the next"
+  if (cd "$d" && env -u GITHUB_ACTIONS RECORD_PROFILES=debt BASE_SHA="$(base_of "$d")" \
+    ./.github/scripts/check-records.sh) >"$d/.out" 2>"$d/.err"; then
+    # The capture is read once into a variable and both matches run over that. A pipeline
+    # reports its rightmost non-zero status under pipefail, so `grep ... "$f" | grep -q ...`
+    # returns the downstream 1 when the upstream read faulted, and the fault is gone before
+    # any caller can branch on it. The two matches below read only the variable, which
+    # ADR 0005 places outside the rule: their failure modes are not could-not-run.
+    scan=0
+    stale=$(grep 'REVIEWBY-STALE' "$d/.err") || scan=$?
+    case $scan in
+    0 | 1)
+      if printf '%s\n' "$stale" | grep -q '0002-open\.md' &&
+        ! printf '%s\n' "$stale" | grep -q '0001-resolved\.md'; then
+        passed=$((passed + 1))
+        printf 'ok   exit=0 warned for the open record only\n'
+      else
+        failed=$((failed + 1))
+        printf 'FAIL staleness did not land on exactly the open record\n'
+      fi
+      ;;
+    *) fail_scan "$d/.err" "$scan" ;;
+    esac
+  else
+    failed=$((failed + 1))
+    printf 'FAIL %s\n' "$(sed -n 's/^::error:://p' "$d/.err" | head -1)"
+  fi
+
+  d=$(case_dir orphan_target Open "src/gone.ts")
+  run_case "orphaned target warns only" 0 W-ORPHAN-TARGET "$d" BASE_SHA="$(base_of "$d")"
+
+  d=$(case_dir duplicate_number)
+  write_record "$d" "0001-second.md"
+  run_case "duplicate record number" 1 E-DUP-NUMBER "$d" BASE_SHA="$(base_of "$d")"
+
+  d=$(case_dir stray_md)
+  printf 'not a record\n' >"$d/docs/debt/notes.md"
+  run_case "stray markdown file" 1 E-NOT-RECORD "$d" BASE_SHA="$(base_of "$d")"
+
+  d=$(case_dir stray_txt)
+  printf 'not a record\n' >"$d/docs/debt/notes.txt"
+  run_case "stray non-markdown file" 1 E-NOT-RECORD "$d" BASE_SHA="$(base_of "$d")"
+
+  printf -- '-- disappearance vectors --\n'
+  d=$(case_dir deleted)
+  b=$(base_of "$d")
+  git -C "$d" rm -q docs/debt/0001-valid.md
+  run_case "record deleted" 1 E-GONE "$d" BASE_SHA="$b"
+
+  d=$(case_dir renamed)
+  b=$(base_of "$d")
+  git -C "$d" mv docs/debt/0001-valid.md docs/debt/0001-valid.md.retired
+  run_case "renamed to a non-record name" 1 E-GONE "$d" BASE_SHA="$b"
+
+  d=$(case_dir moved_subdir)
+  b=$(base_of "$d")
+  mkdir -p "$d/docs/debt/archive"
+  git -C "$d" mv docs/debt/0001-valid.md docs/debt/archive/0001-valid.md
+  run_case "moved into a subdirectory" 1 E-GONE "$d" BASE_SHA="$b"
+
+  d=$(case_dir symlink_record)
+  b=$(base_of "$d")
+  printf 'decoy\n' >"$d/docs/decoy.md"
+  git -C "$d" rm -q docs/debt/0001-valid.md
+  mkdir -p "$d/docs/debt" # git removes the now-empty directory
+  ln -s ../decoy.md "$d/docs/debt/0001-valid.md"
+  run_case "record replaced by a symlink" 1 E-RECORD-SYMLINK "$d" BASE_SHA="$b"
+
+  d=$(case_dir symlink_dir)
+  b=$(base_of "$d")
+  mkdir -p "$d/real-debt"
+  git -C "$d" rm -qr docs/debt
+  mkdir -p "$d/docs" # git removes docs/ once it is empty
+  ln -s ../real-debt "$d/docs/debt"
+  run_case "record directory replaced by a symlink" 1 E-DIR-SYMLINK "$d" BASE_SHA="$b"
+
+  d=$(case_dir symlink_collapse)
+  b=$(base_of "$d")
+  write_record "$d" "0002-other.md"
+  git -C "$d" add -A
+  git -C "$d" commit -qm two
+  b=$(base_of "$d")
+  git -C "$d" rm -q docs/debt/0001-valid.md
+  ln -s 0002-other.md "$d/docs/debt/0001-valid.md"
+  run_case "two records collapsed via symlink" 1 E-RECORD-SYMLINK "$d" BASE_SHA="$b"
+
+  printf -- '-- the gate defends itself --\n'
+  d=$(case_dir gate_script_deleted)
+  b=$(base_of "$d")
+  git -C "$d" rm -q .github/scripts/check-records.sh
+  # Restore an untracked copy so the checker can still run and report its own removal.
+  mkdir -p "$d/.github/scripts"
+  cp "$CHECKER" "$d/.github/scripts/check-records.sh"
+  run_case "checker deleted in the diff" 1 E-GATE-GONE "$d" BASE_SHA="$b"
+
+  d=$(case_dir gate_workflow_deleted)
+  b=$(base_of "$d")
+  git -C "$d" rm -q .github/workflows/records.yml
+  run_case "workflow deleted in the diff" 1 E-GATE-GONE "$d" BASE_SHA="$b"
+
+  d=$(case_dir gate_suite_deleted)
+  b=$(base_of "$d")
+  cp "$SCRIPT_DIR/check-records-test.sh" "$d/.github/scripts/check-records-test.sh"
+  git -C "$d" add -A
+  git -C "$d" commit -qm "add the suite"
+  b=$(base_of "$d")
+  git -C "$d" rm -q .github/scripts/check-records-test.sh
+  run_case "suite deleted in the diff" 1 E-GATE-GONE "$d" BASE_SHA="$b"
+
+  # The gate held itself to a weaker standard than the records: [ -f ] follows a symlink,
+  # so a gate file swapped for a tracked link to something inert passed.
+  d=$(case_dir gate_symlinked)
+  b=$(base_of "$d")
+  printf 'name: inert\n' >"$d/.github/workflows/inert.yml"
+  rm "$d/.github/workflows/records.yml"
+  ln -s inert.yml "$d/.github/workflows/records.yml"
+  git -C "$d" add -A
+  git -C "$d" commit -qm "swap the workflow for a link"
+  run_case "gate file replaced by a tracked symlink" 1 E-GATE-SYMLINK "$d" BASE_SHA="$b"
+
+  printf -- '-- the gate survives renaming itself --\n'
+  # A rename empties the base-ref-derived protected set, because every path gate_paths
+  # derives is new and no declared predecessor covers this particular rename. That must
+  # fail rather than pass quietly. Built by hand rather than via case_dir/new_repo: the
+  # latter always includes a profiles/ directory at the base commit, which would keep the
+  # protected set non-empty regardless of the rename and defeat the case.
+  d="$SCRATCH/renamed_gate"
+  mkdir -p "$d/docs/debt" "$d/.github/scripts" "$d/.github/workflows"
+  git -C "$d" init -q .
+  git -C "$d" config user.email test@example.invalid
+  git -C "$d" config user.name "check-records test"
+  cp "$SCRIPT_DIR/check-records.sh" "$d/.github/scripts/check-records.sh"
+  chmod +x "$d/.github/scripts/check-records.sh"
+  cat >"$d/.github/workflows/records.yml" <<'YAML'
+name: records
+on: pull_request
+jobs:
+  records:
+    runs-on: ubuntu-latest
+    steps:
+      - run: ./.github/scripts/check-records.sh
+YAML
+  write_record "$d" "0001-valid.md"
+  git -C "$d" add -A
+  git -C "$d" commit -qm base
+  b=$(base_of "$d")
+  git -C "$d" mv .github/scripts/check-records.sh .github/scripts/check-renamed.sh
+  # Needed for the run below to get past profile resolution; not present at the base
+  # commit, so it does not pad the protected-set count.
+  mkdir -p "$d/.github/scripts/profiles"
+  cp "$SCRIPT_DIR/profiles/debt.sh" "$d/.github/scripts/profiles/debt.sh"
+  printf '  %-4s %-44s ' "" "gate renamed with no predecessor declared"
+  if (cd "$d" && env -u GITHUB_ACTIONS RECORD_PROFILES=debt BASE_SHA="$b" \
+    ./.github/scripts/check-renamed.sh) >"$d/.o" 2>"$d/.e"; then
+    failed=$((failed + 1))
+    printf 'FAIL passed with an undeclared rename\n'
+  else
+    expect_error_code "$d/.e" E-GATE-EMPTY-SET
+  fi
+
+  # A rename must still be caught even when the repo's own workflow happens to sit at the
+  # literal path one of GATE_PREDECESSORS' own path-form entries names
+  # (.github/workflows/debt.yml — the exact filename the adoption table has told every
+  # adopter to create). That literal path must never be checked directly regardless of
+  # this repo: gate_paths's predecessor loop excludes any .github/workflows/* key for
+  # exactly this reason. Without the exclusion, this fixture's own untouched debt.yml —
+  # wholly unrelated to the undeclared script rename below — would keep the protected set
+  # non-empty and mask it, turning E-GATE-EMPTY-SET into a silent pass. Deliberately not
+  # named records.yml, unlike every other fixture in this suite: the collision this case
+  # exists to catch is specifically with the literal old name.
+  d="$SCRATCH/renamed_gate_workflow_collision"
+  mkdir -p "$d/docs/debt" "$d/.github/scripts" "$d/.github/workflows"
+  git -C "$d" init -q .
+  git -C "$d" config user.email test@example.invalid
+  git -C "$d" config user.name "check-records test"
+  cp "$SCRIPT_DIR/check-records.sh" "$d/.github/scripts/check-records.sh"
+  chmod +x "$d/.github/scripts/check-records.sh"
+  cat >"$d/.github/workflows/debt.yml" <<'YAML'
+name: debt
+on: pull_request
+jobs:
+  records:
+    runs-on: ubuntu-latest
+    steps:
+      - run: ./.github/scripts/check-records.sh
+YAML
+  write_record "$d" "0001-valid.md"
+  git -C "$d" add -A
+  git -C "$d" commit -qm base
+  b=$(base_of "$d")
+  git -C "$d" mv .github/scripts/check-records.sh .github/scripts/check-renamed.sh
+  mkdir -p "$d/.github/scripts/profiles"
+  cp "$SCRIPT_DIR/profiles/debt.sh" "$d/.github/scripts/profiles/debt.sh"
+  printf '  %-4s %-44s ' "" "undeclared rename, workflow shares the old literal path"
+  if (cd "$d" && env -u GITHUB_ACTIONS RECORD_PROFILES=debt BASE_SHA="$b" \
+    ./.github/scripts/check-renamed.sh) >"$d/.o" 2>"$d/.e"; then
+    failed=$((failed + 1))
+    printf 'FAIL passed with an undeclared rename\n'
+  else
+    expect_error_code "$d/.e" E-GATE-EMPTY-SET
+  fi
+
+  # The other half of E-GATE-EMPTY-SET: a rename that *does* declare its predecessor is
+  # exempt, and only where the named successor exists as a tracked, non-symlink regular file.
+  # A gate that moves directories needs the path form, since the old path is not under the new
+  # SELF_DIR at all.
+  d="$SCRATCH/declared_rename"
+  mkdir -p "$d/docs/debt" "$d/ci/profiles" "$d/.github/workflows"
+  git -C "$d" init -q .
+  git -C "$d" config user.email test@example.invalid
+  git -C "$d" config user.name "check-records test"
+  cp "$SCRIPT_DIR/check-records.sh" "$d/ci/check-records.sh"
+  cp "$SCRIPT_DIR/profiles/debt.sh" "$d/ci/profiles/debt.sh"
+  chmod +x "$d/ci/check-records.sh"
+  cat >"$d/.github/workflows/records.yml" <<'YAML'
+name: records
+on: pull_request
+jobs:
+  records:
+    runs-on: ubuntu-latest
+    steps:
+      - run: ./ci/check-records.sh
+YAML
+  write_record "$d" "0001-valid.md"
+  git -C "$d" add -A
+  git -C "$d" commit -qm base
+  b=$(base_of "$d")
+  git -C "$d" mv ci scripts
+  # Declare the move, the way a renaming PR does: two path-form entries prepended to the
+  # constant. The tabs below are literal tab characters in the shell string. Each entry is
+  # passed as its own single-line -v var and joined inside awk with a separate print per
+  # line — a sed replacement with \t and \n would produce those two characters literally on
+  # BSD sed and silently declare nothing, and a single multi-line -v value is a GNU-awk-only
+  # extension that BSD/one-true awk (macOS) rejects outright.
+  ins1="ci/check-records.sh	scripts/check-records.sh"
+  ins2="ci/profiles/debt.sh	scripts/profiles/debt.sh"
+  awk -v ins1="$ins1" -v ins2="$ins2" '
+    /^GATE_PREDECESSORS="/ && !seen {
+      print "GATE_PREDECESSORS=\"" ins1
+      print ins2
+      sub(/^GATE_PREDECESSORS="/, "")
+      seen = 1
+    }
+    { print }
+  ' "$d/scripts/check-records.sh" >"$d/.chk"
+  mv "$d/.chk" "$d/scripts/check-records.sh"
+  chmod +x "$d/scripts/check-records.sh"
+  # Guards against a silent no-op: the awk above must have inserted the entry. `set -e`
+  # aborts on grep's 1 and on its 2 alike, so the two are named apart here rather than
+  # arriving as one unexplained abort — the fixture being wrong and the fixture being
+  # unreadable need different answers from whoever reads the output.
+  scan=0
+  grep -qF "$(printf 'ci/check-records.sh\tscripts/check-records.sh')" \
+    "$d/scripts/check-records.sh" || scan=$?
+  case $scan in
+  0) ;;
+  1)
+    printf 'fixture error: the declared-rename insertion was a no-op in %s\n' \
+      "$d/scripts/check-records.sh" >&2
+    exit 2
+    ;;
+  *)
+    printf 'fixture error: could not scan %s (grep exit %s)\n' \
+      "$d/scripts/check-records.sh" "$scan" >&2
+    exit 2
+    ;;
+  esac
+  git -C "$d" add -A
+  printf '  %-4s %-44s ' "" "declared directory rename is exempt"
+  if (cd "$d" && env -u GITHUB_ACTIONS RECORD_PROFILES=debt BASE_SHA="$b" \
+    ./scripts/check-records.sh) >"$d/.o" 2>"$d/.e"; then
+    expect_match "$d/.o" 'exit=0 predecessor exempted' \
+      'exit=0 but no rename note printed' 'was renamed to'
+  else
+    failed=$((failed + 1))
+    printf 'FAIL %s\n' "$(sed -n 's/^::error:://p' "$d/.e" | head -1)"
+  fi
+
+  d=$(case_dir basename_rename)
+  b=$(base_of "$d")
+  git -C "$d" mv .github/scripts/check-records.sh .github/scripts/check-gate.sh
+  ins="check-records.sh	check-gate.sh"
+  awk -v ins="$ins" '
+    /^GATE_PREDECESSORS="/ && !seen {
+      print "GATE_PREDECESSORS=\"" ins
+      sub(/^GATE_PREDECESSORS="/, "")
+      seen = 1
+    }
+    { print }
+  ' "$d/.github/scripts/check-gate.sh" >"$d/.chk"
+  mv "$d/.chk" "$d/.github/scripts/check-gate.sh"
+  chmod +x "$d/.github/scripts/check-gate.sh"
+  git -C "$d" add -A
+  printf '  %-4s %-44s ' "" "declared same-directory rename is exempt"
+  if (cd "$d" && env -u GITHUB_ACTIONS RECORD_PROFILES=debt BASE_SHA="$b" \
+    ./.github/scripts/check-gate.sh) >"$d/.o" 2>"$d/.e"; then
+    expect_match "$d/.o" 'exit=0 basename predecessor exempted' \
+      'exit=0 but no rename note printed' 'was renamed to'
+  else
+    failed=$((failed + 1))
+    printf 'FAIL %s\n' "$(sed -n 's/^::error:://p' "$d/.e" | head -1)"
+  fi
+
+  # A gate script renamed across directories *and* to a new basename, in the same commit
+  # as its workflow's rename, with both declared. The predecessor-path loop in gate_paths
+  # excludes .github/workflows/* keys unconditionally (renamed_gate_workflow_collision
+  # above is why), so the workflow predecessor can only enter the protected set through the
+  # needle search — and the needle search only fires on a basename the mapping itself
+  # retired. This proves that path end to end: the needle "check-gate.sh" (this entry's own
+  # key basename, differing from its own successor's basename "check-records.sh") finds the
+  # base ref's workflow, which is what makes the exemption reachable at all; the exemption
+  # itself then comes from the separately declared workflow entry.
+  d="$SCRATCH/renamed_gate_and_workflow"
+  mkdir -p "$d/docs/debt" "$d/ci/profiles" "$d/.github/workflows"
+  git -C "$d" init -q .
+  git -C "$d" config user.email test@example.invalid
+  git -C "$d" config user.name "check-records test"
+  cp "$SCRIPT_DIR/check-records.sh" "$d/ci/check-gate.sh"
+  cp "$SCRIPT_DIR/profiles/debt.sh" "$d/ci/profiles/debt.sh"
+  chmod +x "$d/ci/check-gate.sh"
+  cat >"$d/.github/workflows/gate.yml" <<'YAML'
+name: gate
+on: pull_request
+jobs:
+  records:
+    runs-on: ubuntu-latest
+    steps:
+      - run: ./ci/check-gate.sh
+YAML
+  write_record "$d" "0001-valid.md"
+  git -C "$d" add -A
+  git -C "$d" commit -qm base
+  b=$(base_of "$d")
+  git -C "$d" mv ci scripts
+  git -C "$d" mv scripts/check-gate.sh scripts/check-records.sh
+  git -C "$d" mv .github/workflows/gate.yml .github/workflows/records.yml
+  ins1="ci/check-gate.sh	scripts/check-records.sh"
+  ins2=".github/workflows/gate.yml	.github/workflows/records.yml"
+  awk -v ins1="$ins1" -v ins2="$ins2" '
+    /^GATE_PREDECESSORS="/ && !seen {
+      print "GATE_PREDECESSORS=\"" ins1
+      print ins2
+      sub(/^GATE_PREDECESSORS="/, "")
+      seen = 1
+    }
+    { print }
+  ' "$d/scripts/check-records.sh" >"$d/.chk"
+  mv "$d/.chk" "$d/scripts/check-records.sh"
+  chmod +x "$d/scripts/check-records.sh"
+  git -C "$d" add -A
+  printf '  %-4s %-44s ' "" "declared cross-directory rename of gate and workflow"
+  if (cd "$d" && env -u GITHUB_ACTIONS RECORD_PROFILES=debt BASE_SHA="$b" \
+    ./scripts/check-records.sh) >"$d/.o" 2>"$d/.e"; then
+    verdict=""
+    scan_into_verdict script-note "$d/.o" \
+      -F 'ci/check-gate.sh was renamed to scripts/check-records.sh'
+    scan_into_verdict workflow-note "$d/.o" \
+      -F '.github/workflows/gate.yml was renamed to .github/workflows/records.yml'
+    if [ -z "$verdict" ]; then
+      passed=$((passed + 1))
+      printf 'ok   exit=0 script and workflow predecessors exempted\n'
+    else
+      failed=$((failed + 1))
+      printf 'FAIL exit=0 but expected rename notes missing:%s\n' "$verdict"
+    fi
+  else
+    failed=$((failed + 1))
+    printf 'FAIL %s\n' "$(sed -n 's/^::error:://p' "$d/.e" | head -1)"
+  fi
+
+  # Same rename, but the workflow half is left undeclared. The needle still discovers the
+  # base ref's workflow — the needle search does not consult the workflow mapping at all —
+  # so it still enters the protected set; with no successor declared for it, that must
+  # report E-GATE-GONE rather than pass or silently drop the workflow from the set.
+  d="$SCRATCH/renamed_gate_and_workflow_undeclared"
+  mkdir -p "$d/docs/debt" "$d/ci/profiles" "$d/.github/workflows"
+  git -C "$d" init -q .
+  git -C "$d" config user.email test@example.invalid
+  git -C "$d" config user.name "check-records test"
+  cp "$SCRIPT_DIR/check-records.sh" "$d/ci/check-gate.sh"
+  cp "$SCRIPT_DIR/profiles/debt.sh" "$d/ci/profiles/debt.sh"
+  chmod +x "$d/ci/check-gate.sh"
+  cat >"$d/.github/workflows/gate.yml" <<'YAML'
+name: gate
+on: pull_request
+jobs:
+  records:
+    runs-on: ubuntu-latest
+    steps:
+      - run: ./ci/check-gate.sh
+YAML
+  write_record "$d" "0001-valid.md"
+  git -C "$d" add -A
+  git -C "$d" commit -qm base
+  b=$(base_of "$d")
+  git -C "$d" mv ci scripts
+  git -C "$d" mv scripts/check-gate.sh scripts/check-records.sh
+  git -C "$d" mv .github/workflows/gate.yml .github/workflows/records.yml
+  ins="ci/check-gate.sh	scripts/check-records.sh"
+  awk -v ins="$ins" '
+    /^GATE_PREDECESSORS="/ && !seen {
+      print "GATE_PREDECESSORS=\"" ins
+      sub(/^GATE_PREDECESSORS="/, "")
+      seen = 1
+    }
+    { print }
+  ' "$d/scripts/check-records.sh" >"$d/.chk"
+  mv "$d/.chk" "$d/scripts/check-records.sh"
+  chmod +x "$d/scripts/check-records.sh"
+  git -C "$d" add -A
+  printf '  %-4s %-44s ' "" "cross-directory workflow rename left undeclared"
+  if (cd "$d" && env -u GITHUB_ACTIONS RECORD_PROFILES=debt BASE_SHA="$b" \
+    ./scripts/check-records.sh) >"$d/.o" 2>"$d/.e"; then
+    failed=$((failed + 1))
+    printf 'FAIL passed with an undeclared workflow rename\n'
+  else
+    expect_error_code "$d/.e" E-GATE-GONE '::error::E-GATE-GONE: \.github/workflows/gate\.yml '
+  fi
+
+  # The gate's own protected-path witness, unable to run. It used to be `git cat-file -e ... ||
+  # continue`, so a fault silently dropped the path from the protected set — the one condition
+  # the self-protection rule exists to detect. The fault must be named, and the path must still
+  # count, or the empty-set branch would go on to report a bootstrap.
+  d=$(case_dir gate_self_scan_fault)
+  b=$(base_of "$d")
+  stub_bin="$SCRATCH/git-gate-fault-bin"
+  mkdir -p "$stub_bin"
+  real_git=$(command -v git)
+  cat >"$stub_bin/git" <<STUB
+#!/usr/bin/env bash
+if [ "\$1" = ls-tree ]; then
+  for arg in "\$@"; do
+    if [ "\$arg" = .github/scripts/check-records.sh ]; then
+      printf 'fatal: fixture-fault: simulated object store error\n' >&2
+      exit 128
+    fi
+  done
+fi
+exec "$real_git" "\$@"
+STUB
+  chmod +x "$stub_bin/git"
+  run_case "gate file witness faults, not silently unprotected" 1 E-GATE-SCAN "$d" \
+    BASE_SHA="$b" PATH="$stub_bin:$PATH"
+
+  # A checker basename is repository-controlled and may look like a git-grep option. Quoting
+  # keeps it one shell argument; only `-e` keeps Git from parsing it as an option and silently
+  # omitting the workflow that protects the renamed checker.
+  d="$SCRATCH/option_shaped_checker"
+  new_repo "$d"
+  mv "$d/.github/scripts/check-records.sh" "$d/.github/scripts/--cached"
+  sed 's/check-records\.sh/--cached/' "$d/.github/workflows/records.yml" >"$d/.workflow"
+  mv "$d/.workflow" "$d/.github/workflows/records.yml"
+  write_record "$d" "0001-valid.md"
+  git -C "$d" add -A
+  git -C "$d" commit -qm base
+  b=$(base_of "$d")
+  rm "$d/.github/workflows/records.yml"
+  cat >"$d/.github/scripts/check-records.sh" <<'STUB'
+#!/usr/bin/env bash
+exec "$(dirname "$0")/--cached" "$@"
+STUB
+  chmod +x "$d/.github/scripts/check-records.sh"
+  run_case "option-shaped checker still protects its workflow" 1 E-GATE-GONE "$d" \
+    BASE_SHA="$b"
+
+  # A workflow search that could not read the base ref must not silently shrink the gate's
+  # protected path set. The checker itself and its suite still give gate_paths two paths, so
+  # this fixture would otherwise pass while omitting the workflow whose scan faulted.
+  stub_bin="$SCRATCH/git-gate-paths-fault-bin"
+  mkdir -p "$stub_bin"
+  cat >"$stub_bin/git" <<STUB
+#!/usr/bin/env bash
+if [ "\$1" = grep ] && [ "\$3" = -lF ]; then
+  for arg in "\$@"; do
+    if [ "\$arg" = .github/workflows ]; then
+      printf 'fatal: fixture-fault: simulated object store error\n' >&2
+      exit 128
+    fi
+  done
+fi
+exec "$real_git" "\$@"
+STUB
+  chmod +x "$stub_bin/git"
+  run_case "gate workflow search faults, not silently omitted" 1 E-GATE-PATHS-SCAN "$d" \
+    BASE_SHA="$b" PATH="$stub_bin:$PATH"
+
+  # A base ref that predates the gate is the adoption PR, and it must not be red — and it
+  # must say why, per the same discipline as every other rule: assert both the exit status
+  # and which code fired. Bespoke rather than run_case: I-GATE-BOOTSTRAP is informational,
+  # emitted via `info` to stdout, not the `::[a-z]*::CODE: ` stderr form run_case greps for,
+  # so run_case's code assertion cannot express it. Without this, deleting the `info` line
+  # entirely would leave the suite green — already-passing exit=0 is not evidence the rule
+  # fired.
+  d="$SCRATCH/bootstrap"
+  mkdir -p "$d/docs/debt" "$d/.github/scripts/profiles" "$d/.github/workflows"
+  git -C "$d" init -q .
+  git -C "$d" config user.email test@example.invalid
+  git -C "$d" config user.name "check-records test"
+  printf 'placeholder\n' >"$d/README.md"
+  git -C "$d" add -A
+  git -C "$d" commit -qm "before the gate"
+  b=$(base_of "$d")
+  cp "$SCRIPT_DIR/check-records.sh" "$d/.github/scripts/"
+  cp "$SCRIPT_DIR/profiles/debt.sh" "$d/.github/scripts/profiles/"
+  chmod +x "$d/.github/scripts/check-records.sh"
+  write_record "$d" "0001-first.md"
+  git -C "$d" add -A
+  printf '  %-4s %-44s ' "" "base ref predates the gate"
+  if (cd "$d" && env -u GITHUB_ACTIONS RECORD_PROFILES=debt BASE_SHA="$b" \
+    ./.github/scripts/check-records.sh) >"$d/.out" 2>"$d/.err"; then
+    expect_match "$d/.out" 'exit=0 I-GATE-BOOTSTRAP' \
+      'exit=0 but I-GATE-BOOTSTRAP never printed' 'I-GATE-BOOTSTRAP'
+  else
+    failed=$((failed + 1))
+    printf 'FAIL failed for another reason: %s\n' "$(sed -n 's/^::error:://p' "$d/.err" | head -1)"
+  fi
+
+  # The same bootstrap shape with a witness that cannot run. gate_existed_at is only reached
+  # when the protected set came out empty, which is exactly what the bootstrap fixture
+  # produces, so it is reused for both witnesses below. A fault used to be indistinguishable
+  # from every witness finding nothing, reporting the exit-0 I-GATE-BOOTSTRAP over a scan that
+  # never happened -- the silent pass an undeclared rename would hide behind.
+  #
+  # The SELF_DIR witness. Keyed on `.github/scripts/debt.sh`: gate_known_basenames offers it
+  # (the profiles predecessor mapping retires that basename) but gate_paths never emits it,
+  # because that mapping's key carries a slash and so resolves to its own path rather than a
+  # SELF_DIR sibling. A key gate_paths did emit would fault at the protected-path witness
+  # first, count the path, and take check_gate_files out of the empty-set branch entirely.
+  stub_bin="$SCRATCH/git-witness-selfdir-bin"
+  mkdir -p "$stub_bin"
+  real_git=$(command -v git)
+  cat >"$stub_bin/git" <<STUB
+#!/usr/bin/env bash
+if [ "\$1" = ls-tree ]; then
+  for arg in "\$@"; do
+    if [ "\$arg" = .github/scripts/debt.sh ]; then
+      printf 'fatal: fixture-fault: simulated object store error\n' >&2
+      exit 128
+    fi
+  done
+fi
+exec "$real_git" "\$@"
+STUB
+  chmod +x "$stub_bin/git"
+  printf '  %-4s %-44s ' "" "SELF_DIR witness faults, not a bootstrap"
+  if (cd "$d" && env -u GITHUB_ACTIONS RECORD_PROFILES=debt BASE_SHA="$b" \
+    PATH="$stub_bin:$PATH" ./.github/scripts/check-records.sh) >"$d/.o2" 2>"$d/.e2"; then
+    failed=$((failed + 1))
+    printf 'FAIL exit=0 on a witness that never ran\n'
+  else
+    expect_error_code "$d/.e2" E-GATE-WITNESS-SCAN
+  fi
+
+  # The workflow witness, reached only once the SELF_DIR witness has found nothing -- which is
+  # this fixture's ordinary state, so no stubbing of the first witness is needed to get here.
+  stub_bin="$SCRATCH/git-witness-workflow-bin"
+  mkdir -p "$stub_bin"
+  cat >"$stub_bin/git" <<STUB
+#!/usr/bin/env bash
+if [ "\$1" = grep ] && [ "\$3" = -qF ]; then
+  for arg in "\$@"; do
+    if [ "\$arg" = .github/workflows ]; then
+      printf 'fatal: fixture-fault: simulated object store error\n' >&2
+      exit 128
+    fi
+  done
+fi
+exec "$real_git" "\$@"
+STUB
+  chmod +x "$stub_bin/git"
+  printf '  %-4s %-44s ' "" "workflow witness faults, not a bootstrap"
+  if (cd "$d" && env -u GITHUB_ACTIONS RECORD_PROFILES=debt BASE_SHA="$b" \
+    PATH="$stub_bin:$PATH" ./.github/scripts/check-records.sh) >"$d/.o3" 2>"$d/.e3"; then
+    failed=$((failed + 1))
+    printf 'FAIL exit=0 on a witness that never ran\n'
+  else
+    expect_error_code "$d/.e3" E-GATE-WITNESS-SCAN
+  fi
+
+  # A later positive witness keeps the undeclared-rename verdict, but the earlier fault still
+  # needs a trace. The unrelated workflow names debt.sh, a successor whose basename did not
+  # change, so gate_paths does not treat that workflow as protected; gate_existed_at's broader
+  # closed witness set still sees it after the SELF_DIR probe for debt.sh faults.
+  d="$SCRATCH/gate_witness_outranks_fault"
+  mkdir -p "$d/docs/debt" "$d/.github/scripts/profiles" "$d/.github/workflows"
+  git -C "$d" init -q .
+  git -C "$d" config user.email test@example.invalid
+  git -C "$d" config user.name "check-records test"
+  cat >"$d/.github/workflows/unrelated.yml" <<'YAML'
+name: unrelated
+on: push
+jobs:
+  note:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo debt.sh
+YAML
+  git -C "$d" add -A
+  git -C "$d" commit -qm "before the gate"
+  b=$(base_of "$d")
+  cp "$SCRIPT_DIR/check-records.sh" "$d/.github/scripts/"
+  cp "$SCRIPT_DIR/profiles/debt.sh" "$d/.github/scripts/profiles/"
+  chmod +x "$d/.github/scripts/check-records.sh"
+  write_record "$d" "0001-first.md"
+  git -C "$d" add -A
+  stub_bin="$SCRATCH/git-witness-outrank-bin"
+  mkdir -p "$stub_bin"
+  cat >"$stub_bin/git" <<STUB
+#!/usr/bin/env bash
+if [ "\$1" = ls-tree ]; then
+  for arg in "\$@"; do
+    if [ "\$arg" = .github/scripts/debt.sh ]; then
+      printf 'fatal: fixture-fault: simulated object store error\n' >&2
+      exit 128
+    fi
+  done
+fi
+exec "$real_git" "\$@"
+STUB
+  chmod +x "$stub_bin/git"
+  run_case "a real gate witness outranks an earlier fault" 1 E-GATE-EMPTY-SET "$d" \
+    BASE_SHA="$b" PATH="$stub_bin:$PATH"
+  printf '  %-4s %-44s ' "" "the outranked gate fault is reported"
+  expect_match "$d/.err" 'W-GATE-WITNESS-SCAN beside the verdict' \
+    'the incomplete gate-witness search was silent' '::warning::W-GATE-WITNESS-SCAN: '
+  printf '  %-4s %-44s ' "" "the fault path and status are retained"
+  expect_match "$d/.err" 'gate fault path and status named' \
+    'the gate warning did not name the failed witness' \
+    '.github/scripts/debt.sh: .*git exit 128'
+  printf '  %-4s %-44s ' "" "the no-answer scan error stays suppressed"
+  expect_no_match "$d/.err" 'E-GATE-WITNESS-SCAN suppressed' \
+    'the positive witness was replaced by the no-answer fault' \
+    '::error::E-GATE-WITNESS-SCAN: '
+
+  # gate_existed_at has two witnesses, and `renamed_gate` above happens to satisfy both at
+  # once (its base-ref workflow names "check-records.sh", which is also the literal
+  # basename sitting in SELF_DIR at that ref) — so neither witness is individually proven.
+  # These two isolate them: no workflow at all reaches only the SELF_DIR witness, and a
+  # gate that moved directories as well as names reaches only the workflow witness.
+  d="$SCRATCH/renamed_no_workflow"
+  mkdir -p "$d/docs/debt" "$d/.github/scripts"
+  git -C "$d" init -q .
+  git -C "$d" config user.email test@example.invalid
+  git -C "$d" config user.name "check-records test"
+  cp "$SCRIPT_DIR/check-records.sh" "$d/.github/scripts/check-records.sh"
+  chmod +x "$d/.github/scripts/check-records.sh"
+  write_record "$d" "0001-valid.md"
+  git -C "$d" add -A
+  git -C "$d" commit -qm base
+  b=$(base_of "$d")
+  git -C "$d" mv .github/scripts/check-records.sh .github/scripts/check-renamed.sh
+  mkdir -p "$d/.github/scripts/profiles"
+  cp "$SCRIPT_DIR/profiles/debt.sh" "$d/.github/scripts/profiles/debt.sh"
+  printf '  %-4s %-44s ' "" "SELF_DIR witness alone: renamed, no workflow at all"
+  if (cd "$d" && env -u GITHUB_ACTIONS RECORD_PROFILES=debt BASE_SHA="$b" \
+    ./.github/scripts/check-renamed.sh) >"$d/.o" 2>"$d/.e"; then
+    failed=$((failed + 1))
+    printf 'FAIL passed with an undeclared rename\n'
+  else
+    expect_error_code "$d/.e" E-GATE-EMPTY-SET
+  fi
+
+  d="$SCRATCH/renamed_moved_dir"
+  mkdir -p "$d/docs/debt" "$d/.github/workflows"
+  git -C "$d" init -q .
+  git -C "$d" config user.email test@example.invalid
+  git -C "$d" config user.name "check-records test"
+  cp "$SCRIPT_DIR/check-records.sh" "$d/check-records.sh"
+  chmod +x "$d/check-records.sh"
+  # A repo-root gate layout: the script lives at the repo root at the base ref, invoked
+  # from there, so nothing under the current SELF_DIR (.github/scripts, once it moves)
+  # exists at that ref — only the workflow names it.
+  cat >"$d/.github/workflows/records.yml" <<'YAML'
+name: records
+on: pull_request
+jobs:
+  records:
+    runs-on: ubuntu-latest
+    steps:
+      - run: ./check-records.sh
+YAML
+  write_record "$d" "0001-valid.md"
+  git -C "$d" add -A
+  git -C "$d" commit -qm base
+  b=$(base_of "$d")
+  mkdir -p "$d/.github/scripts/profiles"
+  git -C "$d" mv check-records.sh .github/scripts/check-renamed.sh
+  cp "$SCRIPT_DIR/profiles/debt.sh" "$d/.github/scripts/profiles/debt.sh"
+  printf '  %-4s %-44s ' "" "workflow witness alone: renamed and moved directories"
+  if (cd "$d" && env -u GITHUB_ACTIONS RECORD_PROFILES=debt BASE_SHA="$b" \
+    ./.github/scripts/check-renamed.sh) >"$d/.o" 2>"$d/.e"; then
+    failed=$((failed + 1))
+    printf 'FAIL passed with an undeclared rename\n'
+  else
+    expect_error_code "$d/.e" E-GATE-EMPTY-SET
+  fi
+
+  # gate_known_basenames' `.sh`-only filter is what keeps a `.yml` GATE_PREDECESSORS
+  # basename out of the bootstrap witness. Without it, "records.yml" — a basename from the
+  # mapping's own debt.yml -> records.yml entries — becomes a known basename, and
+  # gate_existed_at's workflow-content witness matches it against any base-ref workflow that
+  # merely mentions "records.yml" for an unrelated reason. That turns a legitimate adoption's
+  # I-GATE-BOOTSTRAP into E-GATE-EMPTY-SET: the false red the closed set exists to prevent.
+  d="$SCRATCH/bootstrap_unrelated_yml_mention"
+  mkdir -p "$d/docs/debt" "$d/.github/workflows"
+  git -C "$d" init -q .
+  git -C "$d" config user.email test@example.invalid
+  git -C "$d" config user.name "check-records test"
+  cat >"$d/.github/workflows/unrelated.yml" <<'YAML'
+name: unrelated
+on: push
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      # see shared/skills/tome-of-lore/assets/records.yml for the gate config elsewhere
+      - run: echo hello
+YAML
+  git -C "$d" add -A
+  git -C "$d" commit -qm "before the gate, with an unrelated records.yml mention"
+  b=$(base_of "$d")
+  mkdir -p "$d/.github/scripts/profiles"
+  cp "$SCRIPT_DIR/check-records.sh" "$d/.github/scripts/"
+  cp "$SCRIPT_DIR/profiles/debt.sh" "$d/.github/scripts/profiles/"
+  chmod +x "$d/.github/scripts/check-records.sh"
+  write_record "$d" "0001-first.md"
+  git -C "$d" add -A
+  printf '  %-4s %-44s ' "" "unrelated records.yml mention doesn't defeat bootstrap"
+  if (cd "$d" && env -u GITHUB_ACTIONS RECORD_PROFILES=debt BASE_SHA="$b" \
+    ./.github/scripts/check-records.sh) >"$d/.out" 2>"$d/.err"; then
+    expect_match "$d/.out" 'exit=0 I-GATE-BOOTSTRAP' \
+      'exit=0 but I-GATE-BOOTSTRAP never printed' 'I-GATE-BOOTSTRAP'
+  else
+    failed=$((failed + 1))
+    printf 'FAIL failed for another reason: %s\n' "$(sed -n 's/^::error:://p' "$d/.err" | head -1)"
+  fi
+
+  # gate_paths' needle loop has the same `.sh`-only filter, guarding the protected set rather
+  # than the bootstrap witness. Without it, "debt.yml" — the retired basename in the
+  # .github/workflows/debt.yml -> records.yml mapping entry — becomes a needle, and any
+  # base-ref workflow whose text merely contains "debt.yml" (a comment, a stale filename
+  # reference, nothing to do with this gate) is pulled into the protected set by content
+  # match. Deleting that unrelated workflow must be allowed; without the filter it reports
+  # E-GATE-GONE on a file that was never part of the gate.
+  d="$SCRATCH/unrelated_workflow_not_a_needle"
+  mkdir -p "$d/docs/debt" "$d/.github/workflows" "$d/.github/scripts/profiles"
+  git -C "$d" init -q .
+  git -C "$d" config user.email test@example.invalid
+  git -C "$d" config user.name "check-records test"
+  cat >"$d/.github/workflows/unrelated.yml" <<'YAML'
+name: unrelated
+on: push
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      # migrated from debt.yml a while back, unrelated to the tome-of-lore gate
+      - run: echo hello
+YAML
+  cp "$SCRIPT_DIR/check-records.sh" "$d/.github/scripts/check-records.sh"
+  cp "$SCRIPT_DIR/profiles/debt.sh" "$d/.github/scripts/profiles/debt.sh"
+  chmod +x "$d/.github/scripts/check-records.sh"
+  write_record "$d" "0001-valid.md"
+  git -C "$d" add -A
+  git -C "$d" commit -qm base
+  b=$(base_of "$d")
+  git -C "$d" rm -q .github/workflows/unrelated.yml
+  run_case "unrelated workflow mentioning a retired basename is not a needle" 0 - "$d" \
+    BASE_SHA="$b"
+
+  # Isolating fixtures. The cases above trip several rules at once, so none of them can
+  # attribute a failure to the rule it is named for — a checker with its symlink rules
+  # deleted still failed them via E-GONE. These commit the symlink, so the record stays
+  # tracked and present and only the symlink rule can fire.
+  printf -- '-- one rule at a time (mutation isolation) --\n'
+  d=$(case_dir tracked_symlink_record)
+  write_record "$d" "0002-kept.md"
+  git -C "$d" add -A
+  git -C "$d" commit -qm two
+  b=$(base_of "$d")
+  rm "$d/docs/debt/0001-valid.md"
+  ln -s 0002-kept.md "$d/docs/debt/0001-valid.md"
+  git -C "$d" add -A
+  git -C "$d" commit -qm "tracked symlink over a record"
+  run_case "tracked symlink at a record path" 1 E-RECORD-SYMLINK "$d" BASE_SHA="$b"
+  run_case "tracked symlink seen as a disappearance" 1 E-GONE-SYMLINK "$d" BASE_SHA="$b"
+
+  d=$(case_dir tracked_symlink_dir)
+  b=$(base_of "$d")
+  mkdir -p "$d/real-debt"
+  cp "$d/docs/debt/0001-valid.md" "$d/real-debt/0001-valid.md"
+  git -C "$d" rm -qr docs/debt
+  mkdir -p "$d/docs"
+  ln -s ../real-debt "$d/docs/debt"
+  git -C "$d" add -A
+  git -C "$d" commit -qm "tracked symlink over the directory"
+  run_case "tracked symlink at the directory" 1 E-DIR-SYMLINK "$d" BASE_SHA="$b"
+
+  d=$(case_dir missing_from_disk)
+  b=$(base_of "$d")
+  rm "$d/docs/debt/0001-valid.md" # still tracked in the index, gone from the checkout
+  run_case "record tracked but missing from disk" 1 E-GONE "$d" BASE_SHA="$b"
+
+  d=$(case_dir untracked_record)
+  b=$(base_of "$d")
+  git -C "$d" rm -q --cached docs/debt/0001-valid.md
+  run_case "record untracked but still on disk" 1 E-GONE "$d" BASE_SHA="$b"
+
+  d=$(case_dir count_floor)
+  b=$(base_of "$d")
+  mkdir -p "$d/real-debt"
+  git -C "$d" rm -qr docs/debt
+  mkdir -p "$d/docs"
+  ln -s ../real-debt "$d/docs/debt"
+  git -C "$d" add -A
+  git -C "$d" commit -qm "empty tree behind a symlink"
+  run_case "base had records, tree enumerates none" 1 E-COUNT-FLOOR "$d" BASE_SHA="$b"
+
+  # Removing a non-record file is allowed: the disappearance rule applies to records, not
+  # to everything that ever sat in the directory. Without this case, deleting the filter
+  # that selects records from the base ref leaves the suite green.
+  d=$(case_dir stray_removed)
+  printf 'not a record\n' >"$d/docs/debt/README.md"
+  git -C "$d" add -A
+  git -C "$d" commit -qm "add a stray file"
+  b=$(base_of "$d")
+  git -C "$d" rm -q docs/debt/README.md
+  run_case "non-record file removed is allowed" 0 - "$d" BASE_SHA="$b"
+
+  # The deadlock case: a duplicate number tells the author to renumber, and renumbering
+  # used to trip the erasure rule. Both directions are asserted here.
+  printf -- '-- renumbering and duplicate scope --\n'
+  d=$(case_dir renumber_allowed)
+  write_record "$d" "0002-b.md"
+  git -C "$d" add -A
+  git -C "$d" commit -qm "two records"
+  b=$(base_of "$d")
+  git -C "$d" mv docs/debt/0002-b.md docs/debt/0003-b.md
+  run_case "renumber with content unchanged" 0 - "$d" BASE_SHA="$b"
+
+  # The renumber note is the only thing distinguishing "this was renumbered, and that is
+  # fine" from silence — without it, a green exit on a renumber looks identical to a green
+  # exit on nothing having happened. Bespoke rather than a run_case code assertion: the note
+  # is an info line on stdout, not the `::[a-z]*::CODE: ` stderr form run_case greps for, so
+  # run_case's own assertions above cannot see it and would stay green if it were deleted.
+  # Reuses $d/.out from the run_case call just above rather than invoking the checker again.
+  printf '  %-4s %-44s ' "" "renumber note names both paths"
+  expect_match "$d/.out" 'renumber note printed' \
+    'renumber note missing or names the wrong paths' -F 'docs/debt/0002-b.md was renumbered to docs/debt/0003-b.md'
+
+  # The same renumber, with the candidate witness unable to run. The witness answers "did
+  # this destination already exist at the base ref"; a fault used to read as "it did not",
+  # which silently promoted an unverified candidate. Reporting E-GONE here would be worse
+  # than silence -- it asserts the record is gone on the strength of a search that never
+  # happened -- so the fault must replace that verdict rather than accompany it.
+  d=$(case_dir renumber_scan_fault)
+  write_record "$d" "0002-b.md"
+  git -C "$d" add -A
+  git -C "$d" commit -qm "two records"
+  b=$(base_of "$d")
+  git -C "$d" mv docs/debt/0002-b.md docs/debt/0003-b.md
+  stub_bin="$SCRATCH/git-renumber-fault-bin"
+  mkdir -p "$stub_bin"
+  real_git=$(command -v git)
+  cat >"$stub_bin/git" <<STUB
+#!/usr/bin/env bash
+if [ "\$1" = ls-tree ]; then
+  for arg in "\$@"; do
+    if [ "\$arg" = docs/debt/0003-b.md ]; then
+      printf 'fatal: fixture-fault: simulated object store error\n' >&2
+      exit 128
+    fi
+  done
+fi
+exec "$real_git" "\$@"
+STUB
+  chmod +x "$stub_bin/git"
+  run_case "renumber candidate scan faults, not reported gone" 1 E-RENUMBER-SCAN "$d" \
+    BASE_SHA="$b" PATH="$stub_bin:$PATH"
+  printf '  %-4s %-44s ' "" "scan fault replaces E-GONE"
+  expect_no_match "$d/.err" 'E-GONE suppressed' \
+    'E-GONE also fired for a search that never ran' '::error::E-GONE: '
+
+  # The same search, with the vanished record's own base-ref copy unreadable rather than a
+  # candidate's witness. `git cat-file blob ... || return 1` reported E-GONE off a read that
+  # never happened -- fail-closed, so not a silent pass, but a verdict the gate did not
+  # establish: whether the record moved is exactly what could not be determined.
+  d=$(case_dir renumber_blob_scan_fault)
+  write_record "$d" "0002-b.md"
+  git -C "$d" add -A
+  git -C "$d" commit -qm "two records"
+  b=$(base_of "$d")
+  git -C "$d" mv docs/debt/0002-b.md docs/debt/0003-b.md
+  stub_bin="$SCRATCH/git-renumber-blob-bin"
+  mkdir -p "$stub_bin"
+  cat >"$stub_bin/git" <<STUB
+#!/usr/bin/env bash
+# Keyed on the subcommand and the ref:path argument together. The ls-tree witness that
+# establishes the path was at the base ref must still run for real, or the fault under test
+# would be the witness's rather than the blob read's.
+if [ "\$1" = cat-file ]; then
+  for arg in "\$@"; do
+    case "\$arg" in
+    *:docs/debt/0002-b.md)
+      printf 'fatal: fixture-fault: simulated object store error\n' >&2
+      exit 128
+      ;;
+    esac
+  done
+fi
+exec "$real_git" "\$@"
+STUB
+  chmod +x "$stub_bin/git"
+  run_case "renumber blob read faults, not reported gone" 1 E-RENUMBER-SCAN "$d" \
+    BASE_SHA="$b" PATH="$stub_bin:$PATH"
+  printf '  %-4s %-44s ' "" "blob fault replaces E-GONE"
+  expect_no_match "$d/.err" 'E-GONE suppressed' \
+    'E-GONE also fired for a copy that was never read' '::error::E-GONE: '
+
+  d=$(case_dir renumber_with_edit)
+  write_record "$d" "0002-b.md"
+  git -C "$d" add -A
+  git -C "$d" commit -qm "two records"
+  b=$(base_of "$d")
+  git -C "$d" mv docs/debt/0002-b.md docs/debt/0003-b.md
+  printf '\nedited after the move\n' >>"$d/docs/debt/0003-b.md"
+  run_case "renumber with content changed" 1 E-GONE "$d" BASE_SHA="$b"
+
+  d=$(case_dir two_renumbers_one_destination)
+  write_record "$d" "0002-b.md"
+  git -C "$d" add -A
+  git -C "$d" commit -qm "two canonical look-alikes"
+  b=$(base_of "$d")
+  git -C "$d" rm -q docs/debt/0001-valid.md
+  git -C "$d" mv docs/debt/0002-b.md docs/debt/0003-b.md
+  run_case "two records cannot share one renumber target" 1 E-GONE "$d" BASE_SHA="$b"
+
+  d=$(case_dir dup_introduced)
+  b=$(base_of "$d")
+  write_record "$d" "0001-second.md"
+  run_case "duplicate introduced by the change" 1 E-DUP-NUMBER "$d" BASE_SHA="$b"
+
+  d=$(case_dir dup_pre_existing)
+  write_record "$d" "0001-second.md"
+  git -C "$d" add -A
+  git -C "$d" commit -qm "land a duplicate"
+  b=$(base_of "$d")
+  run_case "duplicate already in the base ref" 0 W-DUP-PREEXISTING "$d" BASE_SHA="$b"
+
+  # Adoption is the path every consuming repo takes, and copying three files into place is
+  # exactly the sort of step that is never verified until it fails in someone else's repo.
+  # Install the assets the way the skill installs them, then run the installed gate.
+  printf -- '-- adoption into a fresh repo --\n'
+  adoption_cases
+
+  # The rewrite vector: keep the path, keep the headings, gut the body. Cheaper than every
+  # vector above and it defeats all of them, so it needs its own cases.
+  printf -- '-- rewriting a merged record --\n'
+  d=$(case_dir gutted)
+  b=$(base_of "$d")
+  write_record "$d" "0001-valid.md" "> **Resolved by PR #99** (2026-01-01)"
+  cat >>"$d/docs/debt/0001-valid.md" <<'EOF'
+EOF
+  sed 's/^A real concern with a body\.$/Nothing much, actually./' "$d/docs/debt/0001-valid.md" >"$d/.t" && mv "$d/.t" "$d/docs/debt/0001-valid.md"
+  run_case "concern gutted, banner added" 1 E-REWRITE "$d" BASE_SHA="$b"
+
+  d=$(case_dir appended)
+  b=$(base_of "$d")
+  printf '\nFurther detail found later.\n' >>"$d/docs/debt/0001-valid.md"
+  run_case "appending detail is allowed" 0 - "$d" BASE_SHA="$b"
+
+  # The two listings the append-only rules iterate. Both used to trail `|| true`, so a grep
+  # that faulted yielded an empty list, the loop ran zero times, and the rule reported nothing
+  # -- a clean pass over content it never read. Both fixtures append only, so nothing else
+  # fires and the pre-change run is a genuine exit 0; a fixture that removed a line would
+  # report E-REWRITE and pass without the conversion.
+  #
+  # The base-ref copy these read is a mktemp file the checker creates and removes itself, so
+  # no fixture can chmod it. A grep stub that faults on the one listing pattern and defers to
+  # the real grep otherwise reaches the branch deterministically, as the migrator's
+  # section-scan case already does.
+  stub_bin="$SCRATCH/grep-heading-list-bin"
+  mkdir -p "$stub_bin"
+  real_grep=$(command -v grep)
+  cat >"$stub_bin/grep" <<STUB
+#!/usr/bin/env bash
+for arg in "\$@"; do
+  if [ "\$arg" = '^#+ ' ]; then
+    printf 'grep: fixture-fault: simulated I/O error\n' >&2
+    exit 2
+  fi
+done
+exec "$real_grep" "\$@"
+STUB
+  chmod +x "$stub_bin/grep"
+  d=$(case_dir heading_list_scan_fault)
+  b=$(base_of "$d")
+  printf '\nFurther detail found later.\n' >>"$d/docs/debt/0001-valid.md"
+  run_case "heading listing faults, not a clean pass" 1 E-HEADING-LIST-SCAN "$d" \
+    BASE_SHA="$b" PATH="$stub_bin:$PATH"
+
+  stub_bin="$SCRATCH/grep-section-list-bin"
+  mkdir -p "$stub_bin"
+  cat >"$stub_bin/grep" <<STUB
+#!/usr/bin/env bash
+for arg in "\$@"; do
+  if [ "\$arg" = '^## ' ]; then
+    printf 'grep: fixture-fault: simulated I/O error\n' >&2
+    exit 2
+  fi
+done
+exec "$real_grep" "\$@"
+STUB
+  chmod +x "$stub_bin/grep"
+  # An ADR fixture, not a deferral one: the section listing only runs under
+  # APPEND_ONLY_SECTIONS="*", and the debt profile names a fixed list instead. Only the ADR
+  # profile takes the branch this converts.
+  d=$(adr_dir section_list_scan_fault)
+  b=$(base_of "$d")
+  printf '\nFurther detail found later.\n' >>"$d/docs/adr/0001-first.md"
+  run_case "section listing faults, not a clean pass" 1 E-SECTION-LIST-SCAN "$d" \
+    BASE_SHA="$b" RECORD_PROFILES=adr PATH="$stub_bin:$PATH"
+
+  # The ADR title read. `|| true` made an unreadable file yield an empty title, and the rule
+  # then reported E-TITLE-MISMATCH against a title it never read -- a spurious second finding
+  # beside the honest scan fault. The fault must replace that verdict, not accompany it.
+  stub_bin="$SCRATCH/grep-title-bin"
+  mkdir -p "$stub_bin"
+  cat >"$stub_bin/grep" <<STUB
+#!/usr/bin/env bash
+for arg in "\$@"; do
+  if [ "\$arg" = '^# ' ]; then
+    printf 'grep: fixture-fault: simulated I/O error\n' >&2
+    exit 2
+  fi
+done
+exec "$real_grep" "\$@"
+STUB
+  chmod +x "$stub_bin/grep"
+  d=$(adr_dir title_scan_fault)
+  b=$(base_of "$d")
+  run_case "ADR title read faults, no spurious mismatch" 1 E-TITLE-SCAN "$d" \
+    BASE_SHA="$b" RECORD_PROFILES=adr PATH="$stub_bin:$PATH"
+  printf '  %-4s %-44s ' "" "scan fault replaces E-TITLE-MISMATCH"
+  expect_no_match "$d/.err" 'E-TITLE-MISMATCH suppressed' \
+    'E-TITLE-MISMATCH also fired for a title never read' 'E-TITLE-MISMATCH: '
+
+  # The ADR supersession banner's Status read (ADR 0032). A faulting awk yielded an empty link
+  # and the rule then passed the record, so a banner naming a record that is not here went
+  # unreported -- the rule's whole purpose. Keyed on `-v want=`, which only section_body uses.
+  stub_bin="$SCRATCH/awk-supersede-bin"
+  mkdir -p "$stub_bin"
+  real_awk=$(command -v awk)
+  cat >"$stub_bin/awk" <<STUB
+#!/usr/bin/env bash
+for arg in "\$@"; do
+  case "\$arg" in
+  want=*)
+    printf 'awk: fixture-fault: simulated I/O error\n' >&2
+    exit 2
+    ;;
+  esac
+done
+exec "$real_awk" "\$@"
+STUB
+  chmod +x "$stub_bin/awk"
+  d=$(adr_dir supersede_scan_fault)
+  b=$(base_of "$d")
+  run_case "supersede link read faults, not a pass" 1 E-SUPERSEDE-SCAN "$d" \
+    BASE_SHA="$b" RECORD_PROFILES=adr PATH="$stub_bin:$PATH"
+
+  # The two anti-erasure diffs. They used to run inside `diff <(section_body …) <(…)`, where
+  # neither the readers nor diff itself could report: a faulting side produced empty output and
+  # diff then counted every base line as removed, or none, depending on which side failed. A
+  # diff stub that faults reaches the converted branch; the appended record keeps the change
+  # from being marker-only, so check_not_rewritten gets past the shape check to the rules.
+  stub_bin="$SCRATCH/diff-fault-bin"
+  mkdir -p "$stub_bin"
+  cat >"$stub_bin/diff" <<'STUB'
+#!/usr/bin/env bash
+printf 'diff: fixture-fault: simulated I/O error\n' >&2
+exit 2
+STUB
+  chmod +x "$stub_bin/diff"
+  d=$(case_dir append_diff_scan_fault)
+  b=$(base_of "$d")
+  printf '\nFurther detail found later.\n' >>"$d/docs/debt/0001-valid.md"
+  run_case "append-only diff faults, not a clean pass" 1 E-APPEND-DIFF-SCAN "$d" \
+    BASE_SHA="$b" PATH="$stub_bin:$PATH"
+  d=$(adr_dir preamble_diff_scan_fault)
+  b=$(base_of "$d")
+  printf '\nFurther detail found later.\n' >>"$d/docs/adr/0001-first.md"
+  run_case "preamble diff faults, not a clean pass" 1 E-PREAMBLE-DIFF-SCAN "$d" \
+    BASE_SHA="$b" RECORD_PROFILES=adr PATH="$stub_bin:$PATH"
+
+  # E-COUNT-FLOOR's base-ref record listing. `records_in_ref … || true` discarded the return 1
+  # raised when git ls-tree faults, leaving base_count at 0 -- so the rule that refuses a clean
+  # run over nothing was disarmed by a read that never completed. ADR 0005 named this site.
+  stub_bin="$SCRATCH/git-base-list-bin"
+  mkdir -p "$stub_bin"
+  real_git=$(command -v git)
+  cat >"$stub_bin/git" <<STUB
+#!/usr/bin/env bash
+if [ "\$1" = ls-tree ]; then
+  for arg in "\$@"; do
+    if [ "\$arg" = docs/debt ]; then
+      printf 'fatal: fixture-fault: simulated object store failure\n' >&2
+      exit 128
+    fi
+  done
+fi
+exec "$real_git" "\$@"
+STUB
+  chmod +x "$stub_bin/git"
+  d=$(case_dir base_list_scan_fault)
+  b=$(base_of "$d")
+  run_case "base record listing faults, floor not disarmed" 1 E-BASE-LIST-SCAN "$d" \
+    BASE_SHA="$b" PATH="$stub_bin:$PATH"
+
+  # The preamble reader, which the `-v want=` key above cannot reach: preamble is a bare awk
+  # with no -v, so it needs its own key. Its program is the only one in either script
+  # containing `NR > 1`. The appended line keeps the change from being marker-only, so
+  # check_not_rewritten gets past the shape check and actually runs this rule.
+  stub_bin="$SCRATCH/awk-preamble-fault-bin"
+  mkdir -p "$stub_bin"
+  cat >"$stub_bin/awk" <<STUB
+#!/usr/bin/env bash
+for arg in "\$@"; do
+  case "\$arg" in
+  *'NR > 1'*)
+    printf 'awk: fixture-fault: simulated I/O error\n' >&2
+    exit 2
+    ;;
+  esac
+done
+exec "$real_awk" "\$@"
+STUB
+  chmod +x "$stub_bin/awk"
+  d=$(case_dir preamble_read_scan_fault)
+  b=$(base_of "$d")
+  printf '\nFurther detail found later.\n' >>"$d/docs/debt/0001-valid.md"
+  run_case "preamble read faults, not a clean pass" 1 E-PREAMBLE-DIFF-SCAN "$d" \
+    BASE_SHA="$b" PATH="$stub_bin:$PATH"
+
+  # The scenario ADR 0032 calls its worst instance, pinned in the direction that matters. When
+  # canonicalise cannot read the file, both protected_shape results used to come back empty,
+  # compare equal, and send check_not_rewritten home before any anti-erasure rule ran -- so a
+  # merged record with a protected section gutted reported `Records OK.` and exit 0. Nothing
+  # else fires on this fixture, so the case fails with got=0 if the fix is removed, rather than
+  # merely missing a code on a run that was already red. Keyed on canonicalise's marker pattern.
+  stub_bin="$SCRATCH/awk-canonicalise-fault-bin"
+  mkdir -p "$stub_bin"
+  cat >"$stub_bin/awk" <<STUB
+#!/usr/bin/env bash
+for arg in "\$@"; do
+  case "\$arg" in
+  *'(target|review-by)'*)
+    printf 'awk: fixture-fault: simulated I/O error\n' >&2
+    exit 2
+    ;;
+  esac
+done
+exec "$real_awk" "\$@"
+STUB
+  chmod +x "$stub_bin/awk"
+  d=$(case_dir marker_shape_scan_fault)
+  b=$(base_of "$d")
+  sed 's/^A real concern with a body\.$/Nothing much, actually./' "$d/docs/debt/0001-valid.md" >"$d/.t" && mv "$d/.t" "$d/docs/debt/0001-valid.md"
+  run_case "shape read faults, gutted record not passed" 1 E-MARKER-SHAPE-SCAN "$d" \
+    BASE_SHA="$b" PATH="$stub_bin:$PATH"
+
+  # protected_shape's second stage, which filters the captured text rather than reading a file.
+  # ADR 0005 decision 1 would exempt it as in-memory, and it is captured anyway: an empty result
+  # here is not a false error but a false pass, so discarding the status would have moved the
+  # fail-open one stage right instead of closing it. Keyed on the filter's own program text.
+  stub_bin="$SCRATCH/awk-shape-filter-fault-bin"
+  mkdir -p "$stub_bin"
+  cat >"$stub_bin/awk" <<STUB
+#!/usr/bin/env bash
+for arg in "\$@"; do
+  case "\$arg" in
+  *in_status*)
+    printf 'awk: fixture-fault: simulated I/O error\n' >&2
+    exit 2
+    ;;
+  esac
+done
+exec "$real_awk" "\$@"
+STUB
+  chmod +x "$stub_bin/awk"
+  d=$(case_dir shape_filter_scan_fault)
+  b=$(base_of "$d")
+  sed 's/^A real concern with a body\.$/Nothing much, actually./' "$d/docs/debt/0001-valid.md" >"$d/.t" && mv "$d/.t" "$d/docs/debt/0001-valid.md"
+  run_case "shape filter faults, gutted record not passed" 1 E-MARKER-SHAPE-SCAN "$d" \
+    BASE_SHA="$b" PATH="$stub_bin:$PATH"
+
+  # The base-ref blob behind the three anti-erasure rules. `git cat-file blob ... || return 0`
+  # read an unreadable copy as an absent one, and absent is the legitimate common case -- a
+  # record the change adds has no base copy -- so the record was silently exempted from
+  # check_sections_append_only, check_headings_intact and check_preamble_intact, and the run
+  # exited 0. `git cat-file` cannot separate the two on its own (ADR 0005 decision 2), so
+  # presence is witnessed with git ls-tree first and a read that then fails is a fault.
+  #
+  # The fixture leaves the working tree exactly as committed, so no other rule fires and the
+  # pre-change run is a genuine exit 0 rather than one some other finding carried.
+  stub_bin="$SCRATCH/git-base-blob-bin"
+  mkdir -p "$stub_bin"
+  real_git=$(command -v git)
+  # Keyed on the subcommand and the ref:path argument together. The ls-tree witness that
+  # establishes the path was at the base ref must still run for real, or the fault under test
+  # would be the witness's rather than the blob read's.
+  cat >"$stub_bin/git" <<STUB
+#!/usr/bin/env bash
+if [ "\$1" = cat-file ]; then
+  for arg in "\$@"; do
+    case "\$arg" in
+    *:docs/debt/0001-valid.md)
+      printf 'fatal: fixture-fault: simulated object store error\n' >&2
+      exit 128
+      ;;
+    esac
+  done
+fi
+exec "$real_git" "\$@"
+STUB
+  chmod +x "$stub_bin/git"
+  d=$(case_dir base_blob_scan_fault)
+  b=$(base_of "$d")
+  run_case "base blob unreadable, record not exempted" 1 E-BASE-BLOB-SCAN "$d" \
+    BASE_SHA="$b" PATH="$stub_bin:$PATH"
+
+  # The same read in evaluate_base_conformance, which left base_verdict=absent: a record that
+  # could not be read at the base ref was treated as one that was not there. Both sites fault on
+  # the one stub, so this reads back the run above rather than building a second identical
+  # fixture. Its own code is what makes the assertion mean anything -- with one code shared
+  # between the sites, neutralising either conversion would leave the other still firing it and
+  # both assertions green.
+  printf '  %-4s %-44s ' "" "base conformance read faults, not absent"
+  expect_match "$d/.err" 'E-BASE-SHAPE-SCAN' \
+    'an unreadable base copy still read as absent' '::error::E-BASE-SHAPE-SCAN: '
+
+  # The base-ref copy is git's bytes now, where it used to be a command substitution's: that
+  # stripped every trailing newline and printf put exactly one back, so the base side was
+  # normalised while the tree side was read raw. Both sides are raw now, which is what makes the
+  # append-only comparison symmetric -- and it means a trailing blank line the base ref had is
+  # content like any other, so removing it from a merged record drops a line from that record's
+  # last section. The old asymmetry excused that silently; this case pins which way it goes,
+  # since nothing else in the suite has a record that merged with one.
+  d=$(case_dir trailing_blank_removed)
+  printf '\n' >>"$d/docs/debt/0001-valid.md"
+  git -C "$d" add -A
+  git -C "$d" commit -qm "a record that merged with a trailing blank line"
+  b=$(base_of "$d")
+  # Append a line and normalise the file to a single trailing newline, which is what an
+  # end-of-file fixer does to a record it has no opinion about. The append is what defeats
+  # marker_only_change: dropping the blank line alone is marker-only, because protected_shape
+  # compares command substitutions and those strip trailing newlines on both sides.
+  printf '%s\nFurther detail found later.\n' "$(cat "$d/docs/debt/0001-valid.md")" >"$d/.t"
+  mv "$d/.t" "$d/docs/debt/0001-valid.md"
+  run_case "trailing blank line dropped from a merged record" 1 E-REWRITE "$d" BASE_SHA="$b"
+
+  # The other side of the distinction, unstubbed: a record the change adds genuinely has no
+  # base blob, and that must stay silent. This case is green before the conversion and after
+  # it; what it guards is the conversion misreading absence as a fault.
+  d=$(case_dir base_blob_absent)
+  b=$(base_of "$d")
+  write_record "$d" "0002-new.md"
+  run_case "record added by the change has no base blob" 0 - "$d" BASE_SHA="$b"
+
+  d=$(case_dir resolve_in_place)
+  b=$(base_of "$d")
+  sed 's/^Open$/> **Resolved by PR #7** (2026-02-01)/' "$d/docs/debt/0001-valid.md" >"$d/.t" && mv "$d/.t" "$d/docs/debt/0001-valid.md"
+  run_case "resolving in place is allowed" 0 - "$d" BASE_SHA="$b"
+
+  # `tracked_in_index` ran `git ls-files --error-unmatch` with its status discarded, so
+  # "not tracked" and "the index could not be read" were one answer and every caller reported
+  # an ordinary negative verdict off a query that never ran. Measured on git
+  # 2.50.1: --error-unmatch exits 1 for an untracked or absent path and 128 for a fault, so its
+  # own status separates the two and no second witness is needed the way git cat-file needed
+  # one (ADR 0005 decision 2).
+  printf -- '-- an index query that could not run --\n'
+
+  # check_no_disappearances. A record sitting untouched in the tree read as gone, which skipped
+  # check_not_rewritten -- every anti-erasure rule off at once -- and then reported E-GONE, a
+  # verdict the gate had not established.
+  d=$(case_dir tracked_scan_fault)
+  b=$(base_of "$d")
+  stub_bin="$SCRATCH/git-tracked-fault-bin"
+  write_ls_files_stub "$stub_bin" docs/debt/0001-valid.md
+  run_case "index query faults, record not reported gone" 1 E-TRACKED-SCAN "$d" \
+    BASE_SHA="$b" PATH="$stub_bin:$PATH"
+  printf '  %-4s %-44s ' "" "index fault replaces E-GONE"
+  expect_no_match "$d/.err" 'E-GONE suppressed' \
+    'E-GONE also fired for a query that never ran' '::error::E-GONE: '
+
+  # renumbered_elsewhere. `tracked_in_index "$candidate" || continue` -- the literal
+  # `cmd || continue` ADR 0005's Context names -- dropped a faulted candidate out of the
+  # renumber search, so a genuinely renumbered record reported E-GONE off a search that never
+  # looked at its destination.
+  d=$(case_dir renumber_index_scan_fault)
+  write_record "$d" "0002-b.md"
+  git -C "$d" add -A
+  git -C "$d" commit -qm "two records"
+  b=$(base_of "$d")
+  git -C "$d" mv docs/debt/0002-b.md docs/debt/0003-b.md
+  stub_bin="$SCRATCH/git-renumber-index-bin"
+  write_ls_files_stub "$stub_bin" docs/debt/0003-b.md
+  run_case "renumber candidate index query faults" 1 E-RENUMBER-SCAN "$d" \
+    BASE_SHA="$b" PATH="$stub_bin:$PATH"
+  printf '  %-4s %-44s ' "" "index fault replaces E-GONE"
+  expect_no_match "$d/.err" 'E-GONE suppressed' \
+    'E-GONE also fired for a candidate never checked' '::error::E-GONE: '
+  # Three fault origins reach that one code by three different git commands, and the record
+  # named as its subject is the one file the search *did* read. Without naming what could not
+  # be read, the operator is pointed at the wrong file and a bare exit status is unattributable.
+  printf '  %-4s %-44s ' "" "the message names what could not be read"
+  expect_match "$d/.err" 'candidate index entry named' \
+    'the faulting read is not named in the message' 'could not read the index entry for docs/debt/0003-b.md, '
+
+  # The other half of that caller's decision: a fault on one candidate must not outrank a
+  # positive match on another, so it is remembered and returned only once the loop exhausts.
+  # collect_records sorts, so the faulting candidate (0002-c) is tried before the real renumber
+  # destination (0006-b) and a fix that returned 2 at the first fault would redden this case.
+  # Green before the conversion and after it; what it guards is the fix overshooting.
+  d=$(case_dir renumber_match_outranks_fault)
+  write_record "$d" "0005-b.md"
+  git -C "$d" add -A
+  git -C "$d" commit -qm "two records"
+  b=$(base_of "$d")
+  git -C "$d" mv docs/debt/0005-b.md docs/debt/0006-b.md
+  write_record "$d" "0002-c.md"
+  write_record "$d" "0003-d.md"
+  git -C "$d" add -A
+  stub_bin="$SCRATCH/git-renumber-outrank-bin"
+  mkdir -p "$stub_bin"
+  real_git=$(command -v git)
+  cat >"$stub_bin/git" <<STUB
+#!/usr/bin/env bash
+if [ "\$1" = ls-files ]; then
+  for arg in "\$@"; do
+    case \$arg in
+    docs/debt/0002-c.md | docs/debt/0003-d.md)
+      printf 'fatal: fixture-fault: simulated index read error\n' >&2
+      exit 128
+      ;;
+    esac
+  done
+fi
+exec "$real_git" "\$@"
+STUB
+  chmod +x "$stub_bin/git"
+  run_case "a real renumber outranks a candidate fault" 0 - "$d" \
+    BASE_SHA="$b" PATH="$stub_bin:$PATH"
+  printf '  %-4s %-44s ' "" "the outranked fault is reported"
+  expect_match "$d/.err" 'exit=0 W-RENUMBER-SCAN' \
+    'the incomplete renumber search was silent' '::warning::W-RENUMBER-SCAN: '
+  printf '  %-4s %-44s ' "" "the last candidate fault is retained"
+  expect_match "$d/.err" 'last fault path and status named' \
+    'the warning did not name the last candidate fault' \
+    'could not read the index entry for docs/debt/0003-d.md, exit 128'
+  printf '  %-4s %-44s ' "" "the positive renumber action survives"
+  expect_match "$d/.out" 'renumber destination still reported' \
+    'the positive renumber result was lost' \
+    'note: docs/debt/0005-b.md was renumbered to docs/debt/0006-b.md'
+
+  # check_gate_files, on the gate file itself. A gate file present and tracked read as removed,
+  # which reported E-GATE-GONE -- the gate accusing the change of deleting a file that is
+  # sitting there, off an index query that never ran.
+  d=$(case_dir gate_tracked_scan_fault)
+  b=$(base_of "$d")
+  stub_bin="$SCRATCH/git-gate-tracked-bin"
+  write_ls_files_stub "$stub_bin" .github/scripts/check-records.sh
+  run_case "gate file index query faults" 1 E-GATE-TRACKED-SCAN "$d" \
+    BASE_SHA="$b" PATH="$stub_bin:$PATH"
+  printf '  %-4s %-44s ' "" "index fault replaces E-GATE-GONE"
+  expect_no_match "$d/.err" 'E-GATE-GONE suppressed' \
+    'E-GATE-GONE also fired for a query that never ran' '::error::E-GATE-GONE: '
+
+  # check_gate_files, on a declared rename's successor. The exemption turns on the successor
+  # being really tracked; a faulted query read as "not tracked" and reported E-GATE-GONE for a
+  # rename the gate could not verify either way. Run by hand rather than through run_case: the
+  # checker has been renamed, so it is no longer at the path run_case invokes.
+  d=$(case_dir gate_successor_scan_fault)
+  b=$(base_of "$d")
+  git -C "$d" mv .github/scripts/check-records.sh .github/scripts/check-gate.sh
+  ins="check-records.sh	check-gate.sh"
+  awk -v ins="$ins" '
+    /^GATE_PREDECESSORS="/ && !seen {
+      print "GATE_PREDECESSORS=\"" ins
+      sub(/^GATE_PREDECESSORS="/, "")
+      seen = 1
+    }
+    { print }
+  ' "$d/.github/scripts/check-gate.sh" >"$d/.chk"
+  mv "$d/.chk" "$d/.github/scripts/check-gate.sh"
+  chmod +x "$d/.github/scripts/check-gate.sh"
+  git -C "$d" add -A
+  stub_bin="$SCRATCH/git-gate-successor-bin"
+  write_ls_files_stub "$stub_bin" .github/scripts/check-gate.sh
+  printf '  %-4s %-44s ' "" "rename successor index query faults"
+  if (cd "$d" && env -u GITHUB_ACTIONS RECORD_PROFILES=debt BASE_SHA="$b" \
+    PATH="$stub_bin:$PATH" ./.github/scripts/check-gate.sh) >"$d/.o" 2>"$d/.e"; then
+    failed=$((failed + 1))
+    printf 'FAIL passed with an unverified rename\n'
+  else
+    verdict=""
+    scan_into_verdict no-successor-scan-code "$d/.e" '::error::E-GATE-SUCCESSOR-SCAN: '
+    scan=0
+    grep -q '::error::E-GATE-GONE: ' "$d/.e" || scan=$?
+    case $scan in
+    0) verdict="$verdict e-gate-gone-also-fired" ;;
+    1) ;;
+    *) verdict="$verdict scan-fault($d/.e exit $scan)" ;;
+    esac
+    if [ -z "$verdict" ]; then
+      passed=$((passed + 1))
+      printf 'ok   exit=1 E-GATE-SUCCESSOR-SCAN\n'
+    else
+      failed=$((failed + 1))
+      printf 'FAIL%s (first error: %s)\n' "$verdict" \
+        "$(sed -n 's/^::error:://p' "$d/.e" | head -1)"
+    fi
+  fi
+
+  # The gate's own location. Reaching the repo through a symlink used to switch
+  # self-protection off silently, because git reports a physical path and the script
+  # captured a logical one.
+  printf -- '-- the gate can locate itself --\n'
+  d=$(case_dir via_symlink)
+  # The fixture only tracks the checker, so the suite has to be committed before it can be
+  # removed — removal is what E-GATE-GONE is meant to catch here.
+  cp "$SCRIPT_DIR/check-records-test.sh" "$d/.github/scripts/check-records-test.sh"
+  git -C "$d" add -A
+  git -C "$d" commit -qm "track the suite"
+  b=$(base_of "$d")
+  git -C "$d" rm -q .github/scripts/check-records-test.sh
+  cp "$SCRIPT_DIR/check-records-test.sh" "$d/.github/scripts/check-records-test.sh"
+  ln -sfn "$d" "$SCRATCH/link-to-via_symlink"
+  printf '  %-4s %-44s ' "" "repo reached through a symlink"
+  if (cd "$SCRATCH/link-to-via_symlink" && env -u GITHUB_ACTIONS RECORD_PROFILES=debt BASE_SHA="$b" ./.github/scripts/check-records.sh) >"$d/.o" 2>"$d/.e"; then
+    failed=$((failed + 1))
+    printf 'FAIL self-protection was off through the symlink\n'
+  else
+    expect_error_code "$d/.e" E-GATE-GONE
+  fi
+
+  printf -- '-- degraded paths must fail, not pass --\n'
+  # These three reach branches that would otherwise be unfalsifiable: a mutation sweep
+  # left each of them alive because nothing exercised them, which is indistinguishable
+  # from shipping a guarantee the code does not provide.
+  d="$SCRATCH/not_a_repo"
+  mkdir -p "$d/docs/debt" "$d/.github/scripts"
+  cp "$CHECKER" "$d/.github/scripts/check-records.sh"
+  mkdir -p "$d/.github/scripts/profiles"
+  cp "$SCRIPT_DIR/profiles/debt.sh" "$d/.github/scripts/profiles/"
+  run_case "run outside any git repository" 1 E-ROOT-UNRESOLVED "$d" BASE_SHA=
+  # The probe's own line, kept rather than sent to /dev/null. Asserted as "a line the gate
+  # did not write" instead of against git's wording, which is git's to change.
+  printf '  %-4s %-44s ' "" "git's line survives the root probe"
+  expect_match "$d/.err" "git's diagnostic reached the operator" \
+    "git's diagnostic was discarded" -v '^::'
+
+  # The reason the diagnostic no longer names a cause: `--show-toplevel` fails from inside a
+  # perfectly ordinary repository too, and this is the shape whose discarded line was the one
+  # that mattered — it carries the exact `safe.directory` remedy and nothing else does.
+  # GIT_TEST_ASSUME_DIFFERENT_OWNER is git's own switch for it; a build that does not honour
+  # it leaves the fixture a working repository, which would redden this case for a reason that
+  # is not the gate's, so the case probes for the refusal first and skips when it is absent.
+  #
+  # The switch alone does not stage the refusal. `safe.directory` is honoured in protected
+  # configuration, so an entry covering this fixture — `*` in a global or system config file,
+  # which is what a CI runner image ships — leaves git trusting the repository and the switch
+  # with nothing to do: the probe succeeds and the case skips having proved nothing, wherever
+  # that config is in scope. The clearing at the top of this suite covers GIT_CONFIG,
+  # GIT_CONFIG_PARAMETERS and GIT_CONFIG_COUNT but not the global and system config files, and
+  # the two variables below are how git is told to read neither (documented since 2.32;
+  # /dev/null is git's own spelling for "no such file"). Measured on git 2.50.1 with a
+  # permissive global config in scope: the probe exits 0 without them and 128 with them.
+  #
+  # Probe and case share one list so they can never stage different conditions — a probe that
+  # measured a condition the case did not reproduce is how this skipped everywhere while
+  # reading as deliberate.
+  ownership_env=(
+    GIT_CONFIG_GLOBAL=/dev/null
+    GIT_CONFIG_SYSTEM=/dev/null
+    GIT_TEST_ASSUME_DIFFERENT_OWNER=1
+  )
+
+  # All the probe establishes is that git did not refuse — never why, so the skip reports that
+  # condition and no cause. Two conditions produce it and they call for opposite responses: a
+  # build that ignores the switch, where there is nothing to stage and nothing to fix, and a
+  # `safe.directory` entry still covering the fixture despite the two variables above, where
+  # the case is being neutralized and the entry is the thing to remove. A git older than 2.32
+  # reaches the second by honouring neither variable. What separates them is the entries in
+  # scope, so the skip names them: none listed leaves the switch as the only explanation left
+  # standing, and an entry listed names the file that did the neutralizing. Measured on macOS
+  # 26.6.1 with git 2.50.1 (Apple Git-155) wrapped to drop both variables and a permissive `*`
+  # in the global config: the probe exits 0 and this reports that config file, where isolated
+  # real git exits 128 and the case runs.
+  ownership_safe_directories() { # repo -> the entries in scope under ownership_env
+    local repo=$1 entries status=0
+    entries=$(cd "$repo" && env "${ownership_env[@]}" \
+      git config --show-origin --get-all safe.directory) || status=$?
+    # 1 is git's "no such key", the ordinary answer. Anything above it is a query that never
+    # ran, which must not read as an empty list (ADR 0005).
+    case $status in
+    0) printf '%s' "${entries//$'\n'/; }" ;;
+    1) printf 'none' ;;
+    *) printf 'unknown, git config exited %d' "$status" ;;
+    esac
+  }
+
+  d=$(case_dir dubious_ownership)
+  if (cd "$d" && env "${ownership_env[@]}" git rev-parse --show-toplevel) \
+    >/dev/null 2>&1; then
+    printf '  skip %-44s git did not refuse the fixture; safe.directory in scope: %s\n' \
+      "root probe fails inside a repository" "$(ownership_safe_directories "$d")"
+  else
+    run_case "root probe fails inside a repository" 1 E-ROOT-UNRESOLVED "$d" \
+      BASE_SHA= "${ownership_env[@]}"
+    printf '  %-4s %-44s ' "" "the safe.directory remedy survives"
+    expect_match "$d/.err" "remedy line reached the operator" \
+      "remedy line was discarded" -F 'safe.directory'
+  fi
+
+  # chmod 000 does not stop root, so this case would fail in a container running as root —
+  # a spurious red gate for an adopter, not a defect in the checker. Skip it there and say
+  # so, rather than asserting something the environment cannot produce.
+  if [ "$(id -u)" -eq 0 ]; then
+    printf '  skip %-44s running as root; chmod 000 does not deny access\n' "record directory unreadable"
+  else
+    d=$(case_dir unreadable_dir)
+    b=$(base_of "$d")
+    chmod 000 "$d/docs/debt"
+    run_case "record directory unreadable" 1 E-ENUM "$d" BASE_SHA="$b"
+    chmod 755 "$d/docs/debt"
+  fi
+
+  # grep exits 1 for "no match" and 2 or more for a fault it hit while scanning -- an
+  # unreadable file, a bad encoding. check_sections used to fold that fault into "no match",
+  # reporting a spurious E-SECTION-MISSING instead of naming the scan that never completed.
+  # A record made unreadable in place drives it through the same grep call the checker makes
+  # on the working tree, on the same skip guard as the case above.
+  #
+  # The same fixture reaches the conversion that mattered most in ADR 0032: canonicalise's awk
+  # cannot open the file either, so marker_only_change can no longer say whether the change is
+  # marker-only and reports E-MARKER-SHAPE-SCAN. Both protected_shape results used to come back empty,
+  # compare equal, and turn all three anti-erasure rules off at once on a run that exited 0.
+  if [ "$(id -u)" -eq 0 ]; then
+    printf '  skip %-44s running as root; chmod 000 does not deny access\n' "record unreadable (section scan)"
+    printf '  skip %-44s running as root; chmod 000 does not deny access\n' "record unreadable (protected shape scan)"
+  else
+    d=$(case_dir unreadable_record)
+    b=$(base_of "$d")
+    chmod 000 "$d/docs/debt/0001-valid.md"
+    run_case "record unreadable (section scan)" 1 E-SECTION-SCAN "$d" BASE_SHA="$b"
+    run_case "record unreadable (protected shape scan)" 1 E-MARKER-SHAPE-SCAN "$d" BASE_SHA="$b"
+    chmod 644 "$d/docs/debt/0001-valid.md"
+  fi
+
+  # The section_body reads ADR 0032 lifted out of their pipelines. An unreadable file cannot
+  # reach them -- check_sections' grep faults first and reports E-SECTION-SCAN -- so these need
+  # a fault that hits awk while grep still works. section_body is the only awk in either script
+  # invoked with `-v want=`, so a stub keyed on that argument faults exactly the reads under
+  # test and leaves canonicalise, preamble and protected_shape's filter alone.
+  #
+  # Each of these codes used to be a false verdict about a section that was never read:
+  # E-SECTION-EMPTY for the body, E-STATUS for the status word, E-TARGET-MISSING for a target
+  # line nothing looked for, E-REVIEWBY-MISSING for a date on an unread Status section.
+  d=$(case_dir section_body_scan_fault)
+  b=$(base_of "$d")
+  stub_bin="$SCRATCH/awk-section-fault-bin"
+  mkdir -p "$stub_bin"
+  real_awk=$(command -v awk)
+  cat >"$stub_bin/awk" <<STUB
+#!/usr/bin/env bash
+for arg in "\$@"; do
+  case "\$arg" in
+  want=*)
+    printf 'awk: fixture-fault: simulated I/O error\n' >&2
+    exit 2
+    ;;
+  esac
+done
+exec "$real_awk" "\$@"
+STUB
+  chmod +x "$stub_bin/awk"
+  saved_path=$PATH
+  PATH="$stub_bin:$PATH"
+  run_case "section body read faults, not empty" 1 E-SECTION-BODY-SCAN "$d" BASE_SHA="$b"
+  run_case "status read faults, no spurious E-STATUS" 1 E-STATUS-SCAN "$d" BASE_SHA="$b"
+  run_case "target read faults, no spurious missing" 1 E-TARGET-SCAN "$d" BASE_SHA="$b"
+  run_case "review-by read faults, no spurious missing" 1 E-REVIEWBY-SCAN "$d" BASE_SHA="$b"
+  PATH=$saved_path
+
+  # check_headings_intact's own scan fault needs a readable record, now that an unreadable one
+  # stops at E-MARKER-SHAPE-SCAN before the three anti-erasure rules run. A grep stub that faults only
+  # on the H1 lookup reaches it: check_headings_intact is the only rule that greps for the H1
+  # line, so check_sections -- which greps only the `## ` headings -- is left alone, and the
+  # gutted body keeps the change from being marker-only so the rule is reached at all.
+  d=$(case_dir heading_scan_fault)
+  b=$(base_of "$d")
+  sed 's/^A real concern with a body\.$/Nothing much, actually./' "$d/docs/debt/0001-valid.md" >"$d/.t" && mv "$d/.t" "$d/docs/debt/0001-valid.md"
+  stub_bin="$SCRATCH/grep-heading-fault-bin"
+  mkdir -p "$stub_bin"
+  real_grep=$(command -v grep)
+  cat >"$stub_bin/grep" <<STUB
+#!/usr/bin/env bash
+for arg in "\$@"; do
+  if [ "\$arg" = "# 0001 — test record" ]; then
+    printf 'grep: fixture-fault: simulated I/O error\n' >&2
+    exit 2
+  fi
+done
+exec "$real_grep" "\$@"
+STUB
+  chmod +x "$stub_bin/grep"
+  saved_path=$PATH
+  PATH="$stub_bin:$PATH"
+  run_case "heading scan faults, no spurious rewrite" 1 E-HEADING-SCAN "$d" BASE_SHA="$b"
+  PATH=$saved_path
+
+  # The same fault, once per profile rather than once per record: profile_check_directory's
+  # grep over the ADR index README used to fold a scan fault into "no numbered rows", so
+  # W-INDEX-TABLE would silently go unreported on a scan that never completed.
+  if [ "$(id -u)" -eq 0 ]; then
+    printf '  skip %-44s running as root; chmod 000 does not deny access\n' "ADR README unreadable (index scan)"
+  else
+    d=$(adr_dir index_scan_unreadable)
+    b=$(base_of "$d")
+    chmod 000 "$d/docs/adr/README.md"
+    run_case "ADR README unreadable (index scan)" 1 E-INDEX-SCAN "$d" BASE_SHA="$b" RECORD_PROFILES=adr
+    chmod 644 "$d/docs/adr/README.md"
+  fi
+
+  d=$(case_dir corrupt_base_tree)
+  b=$(base_of "$d")
+  # Delete the tree objects the base commit needs, so git ls-tree fails on a ref that
+  # rev-parse still resolves — a damaged or partial object store, not a bad ref.
+  while IFS= read -r obj; do
+    sha="$(basename "$(dirname "$obj")")$(basename "$obj")"
+    if [ "$(git -C "$d" cat-file -t "$sha" 2>/dev/null)" = tree ]; then
+      rm -f "$obj"
+    fi
+  done < <(find "$d/.git/objects" -type f)
+  run_case "base tree unreadable" 1 E-BASE-TREE "$d" BASE_SHA="$b"
+
+  d=$(case_dir outside_tree)
+  b=$(base_of "$d")
+  mkdir -p "$SCRATCH/loose"
+  cp "$SCRIPT_DIR/check-records.sh" "$SCRATCH/loose/check-records.sh"
+  mkdir -p "$SCRATCH/loose/profiles"
+  cp "$SCRIPT_DIR/profiles/debt.sh" "$SCRATCH/loose/profiles/"
+  chmod +x "$SCRATCH/loose/check-records.sh"
+  printf '  %-4s %-44s ' "" "checker run from outside the repo"
+  if (cd "$d" && env -u GITHUB_ACTIONS RECORD_PROFILES=debt BASE_SHA="$b" "$SCRATCH/loose/check-records.sh") \
+    >"$d/.o" 2>"$d/.e"; then
+    failed=$((failed + 1))
+    printf 'FAIL passed with self-protection off\n'
+  else
+    expect_error_code "$d/.e" E-GATE-UNLOCATABLE
+  fi
+
+  d=$(case_dir bad_base)
+  run_case "BASE_SHA is not a commit" 1 E-BASE-REF "$d" BASE_SHA=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef
+
+  # run_case can only assert a code is present, never that another is absent. A bad ref used
+  # to be retried inside every profile's check_no_disappearances, which reported the same
+  # rejection again as E-BASE-TREE (plus git's raw `fatal:` line on stderr) instead of once
+  # as E-BASE-REF. Bespoke, in the style of outside_tree/via_symlink below.
+  d=$(case_dir bad_base_single_code)
+  printf '  %-4s %-44s ' "" "invalid BASE_SHA reports exactly one code"
+  if (cd "$d" && env -u GITHUB_ACTIONS RECORD_PROFILES=debt \
+    BASE_SHA=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef ./.github/scripts/check-records.sh) \
+    >"$d/.out" 2>"$d/.err"; then
+    failed=$((failed + 1))
+    printf 'FAIL passed with a bad BASE_SHA\n'
+  else
+    verdict=""
+    scan_into_verdict e-base-ref-never-fired "$d/.err" '::error::E-BASE-REF: '
+    scan=0
+    grep -q '::error::E-BASE-TREE: ' "$d/.err" || scan=$?
+    case $scan in
+    0) verdict="$verdict e-base-tree-also-fired" ;;
+    1) ;;
+    *) verdict="$verdict scan-fault($d/.err exit $scan)" ;;
+    esac
+    scan=0
+    grep -q '^fatal:' "$d/.err" || scan=$?
+    case $scan in
+    0) verdict="$verdict raw-git-stderr-leaked" ;;
+    1) ;;
+    *) verdict="$verdict scan-fault($d/.err exit $scan)" ;;
+    esac
+    if [ -z "$verdict" ]; then
+      passed=$((passed + 1))
+      printf 'ok   exit=1 E-BASE-REF only\n'
+    else
+      failed=$((failed + 1))
+      printf 'FAIL%s (first error: %s; first fatal: %s)\n' "$verdict" \
+        "$(sed -n 's/^::error:://p' "$d/.err" | head -1)" \
+        "$(sed -n '/^fatal:/p' "$d/.err" | head -1)"
+    fi
+  fi
+
+  d=$(case_dir empty_base_ci)
+  run_case "empty BASE_SHA in CI" 1 E-BASE-EMPTY-CI "$d" BASE_SHA= GITHUB_ACTIONS=true
+
+  d=$(case_dir empty_base_local)
+  run_case "empty BASE_SHA locally" 0 - "$d" BASE_SHA=
+
+  d=$(case_dir no_dir)
+  b=$(base_of "$d")
+  git -C "$d" rm -qr docs/debt
+  run_case "directory removed entirely" 1 E-GONE "$d" BASE_SHA="$b"
+
+  d=$(case_dir subdir_invocation)
+  b=$(base_of "$d")
+  mkdir -p "$d/docs/sub"
+  printf '  ok   %-44s ' "run from a subdirectory"
+  # scan starts at 1 -- "did not validate" -- so a checker that exited non-zero takes the
+  # same arm it always did without the scan running at all.
+  scan=1
+  if (cd "$d/docs/sub" && env -u GITHUB_ACTIONS RECORD_PROFILES=debt BASE_SHA="$b" ../../.github/scripts/check-records.sh) >"$d/.out" 2>"$d/.err"; then
+    scan=0
+    grep -q 'Checking 1 deferral record' "$d/.out" || scan=$?
+  fi
+  case $scan in
+  0)
+    passed=$((passed + 1))
+    printf 'exit=0 validated from docs/sub\n'
+    ;;
+  1)
+    failed=$((failed + 1))
+    printf '\n  FAIL run from a subdirectory did not validate records\n'
+    if [ -r "$d/.err" ]; then
+      head -3 "$d/.err" | sed 's/^/         /'
+    fi
+    ;;
+  *)
+    failed=$((failed + 1))
+    printf '\n  FAIL could not scan %s (grep exit %s)\n' "$d/.out" "$scan"
+    ;;
+  esac
+
+  d=$(case_dir no_records_no_base)
+  git -C "$d" rm -q docs/debt/0001-valid.md
+  git -C "$d" commit -qm "no records"
+  run_case "genuinely empty repo, no base" 0 - "$d" BASE_SHA=
+
+  printf -- '-- profile selection --\n'
+  d=$(case_dir no_profiles)
+  b=$(base_of "$d")
+  run_case "RECORD_PROFILES unset" 1 E-PROFILE-NONE "$d" BASE_SHA="$b" RECORD_PROFILES=
+
+  d=$(case_dir unknown_profile)
+  b=$(base_of "$d")
+  run_case "unknown profile name" 1 E-PROFILE-UNKNOWN "$d" BASE_SHA="$b" RECORD_PROFILES=nope
+
+  # Named for what the fixture does, not for the directory's whole history: case_dir
+  # commits docs/debt with a record first, so it did exist at some point — just not at
+  # $b2, the base ref this case actually uses.
+  d=$(case_dir dir_removed_before_base)
+  b=$(base_of "$d")
+  git -C "$d" rm -qr docs/debt
+  git -C "$d" commit -qm "drop records"
+  b2=$(base_of "$d")
+  run_case "record directory absent at both refs" 1 E-PROFILE-DIR-MISSING "$d" \
+    BASE_SHA="$b2" RECORD_PROFILES=debt
+
+  # The same question asked of a base ref that cannot be read. dir_in_ref used to test only
+  # whether `git ls-tree` printed anything, discarding its status, so a scan that never ran
+  # was indistinguishable from a directory that was never there -- and the run reported
+  # E-PROFILE-DIR-MISSING, naming the wrong cause. The directory is removed from the working
+  # tree only, uncommitted: the tree check short-circuits ahead of the witness, so a fixture
+  # that leaves it in place never reaches the code under test.
+  d=$(case_dir dir_scan_fault)
+  b=$(base_of "$d")
+  rm -r "$d/docs/debt"
+  stub_bin="$SCRATCH/git-dir-fault-bin"
+  mkdir -p "$stub_bin"
+  real_git=$(command -v git)
+  cat >"$stub_bin/git" <<STUB
+#!/usr/bin/env bash
+# Keyed on subcommand and pathspec together: three sites in this gate issue an ls-tree, and a
+# stub keyed on the subcommand alone fires at whichever runs first.
+if [ "\$1" = ls-tree ]; then
+  for arg in "\$@"; do
+    if [ "\$arg" = docs/debt ]; then
+      printf 'fatal: fixture-fault: simulated object store error\n' >&2
+      exit 128
+    fi
+  done
+fi
+exec "$real_git" "\$@"
+STUB
+  chmod +x "$stub_bin/git"
+  run_case "record dir witness faults, not reported absent" 1 E-DIR-SCAN "$d" \
+    BASE_SHA="$b" RECORD_PROFILES=debt PATH="$stub_bin:$PATH"
+
+  printf -- '-- grandfathering --\n'
+  # Non-conforming at the base ref, so its structural findings are warnings and the run is
+  # green. A bulleted `- target:` is the legacy shape the migrator exists to fix, and
+  # E-TARGET-MISSING is blob-local, which is what makes the record non-conforming.
+  d=$(case_dir legacy_shape)
+  sed 's/^target: /- target: /' "$d/docs/debt/0001-valid.md" >"$d/.rec"
+  mv "$d/.rec" "$d/docs/debt/0001-valid.md"
+  git -C "$d" commit -aqm "legacy shape"
+  b=$(base_of "$d")
+  run_case "legacy record downgrades to a warning" 0 W-LEGACY-SHAPE "$d" BASE_SHA="$b"
+
+  # A scan fault describes the scan, not the grandfathered record, so it must stay at full
+  # severity after the base pass selects downgrade mode. Fault only the working-tree path:
+  # the base pass reads a temporary copy and still has to establish the record's legacy shape.
+  d=$(case_dir legacy_section_scan_fault)
+  sed 's/^target: /- target: /' "$d/docs/debt/0001-valid.md" >"$d/.rec"
+  mv "$d/.rec" "$d/docs/debt/0001-valid.md"
+  git -C "$d" commit -aqm "legacy shape"
+  b=$(base_of "$d")
+  stub_bin="$SCRATCH/grep-legacy-section-fault-bin"
+  mkdir -p "$stub_bin"
+  real_grep=$(command -v grep)
+  cat >"$stub_bin/grep" <<STUB
+#!/usr/bin/env bash
+if [ "\$1" = -qxF ] && [ "\$2" = "## Status" ] &&
+  [ "\$3" = docs/debt/0001-valid.md ]; then
+  printf 'grep: fixture-fault: required-section scan failed\n' >&2
+  exit 2
+fi
+exec "$real_grep" "\$@"
+STUB
+  chmod +x "$stub_bin/grep"
+  run_case "legacy record section scan fault stays an error" 1 E-SECTION-SCAN "$d" \
+    BASE_SHA="$b" PATH="$stub_bin:$PATH"
+  printf '  %-4s %-44s ' "" "scan fault is not relabelled as legacy shape"
+  scan=0
+  grep -qF '(E-SECTION-SCAN)' "$d/.err" || scan=$?
+  case $scan in
+  0)
+    failed=$((failed + 1))
+    printf 'FAIL E-SECTION-SCAN was relabelled W-LEGACY-SHAPE\n'
+    ;;
+  1)
+    passed=$((passed + 1))
+    printf 'ok   full-severity code retained\n'
+    ;;
+  *)
+    failed=$((failed + 1))
+    printf 'FAIL could not scan %s (grep exit %d)\n' "$d/.err" "$scan"
+    ;;
+  esac
+
+  # A banner-only edit to a legacy record: the one edit the convention permits, on a record
+  # that can never reach conformance. This is the deadlock grandfathering exists to break —
+  # under a "structure is checked on records the change touches" rule it would demand full
+  # conformance, which immutability forbids reaching.
+  d=$(case_dir grandfathered_edit)
+  sed 's/^target: /- target: /' "$d/docs/debt/0001-valid.md" >"$d/.rec"
+  mv "$d/.rec" "$d/docs/debt/0001-valid.md"
+  git -C "$d" commit -aqm "legacy shape"
+  b=$(base_of "$d")
+  sed 's/^Open$/> **Resolved by the follow-up change** (2026-01-01)/' \
+    "$d/docs/debt/0001-valid.md" >"$d/.rec"
+  mv "$d/.rec" "$d/docs/debt/0001-valid.md"
+  run_case "banner-only edit to a legacy record" 0 W-LEGACY-SHAPE "$d" BASE_SHA="$b"
+
+  # The verdict is recomputed every run, so a record migrated into conformance is
+  # error-checked from the following run onward — no flag, no registry.
+  d=$(case_dir migrated_then_checked)
+  sed 's/^target: /- target: /' "$d/docs/debt/0001-valid.md" >"$d/.rec"
+  mv "$d/.rec" "$d/docs/debt/0001-valid.md"
+  git -C "$d" commit -aqm "legacy shape"
+  sed 's/^- target: /target: /' "$d/docs/debt/0001-valid.md" >"$d/.rec"
+  mv "$d/.rec" "$d/docs/debt/0001-valid.md"
+  git -C "$d" commit -aqm "migrate the marker"
+  b=$(base_of "$d")
+  sed 's/^Open$/> **Resolved by a** (2026-01-01)\
+> **Resolved by b** (2026-01-01)/' "$d/docs/debt/0001-valid.md" >"$d/.rec"
+  mv "$d/.rec" "$d/docs/debt/0001-valid.md"
+  run_case "migrated record is error-checked next run" 1 E-BANNER-COUNT "$d" BASE_SHA="$b"
+
+  # W-ORPHAN-TARGET resolves a path against the worktree, so it is not blob-local, not part
+  # of conformance, and must report as itself on a grandfathered record rather than being
+  # relabelled. The invalid status is what grandfathers the record; exit 0 proves it was
+  # downgraded, and the asserted code proves the orphan warning was not.
+  d=$(case_dir legacy_orphan Pending does/not/exist)
+  b=$(base_of "$d")
+  run_case "orphan target keeps full severity on a legacy record" 0 W-ORPHAN-TARGET "$d" \
+    BASE_SHA="$b"
+
+  # W-LEGACY-SHAPE has no call site: it is a relabelling branch in each of `err` and `warn`,
+  # and every downgradable finding the cases above produce is error-level, so only the `err`
+  # branch was ever reached. A grandfathered record whose review-by has passed is the `warn`
+  # branch's own case. Bespoke, because run_case asserts that a code is present and both
+  # branches emit the same one — what distinguishes them is the original code in parentheses.
+  d=$(case_dir legacy_stale_reviewby Open docs/debt "2020-01-01")
+  sed 's/^target: /- target: /' "$d/docs/debt/0001-valid.md" >"$d/.rec"
+  mv "$d/.rec" "$d/docs/debt/0001-valid.md"
+  git -C "$d" commit -aqm "legacy shape with a passed review date"
+  b=$(base_of "$d")
+  printf '  %-4s %-44s ' "" "a warning downgrades on a legacy record"
+  if (cd "$d" && env -u GITHUB_ACTIONS RECORD_PROFILES=debt BASE_SHA="$b" \
+    ./.github/scripts/check-records.sh) >"$d/.out" 2>"$d/.err"; then
+    verdict=""
+    scan_into_verdict not-relabelled "$d/.err" \
+      '::warning::W-LEGACY-SHAPE: .*(W-REVIEWBY-STALE)$'
+    scan=0
+    grep -q '::warning::W-REVIEWBY-STALE' "$d/.err" || scan=$?
+    case $scan in
+    0) verdict="$verdict reported-as-itself" ;;
+    1) ;;
+    *) verdict="$verdict scan-fault($d/.err exit $scan)" ;;
+    esac
+    if [ -z "$verdict" ]; then
+      passed=$((passed + 1))
+      printf 'ok   exit=0 relabelled, not reported as itself\n'
+    else
+      failed=$((failed + 1))
+      printf 'FAIL W-REVIEWBY-STALE was not relabelled W-LEGACY-SHAPE:%s\n' "$verdict"
+    fi
+  else
+    failed=$((failed + 1))
+    printf 'FAIL %s\n' "$(sed -n 's/^::error:://p' "$d/.err" | head -1)"
+  fi
+
+  # Determining conformance needs a temp file for the base-ref blob. A degraded path is
+  # fatal here rather than silently skipping the base pass, which would grandfather nothing
+  # and quietly error-check everything — or, worse, the reverse.
+  #
+  # Forcing that path needs a stub `mktemp` on PATH rather than an invalid TMPDIR: on macOS,
+  # a bare `mktemp` consults _CS_DARWIN_USER_TEMP_DIR before TMPDIR, so an unwritable or
+  # nonexistent TMPDIR is silently ignored and the real mktemp still succeeds — only on Linux
+  # would that technique have forced the failure this case exists to test. A PATH-shadowed
+  # mktemp that always fails forces the same E-TMPFILE path on both.
+  d=$(case_dir no_tmpdir)
+  b=$(base_of "$d")
+  mkdir -p "$d.bin"
+  cat >"$d.bin/mktemp" <<'STUB'
+#!/bin/sh
+echo "mktemp: stub failure (check-records-test.sh forcing E-TMPFILE)" >&2
+exit 1
+STUB
+  chmod +x "$d.bin/mktemp"
+  run_case "temp file unavailable" 1 E-TMPFILE "$d" BASE_SHA="$b" PATH="$d.bin:$PATH"
+  # Two sites report E-TMPFILE on this run, so the code alone does not say which failed.
+  # check_not_rewritten used to open `tmp=$(mktemp) || return 0` -- a silent fail-open that
+  # skipped all three anti-erasure rules on a run that carried no finding for them. The phrase
+  # names that branch specifically; without it this case passes with the fail-open restored.
+  printf '  %-4s %-44s ' "" "the silently-skipped rules are named"
+  if grep -q 'E-TMPFILE: .*append-only rules did not run' "$d/.err"; then
+    passed=$((passed + 1))
+    printf 'ok   check_not_rewritten reported its own failure\n'
+  else
+    failed=$((failed + 1))
+    printf 'FAIL a failed mktemp still skipped the anti-erasure rules silently\n'
+  fi
+
+  # The E-TMPFILE branches inside check_sections_append_only and check_preamble_intact, which
+  # the always-failing stub above cannot reach: check_not_rewritten returns before them. A
+  # counting stub that succeeds once and fails afterwards gets past that first call, and the
+  # appended line keeps the record from being marker-only so the rules run at all.
+  d=$(case_dir tmpfile_late)
+  b=$(base_of "$d")
+  printf '\nFurther detail found later.\n' >>"$d/docs/debt/0001-valid.md"
+  mkdir -p "$d.bin"
+  real_mktemp=$(command -v mktemp)
+  cat >"$d.bin/mktemp" <<STUB
+#!/usr/bin/env bash
+count_file="\${TMPDIR:-/tmp}/check-records-test-mktemp-count"
+n=0
+[ -f "\$count_file" ] && n=\$(cat "\$count_file")
+n=\$((n + 1))
+printf '%s' "\$n" >"\$count_file"
+if [ "\$n" -gt 1 ]; then
+  echo "mktemp: stub failure (check-records-test.sh forcing a late E-TMPFILE)" >&2
+  exit 1
+fi
+exec "$real_mktemp" "\$@"
+STUB
+  chmod +x "$d.bin/mktemp"
+  rm -f "${TMPDIR:-/tmp}/check-records-test-mktemp-count"
+  run_case "temp file unavailable later in the run" 1 E-TMPFILE "$d" BASE_SHA="$b" PATH="$d.bin:$PATH"
+  printf '  %-4s %-44s ' "" "the per-section comparison names itself"
+  if grep -q "E-TMPFILE: .*temp file to compare '## " "$d/.err"; then
+    passed=$((passed + 1))
+    printf 'ok   the append-only comparison reported its own failure\n'
+  else
+    failed=$((failed + 1))
+    printf 'FAIL a section comparison was skipped without a finding\n'
+  fi
+  rm -f "${TMPDIR:-/tmp}/check-records-test-mktemp-count"
+
+  # The same forced failure, pinned at the anti-erasure pass instead of the base pass. Two things
+  # are needed for the case to discriminate, and run_case's two assertions are why.
+  #
+  # A code of its own, because run_case asserts on the code alone and the base pass fires
+  # E-TMPFILE over every record: a case asserting a bare E-TMPFILE here would stay green with
+  # check_not_rewritten's fail-open restored, which is the blindness the case exists to detect.
+  #
+  # And a stub that fails once rather than always, keyed by count the way write_ls_files_stub is
+  # keyed by path. run_case's other assertion is the exit status, and a stub failing every call
+  # lets evaluate_base_conformance's E-TMPFILE supply that exit on its own — leaving the case
+  # pinning only that a string reached stderr, not that this site fails the run. run_profile calls
+  # check_no_disappearances before the record loop, so check_not_rewritten reaches mktemp first
+  # and one failure lands exactly there; the rest of the run gets the real binary. Exit 1 is then
+  # attributable to this report alone, and demoting it to warn_full reddens the case.
+  d=$(case_dir rewrite_no_tmpdir)
+  b=$(base_of "$d")
+  mkdir -p "$d.bin"
+  real_mktemp=$(command -v mktemp)
+  cat >"$d.bin/mktemp" <<STUB
+#!/bin/sh
+if [ ! -e "$d.bin/.mktemp-spent" ]; then
+  : >"$d.bin/.mktemp-spent"
+  echo "mktemp: stub failure (check-records-test.sh forcing E-REWRITE-TMPFILE)" >&2
+  exit 1
+fi
+exec "$real_mktemp" "\$@"
+STUB
+  chmod +x "$d.bin/mktemp"
+  run_case "temp file unavailable for the anti-erasure rules" 1 E-REWRITE-TMPFILE "$d" \
+    BASE_SHA="$b" PATH="$d.bin:$PATH"
+  # The comment above explains the invariant; this holds it. Only one mktemp call fails, so if
+  # E-TMPFILE is on stderr the failure landed at the base pass instead and exit=1 is no longer
+  # attributable to this site — which is what makes a warn_full demotion visible. Reverting the
+  # stub to the always-fail shape used three lines above trips exactly this assertion.
+  printf '  %-4s %-44s ' "" "the failure landed at the anti-erasure pass"
+  expect_no_match "$d/.err" 'E-TMPFILE did not fire' \
+    'the base pass also faulted, so exit=1 is unattributable' '::error::E-TMPFILE: '
+
+  # A profile that sets its variables but defines no status hook. Without this check the
+  # engine would silently reuse the previous profile's hook, since load_profile unsets the
+  # optional hooks between profiles but a required one cannot be defaulted away.
+  d=$(case_dir incomplete_profile)
+  b=$(base_of "$d")
+  cat >"$d/.github/scripts/profiles/bare.sh" <<'SH'
+RECORD_DIR="docs/debt"
+RECORD_LABEL="bare"
+RECORD_EXEMPT_FILES=""
+REQUIRED_SECTIONS="## Status"
+APPEND_ONLY_SECTIONS=""
+BANNER_PREFIX='^> \*\*Resolved by'
+BANNER_PATTERN='^> \*\*Resolved by .+\*\* \([0-9]{4}-[0-9]{2}-[0-9]{2}\)$'
+BANNER_HINT="> **Resolved by <what>** (YYYY-MM-DD)"
+BANNER_REPLACES_STATUS=yes
+SH
+  run_case "profile defines no status hook" 1 E-PROFILE-INCOMPLETE "$d" BASE_SHA="$b" \
+    RECORD_PROFILES=bare
+
+  printf -- '-- headings and the preamble --\n'
+  # section_body skips the heading line itself, so no append-only rule has ever examined a
+  # heading — and for an ADR the H1 *is* the decision statement.
+  d=$(case_dir heading_rewritten)
+  b=$(base_of "$d")
+  sed 's/^# 0001 — test record$/# 0001 — a different claim entirely/' \
+    "$d/docs/debt/0001-valid.md" >"$d/.rec"
+  mv "$d/.rec" "$d/docs/debt/0001-valid.md"
+  run_case "H1 reworded" 1 E-HEADING-REWRITTEN "$d" BASE_SHA="$b"
+
+  # Records are not section-uniform, so a non-required heading is equally exposed.
+  d=$(case_dir heading_nonrequired)
+  printf '\n## Aside\n\nSomething extra.\n' >>"$d/docs/debt/0001-valid.md"
+  git -C "$d" commit -aqm "add a section"
+  b=$(base_of "$d")
+  sed 's/^## Aside$/## Asides/' "$d/docs/debt/0001-valid.md" >"$d/.rec"
+  mv "$d/.rec" "$d/docs/debt/0001-valid.md"
+  run_case "non-required heading renamed" 1 E-HEADING-REWRITTEN "$d" BASE_SHA="$b"
+
+  # The region between the H1 and the first `## ` belongs to no section, so no append-only
+  # rule has ever reached it. It is where a pre-template record keeps its metadata bullets.
+  d=$(case_dir preamble_rewritten)
+  {
+    head -1 "$d/docs/debt/0001-valid.md"
+    printf '\n- **Status:** Deferred\n'
+    tail -n +2 "$d/docs/debt/0001-valid.md"
+  } >"$d/.rec"
+  mv "$d/.rec" "$d/docs/debt/0001-valid.md"
+  git -C "$d" commit -aqm "add a metadata bullet"
+  b=$(base_of "$d")
+  grep -v '^- \*\*Status:\*\* Deferred$' "$d/docs/debt/0001-valid.md" >"$d/.rec"
+  mv "$d/.rec" "$d/docs/debt/0001-valid.md"
+  run_case "preamble bullet deleted" 1 E-PREAMBLE-REWRITTEN "$d" BASE_SHA="$b"
+
+  printf -- '-- renumbering under canonicalised comparison --\n'
+  # Byte equality plus a number-in-the-H1 rule makes renumbering impossible in either
+  # direction: keep the bytes and the H1 no longer matches the filename, fix the H1 and the
+  # escape stops recognising the record. Canonicalising the H1's number to a
+  # filename-independent sentinel removes the deadlock.
+  d=$(case_dir renumber_h1_fixed)
+  b=$(base_of "$d")
+  git -C "$d" mv docs/debt/0001-valid.md docs/debt/0002-valid.md
+  sed 's/^# 0001 — /# 0002 — /' "$d/docs/debt/0002-valid.md" >"$d/.rec"
+  mv "$d/.rec" "$d/docs/debt/0002-valid.md"
+  run_case "renumber with the H1 corrected" 0 - "$d" BASE_SHA="$b"
+
+  # The must-stay-red direction. The sentinel makes two records identical apart from their
+  # number canonicalise identically, so without the candidate-absent-at-base condition a
+  # deletion is excused by a look-alike sibling that was already there.
+  d=$(case_dir lookalike_sibling)
+  write_record "$d" "0002-valid.md"
+  git -C "$d" add -A
+  git -C "$d" commit -qm "a look-alike sibling"
+  b=$(base_of "$d")
+  git -C "$d" rm -q docs/debt/0001-valid.md
+  run_case "deleted record with a look-alike already at base" 1 E-GONE "$d" BASE_SHA="$b"
+
+  # An H1 whose title legitimately begins with a digit and *no* separator is not a numbered
+  # prefix, so canonicalise leaves it alone and the two records stay distinguishable.
+  d=$(case_dir digit_title)
+  sed 's/^# 0001 — test record$/# 2026 was a good year/' "$d/docs/debt/0001-valid.md" >"$d/.rec"
+  mv "$d/.rec" "$d/docs/debt/0001-valid.md"
+  git -C "$d" commit -aqm "a title starting with a digit"
+  b=$(base_of "$d")
+  git -C "$d" rm -q docs/debt/0001-valid.md
+  mkdir -p "$d/docs/debt" # git removes the now-empty directory
+  write_record "$d" "0002-valid.md"
+  sed 's/^# 0002 — test record$/# 2027 was a good year/' "$d/docs/debt/0002-valid.md" >"$d/.rec"
+  mv "$d/.rec" "$d/docs/debt/0002-valid.md"
+  git -C "$d" add -A
+  run_case "digit-led title is not a numbered prefix" 1 E-GONE "$d" BASE_SHA="$b"
+
+  # Indentation and nesting outside a marker line are content: de-indenting a sub-bullet
+  # promotes a caveat to a peer decision item. This case is red for a plain reason today —
+  # there is no allowance yet — and it is the regression guard for the one PR 3 adds, where a
+  # whitespace rule applied file-wide instead of to marker lines would hide exactly this.
+  d=$(case_dir reindented_subbullet)
+  printf '  - a nested caveat\n' >>"$d/docs/debt/0001-valid.md"
+  git -C "$d" commit -aqm "a nested caveat"
+  b=$(base_of "$d")
+  sed 's/^  - a nested caveat$/- a nested caveat/' "$d/docs/debt/0001-valid.md" >"$d/.rec"
+  mv "$d/.rec" "$d/docs/debt/0001-valid.md"
+  run_case "re-indented sub-bullet in an append-only section" 1 E-REWRITE "$d" BASE_SHA="$b"
+
+  # The anti-erasure rules describe a change, not a record, so a grandfathered record must not
+  # soften them. Nothing else pins this: all three run in check_no_disappearances, which
+  # executes before the per-record loop while the mode is still `report`, so err_full and err
+  # are indistinguishable there today. This case is what turns that placement into a tested
+  # property — fold the structural checks into the record loop and it goes green at exit 0
+  # with W-LEGACY-SHAPE, which is exactly the regression to catch.
+  d=$(case_dir legacy_rewrite)
+  sed 's/^target: /- target: /' "$d/docs/debt/0001-valid.md" >"$d/.rec"
+  mv "$d/.rec" "$d/docs/debt/0001-valid.md"
+  git -C "$d" commit -aqm "legacy shape"
+  b=$(base_of "$d")
+  grep -v '^A real concern with a body\.$' "$d/docs/debt/0001-valid.md" >"$d/.rec"
+  mv "$d/.rec" "$d/docs/debt/0001-valid.md"
+  run_case "gutting a legacy record is still an error" 1 E-REWRITE "$d" BASE_SHA="$b"
+
+  printf -- '-- the marker-only allowance --\n'
+  # Migration edits a merged record, which E-REWRITE, E-HEADING-REWRITTEN and
+  # E-PREAMBLE-REWRITTEN exist to forbid, so each transform migrate-records.sh performs must
+  # be accepted here — and nothing wider. The allowance is one predicate in front of all
+  # three rules, so both directions have to be pinned: a sweep that only neutralises rules
+  # never touches a predicate inside one, and this is that predicate.
+  d=$(case_dir allow_h1_migrated)
+  sed 's/^# 0001 — test record$/# 1. test record/' "$d/docs/debt/0001-valid.md" >"$d/.rec"
+  mv "$d/.rec" "$d/docs/debt/0001-valid.md"
+  git -C "$d" commit -aqm "a legacy H1"
+  b=$(base_of "$d")
+  sed 's/^# 1\. test record$/# 0001 — test record/' "$d/docs/debt/0001-valid.md" >"$d/.rec"
+  mv "$d/.rec" "$d/docs/debt/0001-valid.md"
+  run_case "H1 migrated to the numbered form" 0 - "$d" BASE_SHA="$b"
+
+  # The heading spelling and the status value in one diff, which is what a legacy record
+  # actually needs. It is also what pins the `## Status` body's exclusion from the
+  # comparison: with the body compared, this diff is not marker-only, and the migrator's
+  # own output would be rejected by the gate on a transform no rule here examines.
+  d=$(case_dir allow_status_heading_and_value)
+  sed -e 's/^## Status$/## status:/' -e 's/^Open$/open/' "$d/docs/debt/0001-valid.md" >"$d/.rec"
+  mv "$d/.rec" "$d/docs/debt/0001-valid.md"
+  git -C "$d" commit -aqm "a legacy Status heading"
+  b=$(base_of "$d")
+  sed -e 's/^## status:$/## Status/' -e 's/^open$/Open/' "$d/docs/debt/0001-valid.md" >"$d/.rec"
+  mv "$d/.rec" "$d/docs/debt/0001-valid.md"
+  run_case "Status heading and value migrated together" 0 - "$d" BASE_SHA="$b"
+
+  # The transform that is the only reason a deferral record needs migrating at all: a
+  # bulleted target: fails E-TARGET-MISSING, and it sits inside ## Provenance, which is
+  # append-only — so fixing it removes a line from a protected section.
+  d=$(case_dir allow_target_debulleted)
+  sed 's/^target: /- target: /' "$d/docs/debt/0001-valid.md" >"$d/.rec"
+  mv "$d/.rec" "$d/docs/debt/0001-valid.md"
+  git -C "$d" commit -aqm "a bulleted target"
+  b=$(base_of "$d")
+  sed 's/^- target: /target: /' "$d/docs/debt/0001-valid.md" >"$d/.rec"
+  mv "$d/.rec" "$d/docs/debt/0001-valid.md"
+  run_case "bulleted target de-bulleted in Provenance" 0 - "$d" BASE_SHA="$b"
+
+  # The whitespace half of the same transform, which reindented_subbullet is the counterpart
+  # to: leading whitespace is discarded on a marker line and nowhere else.
+  d=$(case_dir allow_target_dedented)
+  sed 's/^target: /  target: /' "$d/docs/debt/0001-valid.md" >"$d/.rec"
+  mv "$d/.rec" "$d/docs/debt/0001-valid.md"
+  git -C "$d" commit -aqm "an indented target"
+  b=$(base_of "$d")
+  sed 's/^  target: /target: /' "$d/docs/debt/0001-valid.md" >"$d/.rec"
+  mv "$d/.rec" "$d/docs/debt/0001-valid.md"
+  run_case "indented target moved to column one" 0 - "$d" BASE_SHA="$b"
+
+  d=$(adr_dir allow_adr_title)
+  sed 's/^# 0001 — test decision$/# 1. test decision/' "$d/docs/adr/0001-first.md" >"$d/.rec"
+  mv "$d/.rec" "$d/docs/adr/0001-first.md"
+  git -C "$d" commit -aqm "a legacy ADR title"
+  b=$(base_of "$d")
+  sed 's/^# 1\. test decision$/# 0001 — test decision/' "$d/docs/adr/0001-first.md" >"$d/.rec"
+  mv "$d/.rec" "$d/docs/adr/0001-first.md"
+  run_case "legacy ADR H1 migrated" 0 - "$d" BASE_SHA="$b" RECORD_PROFILES=adr
+
+  # The other direction. A marker line's *value* is content: canonicalise discards the
+  # bullet and the indent in front of `target:`, never the path after it.
+  d=$(case_dir deny_target_rewritten)
+  b=$(base_of "$d")
+  sed 's|^target: docs/debt$|target: docs/elsewhere|' "$d/docs/debt/0001-valid.md" >"$d/.rec"
+  mv "$d/.rec" "$d/docs/debt/0001-valid.md"
+  run_case "target value changed is not marker-only" 1 E-REWRITE "$d" BASE_SHA="$b"
+
+  # A diff that merely *contains* a marker fix is not marker-only. The comparison runs over
+  # the whole canonicalised file, so one deleted line of prose anywhere denies the whole
+  # allowance rather than the section it sits in.
+  d=$(case_dir deny_marker_plus_prose)
+  sed 's/^target: /- target: /' "$d/docs/debt/0001-valid.md" >"$d/.rec"
+  mv "$d/.rec" "$d/docs/debt/0001-valid.md"
+  git -C "$d" commit -aqm "a bulleted target"
+  b=$(base_of "$d")
+  sed -e 's/^- target: /target: /' -e '/^Found by a test\.$/d' \
+    "$d/docs/debt/0001-valid.md" >"$d/.rec"
+  mv "$d/.rec" "$d/docs/debt/0001-valid.md"
+  run_case "marker fix plus a deleted prose line" 1 E-REWRITE "$d" BASE_SHA="$b"
+
+  d=$(case_dir deny_marker_plus_heading)
+  sed 's/^target: /- target: /' "$d/docs/debt/0001-valid.md" >"$d/.rec"
+  mv "$d/.rec" "$d/docs/debt/0001-valid.md"
+  git -C "$d" commit -aqm "a bulleted target"
+  b=$(base_of "$d")
+  sed -e 's/^- target: /target: /' -e 's/^## Concern$/## Concerns/' \
+    "$d/docs/debt/0001-valid.md" >"$d/.rec"
+  mv "$d/.rec" "$d/docs/debt/0001-valid.md"
+  run_case "marker fix plus a reworded heading" 1 E-HEADING-REWRITTEN "$d" BASE_SHA="$b"
+
+  printf -- '-- the ADR profile --\n'
+  # The five status words the ADR profile names, all in one fixture: the vocabulary is the
+  # rule, and a
+  # word two governing artifacts prescribe must not be an error.
+  d=$(adr_dir adr_status_forms)
+  write_adr "$d" "0002-proposed.md" "Proposed"
+  write_adr "$d" "0003-deferred.md" "Deferred"
+  write_adr "$d" "0004-rejected.md" "Rejected (2026-01-01)"
+  write_adr "$d" "0005-superseded.md" "Superseded (2026-01-01)"
+  git -C "$d" add -A
+  git -C "$d" commit -qm "every status form"
+  b=$(base_of "$d")
+  run_case "every ADR status form" 0 - "$d" BASE_SHA="$b" RECORD_PROFILES=adr
+
+  # The base commit must stay conforming — Status is blob-local, so baking the bad word
+  # straight into the base ref would make 0001-first.md non-conforming there too, and
+  # E-STATUS would downgrade to W-LEGACY-SHAPE instead of firing at full severity.
+  d=$(adr_dir adr_status_bad)
+  b=$(base_of "$d")
+  write_adr "$d" "0001-first.md" "Agreed, probably"
+  run_case "invalid ADR status word" 1 E-STATUS "$d" BASE_SHA="$b" RECORD_PROFILES=adr
+
+  # An ADR banner accompanies `Accepted (date)` rather than replacing it, per
+  # BANNER_REPLACES_STATUS=no — and this is the one status edit a merged ADR may take.
+  d=$(adr_dir adr_banner "Accepted (2026-01-01)" \
+    "> **Superseded by [0002](0002-later.md)** (2026-01-02)")
+  write_adr "$d" "0002-later.md" "Accepted (2026-01-02)"
+  git -C "$d" add -A
+  git -C "$d" commit -qm "supersede it"
+  b=$(base_of "$d")
+  run_case "Accepted plus a well-formed banner" 0 - "$d" BASE_SHA="$b" RECORD_PROFILES=adr
+
+  # The loose-prefix/strict-pattern contract: a malformed banner must reach E-BANNER-FORM
+  # rather than falling through to E-STATUS. Same grandfathering hazard as adr_status_bad:
+  # the base commit stays banner-free and conforming, and the malformed banner is added only
+  # to the tree.
+  d=$(adr_dir adr_banner_form)
+  b=$(base_of "$d")
+  write_adr "$d" "0001-first.md" "Accepted (2026-01-01)" "> **Superseded by 0002**"
+  run_case "malformed ADR banner" 1 E-BANNER-FORM "$d" BASE_SHA="$b" RECORD_PROFILES=adr
+
+  # The same contract on the deferral profile, which has never had a case for it: the two
+  # patterns are per-profile values, so one profile's routing proves nothing about the other's.
+  d=$(case_dir debt_banner_form)
+  b=$(base_of "$d")
+  sed 's/^Open$/> **Resolved by something** on 2026-01-01/' "$d/docs/debt/0001-valid.md" \
+    >"$d/.rec"
+  mv "$d/.rec" "$d/docs/debt/0001-valid.md"
+  run_case "malformed deferral banner" 1 E-BANNER-FORM "$d" BASE_SHA="$b"
+
+  # Same hazard again: two banners baked into the base commit would make it non-conforming
+  # there too, so the base stays clean and the second banner is added only to the tree.
+  d=$(adr_dir adr_banner_count)
+  b=$(base_of "$d")
+  write_adr "$d" "0001-first.md" "Accepted (2026-01-01)" \
+    "> **Superseded by [0002](0002-a.md)** (2026-01-02)
+> **Superseded by [0003](0003-b.md)** (2026-01-03)"
+  run_case "two supersession banners" 1 E-BANNER-COUNT "$d" BASE_SHA="$b" RECORD_PROFILES=adr
+
+  # And again: the base commit carries the sibling ADR the banner will name, but no banner
+  # of its own, so 0001-first.md is still conforming at base and the future date is a
+  # genuine tree-only defect rather than a grandfathered one.
+  d=$(adr_dir adr_banner_future)
+  write_adr "$d" "0002-a.md" "Accepted (2026-01-02)"
+  git -C "$d" add -A
+  git -C "$d" commit -qm "second decision"
+  b=$(base_of "$d")
+  write_adr "$d" "0001-first.md" "Accepted (2026-01-01)" \
+    "> **Superseded by [0002](0002-a.md)** (2099-01-01)"
+  run_case "supersession banner dated in the future" 1 E-BANNER-FUTURE "$d" BASE_SHA="$b" \
+    RECORD_PROFILES=adr
+
+  # Dropping the index table moved supersession into the records; nothing has verified since
+  # that those cross-links resolve.
+  d=$(adr_dir adr_dangling "Accepted (2026-01-01)" \
+    "> **Superseded by [0009](0009-nowhere.md)** (2026-01-02)")
+  b=$(base_of "$d")
+  run_case "supersession banner points nowhere" 1 E-SUPERSEDE-DANGLING "$d" BASE_SHA="$b" \
+    RECORD_PROFILES=adr
+
+  d=$(adr_dir adr_title)
+  b=$(base_of "$d")
+  sed 's/^# 0001 — /# 0007 — /' "$d/docs/adr/0001-first.md" >"$d/.rec"
+  mv "$d/.rec" "$d/docs/adr/0001-first.md"
+  run_case "H1 number disagrees with the filename" 1 E-TITLE-MISMATCH "$d" BASE_SHA="$b" \
+    RECORD_PROFILES=adr
+
+  # README.md is exempt because the ADR convention puts it in the record directory. Exempt
+  # means "not a record", not "ignored" — and nothing else gets in.
+  d=$(adr_dir adr_readme_exempt)
+  b=$(base_of "$d")
+  run_case "README.md in the record directory is exempt" 0 - "$d" BASE_SHA="$b" \
+    RECORD_PROFILES=adr
+
+  d=$(adr_dir adr_stray)
+  b=$(base_of "$d")
+  printf 'notes\n' >"$d/docs/adr/NOTES.md"
+  run_case "another stray file still fails" 1 E-NOT-RECORD "$d" BASE_SHA="$b" \
+    RECORD_PROFILES=adr
+
+  # An exempt entry names one path at the top of the record directory. Matching it as a
+  # basename at any depth exempted docs/adr/archive/README.md as well, which is a wider
+  # allowance than the one named exception the ADR convention describes.
+  d=$(adr_dir adr_nested_exempt_name)
+  b=$(base_of "$d")
+  mkdir -p "$d/docs/adr/archive"
+  printf 'notes\n' >"$d/docs/adr/archive/README.md"
+  run_case "exempt name in a subdirectory still fails" 1 E-NOT-RECORD "$d" BASE_SHA="$b" \
+    RECORD_PROFILES=adr
+
+  # W-INDEX-TABLE makes the directory-listing policy self-policing. It is a heuristic, so it
+  # runs from profile_check_directory because its subject is not a record.
+  d=$(adr_dir adr_index_table)
+  cat >>"$d/docs/adr/README.md" <<'MD'
+
+| ADR | Title |
+|---|---|
+| 0001 | test decision |
+MD
+  b=$(base_of "$d")
+  run_case "README.md grows an index table" 0 W-INDEX-TABLE "$d" BASE_SHA="$b" \
+    RECORD_PROFILES=adr
+
+  printf '  %-4s %-44s ' "" "required ADR index is accepted"
+  if (cd "$d" && env -u GITHUB_ACTIONS ADR_INDEX_POLICY=required RECORD_PROFILES=adr \
+    BASE_SHA="$b" ./.github/scripts/check-records.sh) >"$d/.required.out" 2>"$d/.required.err"; then
+    expect_no_match "$d/.required.err" 'exit=0 no index warning' \
+      'emitted W-INDEX-TABLE' 'W-INDEX-TABLE'
+  else
+    failed=$((failed + 1))
+    printf 'FAIL checker failed: %s\n' "$(sed -n 's/^::error:://p' "$d/.required.err" | head -1)"
+  fi
+
+  # APPEND_ONLY_SECTIONS="*" protects every level-2 section the base ref had, not a fixed
+  # list — ADRs are not section-uniform, and a fixed list leaves the extra sections guttable.
+  d=$(adr_dir adr_extra_section)
+  printf '\n## Findings\n\nSomething observed.\n' >>"$d/docs/adr/0001-first.md"
+  git -C "$d" commit -aqm "a non-uniform section"
+  b=$(base_of "$d")
+  grep -v '^Something observed.$' "$d/docs/adr/0001-first.md" >"$d/.rec"
+  mv "$d/.rec" "$d/docs/adr/0001-first.md"
+  run_case "non-required ADR section gutted" 1 E-REWRITE "$d" BASE_SHA="$b" RECORD_PROFILES=adr
+
+  # A non-blob-local rule reports at full severity on a grandfathered record. The pre-template
+  # shape (no ## Status at all) grandfathers this ADR, and the dangling link must still be an
+  # error — the run must not exit 0.
+  d="$SCRATCH/adr_legacy_dangling"
+  new_adr_repo "$d"
+  cat >"$d/docs/adr/0001-legacy.md" <<'MD'
+# 1. A pre-template decision
+
+- **Status:** Deferred
+- **Date:** 2026-01-01
+
+## Context
+
+Why this came up.
+
+## Decision
+
+What we decided.
+
+## Consequences
+
+What follows from it.
+MD
+  git -C "$d" add -A
+  git -C "$d" commit -qm base
+  b=$(base_of "$d")
+  run_case "legacy ADR downgrades its own shape" 0 W-LEGACY-SHAPE "$d" BASE_SHA="$b" \
+    RECORD_PROFILES=adr
+  banner="> **Superseded by [0009](0009-nowhere.md)** (2026-01-02)"
+  printf '\n## Status\n\nAccepted (2026-01-01)\n%s\n' "$banner" >>"$d/docs/adr/0001-legacy.md"
+  run_case "dangling link on a legacy ADR is an error" 1 E-SUPERSEDE-DANGLING "$d" \
+    BASE_SHA="$b" RECORD_PROFILES=adr
+
+  # And W-INDEX-TABLE must not inherit `downgrade` from the record loop, which would leave it
+  # relabelled W-LEGACY-SHAPE for any repo whose oldest record is a legacy one. Same fixture
+  # shape, no banner: the only finding besides the record's own downgraded shape is the table.
+  d="$SCRATCH/adr_legacy_index"
+  new_adr_repo "$d"
+  cat >"$d/docs/adr/0001-legacy.md" <<'MD'
+# 1. A pre-template decision
+
+- **Status:** Deferred
+
+## Context
+
+Why this came up.
+
+## Decision
+
+What we decided.
+
+## Consequences
+
+What follows from it.
+MD
+  cat >>"$d/docs/adr/README.md" <<'MD'
+
+| ADR | Title |
+|---|---|
+| 0001 | a pre-template decision |
+MD
+  git -C "$d" add -A
+  git -C "$d" commit -qm base
+  b=$(base_of "$d")
+  run_case "index table reports itself beside a legacy record" 0 W-INDEX-TABLE "$d" \
+    BASE_SHA="$b" RECORD_PROFILES=adr
+
+  printf -- '-- two profiles at once --\n'
+  # One profile failing must fail the run while the other still reports.
+  d=$(adr_dir adr_plus_debt)
+  mkdir -p "$d/docs/debt"
+  write_record "$d" "0001-valid.md"
+  git -C "$d" add -A
+  git -C "$d" commit -qm "both kinds"
+  b=$(base_of "$d")
+  run_case "both profiles pass" 0 - "$d" BASE_SHA="$b" RECORD_PROFILES="adr debt"
+  sed 's/^Accepted (2026-01-01)$/Agreed, probably/' "$d/docs/adr/0001-first.md" >"$d/.rec"
+  mv "$d/.rec" "$d/docs/adr/0001-first.md"
+  run_case "one profile fails, the other passes" 1 E-STATUS "$d" BASE_SHA="$b" \
+    RECORD_PROFILES="adr debt"
+
+  # Global findings run once, before the profile loop, and a hook defined by one profile must
+  # not survive into the next. run_case asserts presence, not count, so both need a bespoke
+  # count.
+  #
+  # docs/debt/README.md is what makes the leak observable, and it is load-bearing: adr.sh's
+  # directory hook reads "$RECORD_DIR/README.md", and RECORD_DIR is docs/debt during the debt
+  # pass. Without a table sitting at that path the leaked call returns at its own `[ -f ]`
+  # guard and emits nothing, so the count is 1 whether or not the hook leaked and the case
+  # cannot fail. It also draws an E-NOT-RECORD from the debt profile, whose
+  # RECORD_EXEMPT_FILES is empty — correct, and irrelevant to what is counted here.
+  d=$(adr_dir global_once)
+  mkdir -p "$d/docs/debt"
+  write_record "$d" "0001-valid.md"
+  cat >>"$d/docs/adr/README.md" <<'MD'
+
+| ADR | Title |
+|---|---|
+| 0001 | test decision |
+MD
+  cp "$d/docs/adr/README.md" "$d/docs/debt/README.md"
+  git -C "$d" add -A
+  git -C "$d" commit -qm "both kinds"
+  b=$(base_of "$d")
+  git -C "$d" rm -q .github/workflows/records.yml
+  printf '  %-4s %-44s ' "" "global and directory findings report once"
+  if (cd "$d" && env -u GITHUB_ACTIONS RECORD_PROFILES="adr debt" BASE_SHA="$b" \
+    ./.github/scripts/check-records.sh) >"$d/.o" 2>"$d/.e"; then
+    failed=$((failed + 1))
+    printf 'FAIL passed with the workflow deleted\n'
+  else
+    verdict=""
+    scan_count "$d/.e" '::error::E-GATE-GONE: '
+    gate_hits=$scan_hits
+    scan_count "$d/.e" '::warning::W-INDEX-TABLE: docs/adr/README.md'
+    index_hits=$scan_hits
+    scan_count "$d/.e" 'W-INDEX-TABLE: docs/debt'
+    leaked=$scan_hits
+    if [ -z "$verdict" ] && [ "$gate_hits" = 1 ] && [ "$index_hits" = 1 ] &&
+      [ "$leaked" = 0 ]; then
+      passed=$((passed + 1))
+      printf 'ok   exit=1 one E-GATE-GONE, one W-INDEX-TABLE, no leak\n'
+    else
+      failed=$((failed + 1))
+      printf 'FAIL E-GATE-GONE x%s, W-INDEX-TABLE(adr) x%s, leaked x%s (want 1, 1, 0)%s\n' \
+        "$gate_hits" "$index_hits" "$leaked" "$verdict"
+    fi
+  fi
+
+  printf -- '-- the migrator --\n'
+  # migrate-records.sh edits merged records, so its self-check is the only thing between it
+  # and the erasure the gate exists to prevent. Every case here asserts the record on disk as
+  # well as the exit status: "aborted" and "aborted after writing" report the same status.
+  d=$(migrator_dir migrate_dry_run)
+  cp "$d/docs/debt/0001-valid.md" "$d.before"
+  run_migrator "dry run reports without writing" 0 - "$d"
+  printf '  %-4s %-44s ' "" "dry run leaves the record byte-identical"
+  expect_unchanged "$d.before" "$d/docs/debt/0001-valid.md" \
+    'nothing written' 'the default run wrote to the record'
+
+  d=$(migrator_dir migrate_write)
+  b=$(base_of "$d")
+  run_migrator "--write migrates a legacy record" 0 - "$d" --write
+  printf '  %-4s %-44s ' "" "every transform in the table applied"
+  verdict=""
+  rec="$d/docs/debt/0001-valid.md"
+  scan_into_verdict h1 "$rec" '^# 0001 — test record$'
+  scan_into_verdict heading "$rec" '^## Status$'
+  scan_into_verdict status-word "$rec" '^Open$'
+  scan_into_verdict target "$rec" '^target: docs/debt$'
+  scan_into_verdict lost-prose "$rec" '^A real concern with a body\.$'
+  if [ -z "$verdict" ]; then
+    passed=$((passed + 1))
+    printf 'ok   H1, heading, status word and target\n'
+  else
+    failed=$((failed + 1))
+    printf 'FAIL%s\n' "$verdict"
+  fi
+
+  # The whole point of the allowance: what the migrator writes, the gate takes. Run against
+  # the same base ref the record was committed at, which is what CI would compare against.
+  run_case "the gate accepts what the migrator wrote" 0 - "$d" BASE_SHA="$b"
+
+  d=$(migrator_dir migrate_dirty)
+  cp "$d/docs/debt/0001-valid.md" "$d.before"
+  printf 'uncommitted\n' >"$d/stray.txt"
+  run_migrator "dirty worktree refused" 1 E-DIRTY "$d" --write
+  printf '  %-4s %-44s ' "" "the refused run wrote nothing"
+  expect_unchanged "$d.before" "$d/docs/debt/0001-valid.md" \
+    'record untouched' 'wrote despite a dirty worktree'
+
+  # A hook that edits a region the gate protects. The self-check is marker_only_change, the
+  # gate's own predicate, so this is the same rejection the gate would issue — reached before
+  # anything is written rather than after the commit.
+  d=$(migrator_dir migrate_self_check)
+  cp "$d/docs/debt/0001-valid.md" "$d.before"
+  cp "$SCRIPT_DIR/profiles/debt.sh" "$d/.github/scripts/profiles/rogue.sh"
+  cat >>"$d/.github/scripts/profiles/rogue.sh" <<'SH'
+profile_migrate_markers() {
+  grep -v '^A real concern with a body\.$' "$1"
+}
+SH
+  git -C "$d" add -A
+  git -C "$d" commit -qm "a hook that rewrites prose"
+  MIGRATE_PROFILES=rogue run_migrator "self-check refuses a prose edit" 1 E-SELF-CHECK "$d" \
+    --write
+  printf '  %-4s %-44s ' "" "the self-check ran before any write"
+  expect_unchanged "$d.before" "$d/docs/debt/0001-valid.md" \
+    'record untouched' 'wrote output its own self-check rejected'
+
+  # The no-invention rule, on the transform an adopting repo with legacy ADRs most needs. A
+  # date already on the line is parenthesised; a bare status word has no date to take, and
+  # the only other source is a separate metadata line, which lifting would be a relocation.
+  d="$SCRATCH/migrate_adr_status"
+  new_adr_repo "$d"
+  cp "$SCRIPT_DIR/migrate-records.sh" "$d/.github/scripts/migrate-records.sh"
+  chmod +x "$d/.github/scripts/migrate-records.sh"
+  write_adr "$d" "0001-first.md" "accepted 2026-01-01"
+  write_adr "$d" "0002-second.md" "ACCEPTED"
+  git -C "$d" add -A
+  git -C "$d" commit -qm base
+  MIGRATE_PROFILES=adr run_migrator "ADR status dated only from its own line" 0 - "$d" --write
+  printf '  %-4s %-44s ' "" "a date is parenthesised, never invented"
+  verdict=""
+  scan_into_verdict not-parenthesised "$d/docs/adr/0001-first.md" '^Accepted (2026-01-01)$'
+  scan_into_verdict bare-word-touched "$d/docs/adr/0002-second.md" '^ACCEPTED$'
+  scan_into_verdict not-reported "$d.mout" "status 'ACCEPTED' is not a form the gate accepts"
+  if [ -z "$verdict" ]; then
+    passed=$((passed + 1))
+    printf 'ok   dated line fixed, bare word reported\n'
+  else
+    failed=$((failed + 1))
+    printf 'FAIL%s\n' "$verdict"
+  fi
+
+  # What migration cannot finish is named, one line per record, rather than stubbed or
+  # guessed. Three shapes at once: a section the record does not have, a section with no
+  # body, and a banner whose date is not derivable from the text it already carries.
+  d=$(migrator_dir migrate_leftovers)
+  write_record "$d" "0002-missing.md"
+  sed '/^## Why deferred$/d' "$d/docs/debt/0002-missing.md" >"$d/.rec"
+  mv "$d/.rec" "$d/docs/debt/0002-missing.md"
+  write_record "$d" "0003-empty.md"
+  sed '/^A real concern with a body\.$/d' "$d/docs/debt/0003-empty.md" >"$d/.rec"
+  mv "$d/.rec" "$d/docs/debt/0003-empty.md"
+  write_record "$d" "0004-banner.md" "> **Resolved by nothing at all**"
+  git -C "$d" add -A
+  git -C "$d" commit -qm "three shapes migration cannot finish"
+  run_migrator "leftovers reported, nothing invented" 0 - "$d"
+  printf '  %-4s %-44s ' "" "each unfinishable shape named in the report"
+  verdict=""
+  scan_into_verdict missing-section "$d.mout" "no '## Why deferred' section"
+  scan_into_verdict empty-section "$d.mout" "'## Concern' has no body"
+  scan_into_verdict banner "$d.mout" 'the banner must read'
+  if [ -z "$verdict" ]; then
+    passed=$((passed + 1))
+    printf 'ok   missing, empty and malformed all named\n'
+  else
+    failed=$((failed + 1))
+    printf 'FAIL%s\n' "$verdict"
+  fi
+
+  # report_leftovers' section-existence grep, the same shape as check_sections above: exit 1
+  # is "no match", exit 2 or more is a scan that never completed, and folding the two used to
+  # report a section as missing on a scan that faulted rather than one that actually ran. The
+  # file it reads is a scratch copy this process creates and removes itself, so there is no
+  # path a fixture can chmod ahead of time the way the checker cases above do. A grep stub
+  # that faults only on the one pattern this call passes -- the literal '## Status' heading,
+  # with -qxF -- and defers to the real grep for every other call in the same run reaches the
+  # same branch deterministically, the way the suite already stubs `gh` for the tracker.
+  d=$(migrator_dir migrate_section_scan_fault)
+  stub_bin="$SCRATCH/grep-fault-bin"
+  mkdir -p "$stub_bin"
+  real_grep=$(command -v grep)
+  cat >"$stub_bin/grep" <<STUB
+#!/usr/bin/env bash
+for arg in "\$@"; do
+  if [ "\$arg" = "## Status" ]; then
+    printf 'grep: fixture-fault: simulated I/O error\n' >&2
+    exit 2
+  fi
+done
+exec "$real_grep" "\$@"
+STUB
+  chmod +x "$stub_bin/grep"
+  saved_path=$PATH
+  PATH="$stub_bin:$PATH"
+  run_migrator "migrator section scan faults, not silently skipped" 1 E-SECTION-SCAN "$d"
+  PATH=$saved_path
+
+  # The migrator's own pipeline conversions (ADR 0032). Its reads used to start pipelines whose
+  # status went nowhere, so a faulting awk produced an empty section body, an empty status line
+  # and an empty banner -- reported as prose a human still has to write, on a record the
+  # migrator never managed to read. `-v want=` keys section_body alone.
+  d=$(migrator_dir migrate_body_scan_fault)
+  stub_bin="$SCRATCH/awk-migrate-want-bin"
+  mkdir -p "$stub_bin"
+  real_awk=$(command -v awk)
+  cat >"$stub_bin/awk" <<STUB
+#!/usr/bin/env bash
+for arg in "\$@"; do
+  case "\$arg" in
+  want=*)
+    printf 'awk: fixture-fault: simulated I/O error\n' >&2
+    exit 2
+    ;;
+  esac
+done
+exec "$real_awk" "\$@"
+STUB
+  chmod +x "$stub_bin/awk"
+  saved_path=$PATH
+  PATH="$stub_bin:$PATH"
+  run_migrator "migrator section body read faults" 1 E-MIGRATE-SECTION-SCAN "$d"
+  run_migrator "migrator status read faults" 1 E-MIGRATE-STATUS-SCAN "$d"
+  PATH=$saved_path
+
+  # The migrator's self-check. marker_only_change went three-valued in ADR 0032, and the `if !`
+  # this replaced collapsed "could not tell" into "not marker-only". The worse direction was
+  # the checker's, where the same collapse read a faulted comparison as "marker-only" and
+  # skipped every anti-erasure rule; here it refuses to write, which is the safe end of the
+  # same defect. Keyed on canonicalise's marker pattern.
+  d=$(migrator_dir migrate_shape_scan_fault)
+  stub_bin="$SCRATCH/awk-migrate-canon-bin"
+  mkdir -p "$stub_bin"
+  cat >"$stub_bin/awk" <<STUB
+#!/usr/bin/env bash
+for arg in "\$@"; do
+  case "\$arg" in
+  *'(target|review-by)'*)
+    printf 'awk: fixture-fault: simulated I/O error\n' >&2
+    exit 2
+    ;;
+  esac
+done
+exec "$real_awk" "\$@"
+STUB
+  chmod +x "$stub_bin/awk"
+  saved_path=$PATH
+  PATH="$stub_bin:$PATH"
+  run_migrator "migrator self-check read faults, refuses to write" 1 E-MIGRATE-SHAPE-SCAN "$d"
+  PATH=$saved_path
+  printf '  %-4s %-44s ' "" "the refused run wrote nothing"
+  if git -C "$d" diff --quiet; then
+    passed=$((passed + 1))
+    printf 'ok   record untouched\n'
+  else
+    failed=$((failed + 1))
+    printf 'FAIL the record was rewritten after a failed self-check\n'
+  fi
+
+  # diff decides how many marker lines were rewritten and what the report shows. Its status was
+  # discarded by `| grep -c … || true`, so a diff that could not run reported "0 marker line(s)
+  # rewritten" -- indistinguishable from a record that needed no migration.
+  d=$(migrator_dir migrate_diff_scan_fault)
+  stub_bin="$SCRATCH/diff-migrate-fault-bin"
+  mkdir -p "$stub_bin"
+  cat >"$stub_bin/diff" <<'STUB'
+#!/usr/bin/env bash
+printf 'diff: fixture-fault: simulated I/O error\n' >&2
+exit 2
+STUB
+  chmod +x "$stub_bin/diff"
+  saved_path=$PATH
+  PATH="$stub_bin:$PATH"
+  run_migrator "migrator diff faults, not zero rewrites" 1 E-MIGRATE-DIFF-SCAN "$d"
+  PATH=$saved_path
+
+  # The record listing. `find … | sort | grep … || true` swallowed find's status, so an
+  # unreadable record directory yielded an empty listing and the migrator reported
+  # "0 record(s) examined" and exited 0 over a directory it never read.
+  d=$(migrator_dir migrate_list_scan_fault)
+  stub_bin="$SCRATCH/find-migrate-fault-bin"
+  mkdir -p "$stub_bin"
+  cat >"$stub_bin/find" <<'STUB'
+#!/usr/bin/env bash
+printf 'find: fixture-fault: simulated I/O error\n' >&2
+exit 1
+STUB
+  chmod +x "$stub_bin/find"
+  saved_path=$PATH
+  PATH="$stub_bin:$PATH"
+  run_migrator "migrator record listing faults, not empty" 1 E-MIGRATE-LIST-SCAN "$d"
+  PATH=$saved_path
+
+  # The sort half of the same listing. It reads in-memory input, so ADR 0005 would exempt it,
+  # and it is captured for the consequence: an empty listing is a pass. It shares a code with
+  # the find half above, so without its own case a code-only assertion could not tell the two
+  # apart -- and neutralising this guard left the suite fully green.
+  d=$(migrator_dir migrate_sort_scan_fault)
+  stub_bin="$SCRATCH/sort-migrate-fault-bin"
+  mkdir -p "$stub_bin"
+  cat >"$stub_bin/sort" <<'STUB'
+#!/usr/bin/env bash
+printf 'sort: fixture-fault: simulated I/O error\n' >&2
+exit 2
+STUB
+  chmod +x "$stub_bin/sort"
+  saved_path=$PATH
+  PATH="$stub_bin:$PATH"
+  run_migrator "migrator listing sort faults, not empty" 1 E-MIGRATE-LIST-SCAN "$d"
+  PATH=$saved_path
+
+  # The migrator's own profile resolution. A profile that satisfies the checker still has to
+  # supply the migration hook, or the migrator would silently reuse the previous profile's.
+  d=$(migrator_dir migrate_no_hook)
+  sed '/^profile_migrate_markers() {$/,/^}$/d' "$SCRIPT_DIR/profiles/debt.sh" \
+    >"$d/.github/scripts/profiles/hookless.sh"
+  git -C "$d" add -A
+  git -C "$d" commit -qm "a profile with no migration hook"
+  MIGRATE_PROFILES=hookless run_migrator "profile without a migration hook" 1 \
+    E-PROFILE-INCOMPLETE "$d" --write
+
+  d=$(migrator_dir migrate_missing_dir)
+  cp "$SCRIPT_DIR/profiles/debt.sh" "$d/.github/scripts/profiles/ghost.sh"
+  printf 'RECORD_DIR="docs/ghost"\n' >>"$d/.github/scripts/profiles/ghost.sh"
+  git -C "$d" add -A
+  git -C "$d" commit -qm "a profile pointing at no directory"
+  MIGRATE_PROFILES=ghost run_migrator "profile whose directory is absent" 1 \
+    E-PROFILE-DIR-MISSING "$d" --write
+
+  d=$(migrator_dir migrate_no_profiles)
+  MIGRATE_PROFILES='' run_migrator "no profile named" 1 E-PROFILE-NONE "$d" --write
+
+  # The migrator carries the checker's two git probes, so it gets the checker's two cases.
+  # The fixture here is a directory rather than a repository, so nothing can fail ahead of
+  # the root probe.
+  d="$SCRATCH/migrate_not_a_repo"
+  mkdir -p "$d/.github/scripts/profiles" "$d/docs/debt"
+  cp "$CHECKER" "$d/.github/scripts/check-records.sh"
+  cp "$SCRIPT_DIR/migrate-records.sh" "$d/.github/scripts/migrate-records.sh"
+  chmod +x "$d/.github/scripts/migrate-records.sh"
+  cp "$SCRIPT_DIR/profiles/debt.sh" "$d/.github/scripts/profiles/debt.sh"
+  run_migrator "migrator run outside any git repository" 1 E-ROOT-UNRESOLVED "$d"
+  printf '  %-4s %-44s ' "" "git's line survives the root probe"
+  expect_match "$d.merr" "git's diagnostic reached the operator" \
+    "git's diagnostic was discarded" -v '^error: '
+
+  # And the clean-worktree read, which fails from inside a repository whose root resolved
+  # fine — an unreadable index is enough. E-NOT-REPO used to be the code for it, on a run
+  # that had already proved it was in a repository. Same root skip as the checker's
+  # unreadable-directory cases: chmod 000 does not deny root.
+  if [ "$(id -u)" -eq 0 ]; then
+    printf '  skip %-44s running as root; chmod 000 does not deny access\n' \
+      "worktree read faults, not read as absent"
+  else
+    d=$(migrator_dir migrate_index_unreadable)
+    chmod 000 "$d/.git/index"
+    run_migrator "worktree read faults, not read as absent" 1 E-WORKTREE-SCAN "$d" --write
+    chmod 644 "$d/.git/index"
+  fi
+
+  printf -- "-- the suite's own scans --\n"
+  # The two scans in case_why gate every verdict above, and run_migrator's gates every
+  # migrator verdict. A capture they cannot read used to score as one they read and found
+  # nothing in — which at case_why's no-code scan is the *passing* arm, so a case whose
+  # `.err` could not be read came back green. Reverting either conversion turns the first
+  # arm below green-on-a-pass and reddens this case.
+  #
+  # An absent capture is what a redirection that failed leaves behind, and grep exits 2 on
+  # it on every platform this suite supports — no chmod, so no root skip is needed. grep's
+  # own complaint goes to /dev/null because these calls are meant to fault.
+  missing="$SCRATCH/no-such-capture.err"
+  printf '  %-4s %-44s ' "" "an unreadable capture faults, never passes"
+  verdict=""
+  why=$(case_why 1 1 - "$missing" 2>/dev/null)
+  case $why in
+  'could not scan '*) ;;
+  '') verdict="$verdict no-code-scan-scored-a-pass" ;;
+  *) verdict="$verdict no-code-scan-wrong-reason" ;;
+  esac
+  why=$(case_why 1 1 E-GONE "$missing" 2>/dev/null)
+  case $why in
+  'could not scan '*) ;;
+  *) verdict="$verdict code-scan-not-a-fault" ;;
+  esac
+  why=$(migrator_why 1 1 E-DIRTY "$missing" 2>/dev/null)
+  case $why in
+  'could not scan '*) ;;
+  *) verdict="$verdict migrator-scan-not-a-fault" ;;
+  esac
+  # migrator_why's no-code arm asks `[ -s ]`, which answers "absent" and "empty" the same
+  # way — and empty is the passing answer. It asks `[ -e ]` first for that reason.
+  why=$(migrator_why 1 1 - "$missing")
+  case $why in
+  'could not read '*) ;;
+  *) verdict="$verdict migrator-no-code-scored-a-pass" ;;
+  esac
+  if [ -z "$verdict" ]; then
+    passed=$((passed + 1))
+    printf 'ok   all three gating scans report the fault\n'
+  else
+    failed=$((failed + 1))
+    printf 'FAIL%s\n' "$verdict"
+  fi
+
+  # And the reason a fault must not merely be non-empty: it has to name the file it could
+  # not read and the status it got, or the operator is left with a red run and nowhere to
+  # look. fail_scan and scan_into_verdict carry the same two facts at every other site.
+  printf '  %-4s %-44s ' "" "the fault names the file and the status"
+  notes=""
+  why=$(case_why 1 1 E-GONE "$missing" 2>/dev/null)
+  case $why in
+  *"$missing"*) ;;
+  *) notes="$notes file-not-named" ;;
+  esac
+  case $why in
+  *'grep exit '*) ;;
+  *) notes="$notes status-not-named" ;;
+  esac
+  # The accumulator form has to fault distinctly too, or a scan that never ran would be
+  # recorded as the ordinary "this line was not there" tag.
+  verdict=""
+  scan_into_verdict tag-that-cannot-match "$missing" 'anything at all' 2>/dev/null
+  case $verdict in
+  " scan-fault($missing exit "*) ;;
+  *) notes="$notes accumulator-tag=[$verdict]" ;;
+  esac
+  if [ -z "$notes" ]; then
+    passed=$((passed + 1))
+    printf 'ok   %s\n' "$why"
+  else
+    failed=$((failed + 1))
+    printf 'FAIL%s\n' "$notes"
+  fi
+
+  # fail_scan is the channel most of the converted sites report through, and scan_count is
+  # the counting form. Neither is reached by a green run, so a dropped counter increment or
+  # an emptied message would ship silently — the same blindness the conversion removed from
+  # the sites themselves. Both are exercised here and their effect on the counters undone,
+  # so the suite's own tally stays honest.
+  printf '  %-4s %-44s ' "" "the fault helpers count and name the fault"
+  notes=""
+  # Its output goes to a file rather than a command substitution: fail_scan's whole job is
+  # to increment the counter, and a subshell would discard exactly the effect under test.
+  before=$failed
+  fail_scan "$missing" 7 >"$SCRATCH/fail-scan.out"
+  if [ "$failed" -eq $((before + 1)) ]; then
+    failed=$((failed - 1))
+  else
+    notes="$notes fail-scan-did-not-count"
+  fi
+  reported=$(cat "$SCRATCH/fail-scan.out")
+  case $reported in
+  *"$missing"*) ;;
+  *) notes="$notes fail-scan-file-not-named" ;;
+  esac
+  case $reported in
+  *' 7'*) ;;
+  *) notes="$notes fail-scan-status-not-named" ;;
+  esac
+  verdict=""
+  scan_hits="a count that should be cleared"
+  scan_count "$missing" 'anything at all' 2>/dev/null
+  [ -z "$scan_hits" ] || notes="$notes scan-count-kept-a-count"
+  case $verdict in
+  " scan-fault($missing exit "*) ;;
+  *) notes="$notes scan-count-tag=[$verdict]" ;;
+  esac
+  # The two polarity helpers carry most of the converted sites between them. Their 0) and
+  # 1) arms are exercised by every case in the suite; their `*)` arm is exercised by
+  # nothing, which is the whole reason it is worth pinning. Both must reach fail_scan on a
+  # capture they cannot read, and neither may score a pass on the way.
+  before=$failed
+  was_passed=$passed
+  expect_match "$missing" 'unreachable' 'unreachable' 'anything at all' \
+    >"$SCRATCH/expect-helpers.out" 2>/dev/null
+  expect_no_match "$missing" 'unreachable' 'unreachable' 'anything at all' \
+    >>"$SCRATCH/expect-helpers.out" 2>/dev/null
+  [ "$passed" -eq "$was_passed" ] || notes="$notes expect-helper-scored-a-pass"
+  if [ "$failed" -eq $((before + 2)) ]; then
+    failed=$((failed - 2))
+  else
+    notes="$notes expect-helpers-did-not-count"
+  fi
+
+  # expect_unchanged reports the one outcome in this file that is data loss rather than a
+  # wrong verdict, so both of its unexercised arms are pinned: a record the run removed,
+  # and a comparison that could not be made. A directory stands in for the second — cmp
+  # reads it as a file it cannot compare, which is the status under test, and unlike a
+  # chmod it needs no root guard. expect_error_code's fault arm goes with them.
+  before=$failed
+  was_passed=$passed
+  expect_unchanged "$missing" "$missing" 'unreachable' 'unreachable' \
+    >"$SCRATCH/expect-helpers.out" 2>/dev/null
+  reported=$(cat "$SCRATCH/expect-helpers.out")
+  case $reported in
+  *"removed $missing"*) ;;
+  *) notes="$notes deletion-arm=[$reported]" ;;
+  esac
+  expect_unchanged "$missing" "$SCRATCH" 'unreachable' 'unreachable' \
+    >"$SCRATCH/expect-helpers.out" 2>/dev/null
+  reported=$(cat "$SCRATCH/expect-helpers.out")
+  case $reported in
+  *"$missing vs $SCRATCH"*) ;;
+  *) notes="$notes compare-arm-paths=[$reported]" ;;
+  esac
+  case $reported in
+  *'cmp exit '*) ;;
+  *) notes="$notes compare-arm-tool=[$reported]" ;;
+  esac
+  expect_error_code "$missing" E-UNREACHABLE >"$SCRATCH/expect-helpers.out" 2>/dev/null
+  reported=$(cat "$SCRATCH/expect-helpers.out")
+  case $reported in
+  *"could not scan $missing"*) ;;
+  *) notes="$notes error-code-arm=[$reported]" ;;
+  esac
+  [ "$passed" -eq "$was_passed" ] || notes="$notes late-helper-scored-a-pass"
+  if [ "$failed" -eq $((before + 3)) ]; then
+    failed=$((failed - 3))
+  else
+    notes="$notes late-helpers-did-not-count"
+  fi
+  if [ -z "$notes" ]; then
+    passed=$((passed + 1))
+    printf 'ok   fault counted, file and status named\n'
+  else
+    failed=$((failed + 1))
+    printf 'FAIL%s\n' "$notes"
+  fi
+
+  printf -- '-- the suite cleans up after itself --\n'
+  d="$SCRATCH/scratch_allocator"
+  mkdir -p "$d"
+  allocation=""
+  if allocation=$(
+    mktemp() {
+      [ "$#" -eq 2 ] && [ "$1" = -d ] &&
+        [ "$2" = "$d/check-records-test.XXXXXX" ] || return 1
+      : >"$d/mktemp-called"
+      mkdir "$d/allocated"
+      printf '%s\n' "$d/allocated"
+    }
+    TMPDIR="$d" allocate_owned_scratch
+  ); then
+    :
+  fi
+  printf '  %-4s %-44s ' "" "owned scratch uses atomic allocator"
+  if [ "$allocation" = "$d/allocated" ] && [ -d "$allocation" ] &&
+    [ -f "$d/mktemp-called" ]; then
+    passed=$((passed + 1))
+    printf 'ok   mktemp -d created the returned path\n'
+  else
+    failed=$((failed + 1))
+    printf 'FAIL allocator did not use mktemp -d\n'
+  fi
+
+  # Proven end to end by running a copy of this script with no checker beside it, which aborts
+  # at the first case. Its scratch tree must survive: an aborted or failing run's fixtures are
+  # the whole reason to keep them. The nested run's own default scratch is redirected under
+  # ours via TMPDIR so it is cleaned up with ours rather than left in /tmp — the leak this
+  # section exists to prevent. Reading its path back out of the run's own `scratch:` line is
+  # deliberate: that line is the only affordance pointing an operator at a retained tree, so a
+  # change that dropped it would fail here.
+  #
+  # Only this script is copied, and that is load-bearing: a copy with a checker beside it would
+  # run the whole suite, including this case, forever. What stops it is require_assets, which
+  # finds none of its four siblings and exits 2 before the first case — so this also covers the
+  # preflight aborting after the scratch line rather than before it.
+  d="$SCRATCH/cleanup_retains_on_abort"
+  mkdir -p "$d/bin" "$d/tmp"
+  cp "$SCRIPT_DIR/check-records-test.sh" "$d/bin/check-records-test.sh"
+  chmod +x "$d/bin/check-records-test.sh"
+  printf '  %-4s %-44s ' "" "aborted run retains its scratch tree"
+  if (TMPDIR="$d/tmp" "$d/bin/check-records-test.sh") >"$d/.o" 2>"$d/.e"; then
+    failed=$((failed + 1))
+    printf 'FAIL a copy of the suite with no checker beside it passed\n'
+  else
+    nested=$(sed -n 's/^scratch: //p' "$d/.o" | head -1)
+    if [ -z "$nested" ]; then
+      failed=$((failed + 1))
+      printf 'FAIL the aborted run never printed its scratch path\n'
+    elif [ -d "$nested" ]; then
+      passed=$((passed + 1))
+      printf 'ok   scratch kept after an abort\n'
+    else
+      failed=$((failed + 1))
+      printf 'FAIL scratch removed after an aborted run\n'
+    fi
+  fi
+
+  # The remaining three arms. A green run's removal cannot be observed from inside that run, so
+  # the decision stands in for it — and the two arms that protect a caller-supplied or empty
+  # path are what keep `rm -rf` off a directory this script did not create.
+  printf '  %-4s %-44s ' "" "removal decided by green run of an owned dir"
+  verdict=""
+  if ! should_clean_scratch 0 yes /nonexistent; then
+    verdict="$verdict green-owned-not-removed"
+  fi
+  if should_clean_scratch 1 yes /nonexistent; then
+    verdict="$verdict failed-run-removed"
+  fi
+  if should_clean_scratch 0 no /nonexistent; then
+    verdict="$verdict caller-supplied-removed"
+  fi
+  if should_clean_scratch 0 yes ""; then
+    verdict="$verdict empty-path-removed"
+  fi
+  if [ -z "$verdict" ]; then
+    passed=$((passed + 1))
+    printf 'ok   green+owned removes, nothing else does\n'
+  else
+    failed=$((failed + 1))
+    printf 'FAIL%s\n' "$verdict"
+  fi
+
+  # The abort notice, by the same standing-in: the summary below has not printed yet, so this run
+  # cannot observe its own notice either. The first arm is the regression — the old
+  # `failed -eq 0` guard suppressed the notice on exactly this state, a run that recorded
+  # failures and then died. The second covers a preflight abort, which exits 2. The last keeps
+  # the notice off a run that failed cases and finished, where the summary is the report.
+  printf '  %-4s %-44s ' "" "abort reported whenever the summary is missed"
+  verdict=""
+  if ! should_report_abort 1 no; then
+    verdict="$verdict silent-abort"
+  fi
+  if ! should_report_abort 2 no; then
+    verdict="$verdict silent-preflight-abort"
+  fi
+  if should_report_abort 0 yes; then
+    verdict="$verdict green-run-reported"
+  fi
+  if should_report_abort 1 yes; then
+    verdict="$verdict completed-failing-run-reported"
+  fi
+  if [ -z "$verdict" ]; then
+    passed=$((passed + 1))
+    printf 'ok   reports iff no summary reached\n'
+  else
+    failed=$((failed + 1))
+    printf 'FAIL%s\n' "$verdict"
+  fi
+
+  summary_reached=yes
+  printf '\n%d passed, %d failed\n' "$passed" "$failed"
+  [ "$failed" -eq 0 ]
+}
+
+main "$@"
