@@ -81,6 +81,9 @@ def _sync(args: argparse.Namespace, client: Any) -> None:
             continue
         pending = matching_record(detail, "github_repair_pending", candidate)
         matches = _search(client, candidate)
+        if matches is None:
+            print(f"Skipped {candidate.issue_id}: GitHub search failed.")
+            continue
         if pending is not None:
             _adopt_if_unique(args, candidate, matches, "github_repair_pending")
             continue
@@ -110,11 +113,11 @@ def _read_link(args: argparse.Namespace, client: Any, candidate: PromotionCandid
         print(f"Would reconcile linked issue #{issue.number} for {candidate.issue_id}.")
 
 
-def _search(client: Any, candidate: PromotionCandidate):
+def _search(client: Any, candidate: PromotionCandidate) -> list[Any] | None:
     try:
         return client.search(candidate.repository, candidate.marker)
     except (RuntimeError, ValueError):
-        return []
+        return None
 
 
 def _adopt_if_unique(args: argparse.Namespace, candidate: PromotionCandidate, matches: list[Any], expected_key: str | None) -> None:
@@ -143,6 +146,9 @@ def _create_once(args: argparse.Namespace, client: Any, candidate: PromotionCand
         print(f"Pending {candidate.issue_id}: create outcome is uncertain.")
         return
     matches = _search(client, candidate)
+    if matches is None:
+        print(f"Pending {candidate.issue_id}: post-create search failed.")
+        return
     _adopt_if_unique(args, candidate, matches, "github_repair_pending")
 
 
