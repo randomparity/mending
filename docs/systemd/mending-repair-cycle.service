@@ -1,0 +1,19 @@
+[Unit]
+Description=Mending bounded external repair cycle
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=mending
+Group=mending
+WorkingDirectory=/var/lib/mending/repository
+EnvironmentFile=/etc/mending/repair-cycle.env
+ExecStart=/usr/local/bin/desloppify repair-cycle --config ${MENDING_REPAIR_CYCLE_CONFIG} --state /var/lib/mending-repair-cycle/state.json
+StateDirectory=mending-repair-cycle
+StateDirectoryMode=0700
+ReadWritePaths=/var/lib/mending/repository
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict

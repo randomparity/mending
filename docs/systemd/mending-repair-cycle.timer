@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily Mending bounded external repair cycle
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+Persistent=false
+Unit=mending-repair-cycle.service
+
+[Install]
+WantedBy=timers.target
