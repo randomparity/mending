@@ -17,25 +17,42 @@ review text.
 Add a one-shot `repair-queue sync` command backed by a small injected `gh`
 subprocess adapter. The command is a dry run unless `--apply` is supplied.
 It accepts only current `concerns` work items with complete identity and
-evidence digests and without ADR-0004's transient prior-digest fields. For each
-eligible item, it derives a deterministic marker from those digests, queries
-GitHub across open and closed issues for that marker, and adopts exactly one
-match. It creates an issue only when no match exists, then re-searches and
-writes the resulting number and URL under the existing state lock.
+evidence digests and without ADR-0004's transient prior-digest fields. Their
+absence on a later unchanged scan is the required revalidation; the plan's
+superseded record is historical provenance, not an unbounded promotion block.
+For each eligible item, it derives a deterministic marker from those digests,
+queries GitHub across open and closed issues for that marker, and adopts exactly
+one match. Before its first create it rechecks and persists a pending marker in
+a completed state-lock transaction. It creates only after that transaction,
+then re-searches and writes the resulting number and URL only after one result.
 
 The public body uses only the deterministic marker, evidence digest, and
-allowlisted, normalized owner, contracts, and verification fields. Raw evidence,
-paths, identifiers, summary text, and values that fail public-safe validation
-are omitted. An ambiguous lookup, malformed CLI result, command failure, or
-uncertain create result records no new link and creates no retry candidate until
-a later sync can establish one result.
+allowlisted, normalized owner, contracts, and verification fields. Every source
+field must be a lower-case, single-line phrase of one to eight words matching
+`[a-z][a-z0-9_-]{0,31}`. It must not contain a path separator, dot, colon, at
+sign, URL or address pattern, IP literal, opaque 32+-hex value, or a word from
+the denylist `credential`, `host`, `ignore`, `instruction`, `key`, `password`,
+`prompt`, `secret`, `system`, or `token`. A rejected required field prevents
+promotion rather than being emitted or silently replaced. Raw evidence,
+identifiers, summary text, and unapproved fields are never emitted.
+
+An ambiguous lookup, malformed CLI result, command failure, or uncertain create
+result leaves the pending marker in state and creates no link. Later syncs for a
+pending marker only search and adopt; they never create again. An operator may
+clear a pending marker only through an explicit attested recovery command after
+checking GitHub, then a later sync can make a new first attempt.
+
+The at-most-one guarantee applies to writers sharing one state file. The state
+lock serializes those writers. Independent state files/checkouts are unsupported
+and are reported as a scope checkpoint rather than coordinated remotely.
 
 ## Consequences
 
-GitHub becomes the actionable queue while local state retains the durable link
-and raw observation. Tests can inject adapter responses without credentials or
-network access. Operators need `gh` authentication only for `--apply`; claims,
-scope authorization, scheduling, and execution remain Adept/#6 concerns.
+GitHub becomes the actionable queue while local state retains the durable link,
+pending-attempt marker, and raw observation. Tests can inject adapter responses
+without credentials or network access. Operators need `gh` authentication only
+for `--apply`; claims, scope authorization, scheduling, and execution remain
+Adept/#6 concerns.
 
 ## Considered & rejected
 
