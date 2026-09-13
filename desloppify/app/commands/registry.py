@@ -15,20 +15,21 @@ def _build_handlers() -> dict[str, CommandHandler]:
     from desloppify.app.commands.backlog import cmd_backlog
     from desloppify.app.commands.config import cmd_config
     from desloppify.app.commands.detect import cmd_detect
-    from desloppify.app.commands.directives import cmd_directives
     from desloppify.app.commands.dev import cmd_dev
+    from desloppify.app.commands.directives import cmd_directives
     from desloppify.app.commands.exclude import cmd_exclude
     from desloppify.app.commands.langs import cmd_langs
     from desloppify.app.commands.move import cmd_move
     from desloppify.app.commands.next import cmd_next
     from desloppify.app.commands.plan import cmd_plan
-    from desloppify.app.commands.suppress import cmd_suppress
-    from desloppify.app.commands.review import cmd_review
+    from desloppify.app.commands.repair_cycle import cmd_repair_cycle
     from desloppify.app.commands.repair_queue import cmd_repair_queue
+    from desloppify.app.commands.review import cmd_review
     from desloppify.app.commands.scan import cmd_scan
     from desloppify.app.commands.setup import cmd_setup
     from desloppify.app.commands.show import cmd_show
     from desloppify.app.commands.status import cmd_status
+    from desloppify.app.commands.suppress import cmd_suppress
     from desloppify.app.commands.update_skill import cmd_update_skill
     from desloppify.app.commands.viz import cmd_tree, cmd_viz
     from desloppify.app.commands.zone import cmd_zone
@@ -50,6 +51,7 @@ def _build_handlers() -> dict[str, CommandHandler]:
         "move": cmd_move,
         "zone": cmd_zone,
         "review": cmd_review,
+        "repair-cycle": cmd_repair_cycle,
         "repair-queue": cmd_repair_queue,
         "config": cmd_config,
         "directives": cmd_directives,

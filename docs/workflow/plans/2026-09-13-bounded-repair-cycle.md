@@ -14,8 +14,13 @@ locked `uv` toolchain apply.
 - Missing authority, disabled configuration, stale/unknown external state, failed proof, or budget exhaustion parks before new work.
 - Adept remains the owner of claims, reviews, execution, and merge gates.
 
-Expected implementation size: 400–550 changed lines (M) — command/configuration,
+Expected implementation size: 1,000–1,200 changed lines (M) — command/configuration,
 durable scheduler state, injected Adept adapter, systemd recipe, and focused fixtures.
+
+The earlier estimate omitted the separate, machine-checkable serialization and
+validation needed for scheduler-only state, correlated receipts, and fail-closed
+restart outcomes. Those contracts are required by the frozen scope; they do not
+add a scheduler abstraction or Adept-owned behavior.
 
 ## Task 1: Define cycle configuration and durable scheduler state
 

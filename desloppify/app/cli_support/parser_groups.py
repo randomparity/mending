@@ -5,11 +5,11 @@ from __future__ import annotations
 import argparse
 
 from desloppify.app.cli_support.parser_groups_admin import (  # noqa: F401 (re-exports)
+    _add_autofix_parser,
     _add_config_parser,
     _add_detect_parser,
-    _add_directives_parser,
     _add_dev_parser,
-    _add_autofix_parser,
+    _add_directives_parser,
     _add_langs_parser,
     _add_move_parser,
     _add_review_parser,
@@ -19,7 +19,12 @@ from desloppify.app.cli_support.parser_groups_admin import (  # noqa: F401 (re-e
     _add_zone_parser,
 )
 from desloppify.app.cli_support.parser_groups_plan_impl import add_plan_parser
-from desloppify.app.cli_support.parser_groups_repair_queue import _add_repair_queue_parser
+from desloppify.app.cli_support.parser_groups_repair_cycle import (
+    _add_repair_cycle_parser,
+)
+from desloppify.app.cli_support.parser_groups_repair_queue import (
+    _add_repair_queue_parser,
+)
 from desloppify.base.enums import issue_status_tokens
 
 _STATUS_CHOICES = sorted(issue_status_tokens(include_all=True))
@@ -38,6 +43,7 @@ __all__ = [
     "_add_next_parser",
     "add_plan_parser",
     "_add_review_parser",
+    "_add_repair_cycle_parser",
     "_add_repair_queue_parser",
     "_add_scan_parser",
     "_add_show_parser",
