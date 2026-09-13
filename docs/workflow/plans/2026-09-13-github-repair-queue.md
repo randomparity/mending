@@ -14,12 +14,14 @@ locked `uv` toolchain apply.
 
 Expected implementation size: 650–850 changed lines — parser/command wiring,
 deterministic marker and payload rendering, injected transport, locked state persistence,
-and focused transport fixtures. The implementation is 815 code/test lines: the
+and focused transport fixtures. The implementation is 847 code/test lines: the
 pending-create transaction, explicit repository verification, stale-result check,
 matching scan-metadata preservation, atomic `status:ready` creation, revalidation
 attestation validation, and closed-match state readback are required recovery
 contracts surfaced by independent review. The locked pre-create link check is also
 required so a delayed shared-state writer cannot create after another writer links.
+An uncertain-create recovery fixture now proves that only explicit attested recovery
+can permit a later first attempt.
 The campaign denominator remains the fixed
 250 (M); this estimate records variance and does not change that denominator.
 
