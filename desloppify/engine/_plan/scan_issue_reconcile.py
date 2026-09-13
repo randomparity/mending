@@ -7,7 +7,10 @@ from datetime import UTC, datetime, timedelta
 
 from desloppify.engine._plan.annotations import get_issue_note
 from desloppify.engine._plan.constants import SYNTHETIC_PREFIXES
-from desloppify.engine._plan.cluster_semantics import EXECUTION_STATUS_DONE, cluster_is_active
+from desloppify.engine._plan.cluster_semantics import (
+    EXECUTION_STATUS_DONE,
+    cluster_is_active,
+)
 from desloppify.engine._plan.operations.lifecycle import clear_focus_if_cluster_empty
 from desloppify.engine._plan.operations.meta import append_log_entry
 from desloppify.engine._plan.operations.skip import resurface_stale_skips
@@ -36,14 +39,21 @@ class ReconcileResult:
 
 
 def _find_candidates(
-    state: StateModel, detector: str, file: str
+    state: StateModel, detector: str, file: str, detail: dict | None
 ) -> list[str]:
     """Find alive issues that could be remaps for a disappeared issue."""
     candidates: list[str] = []
     for fid, issue in (state.get("work_items") or state.get("issues", {})).items():
         if issue.get("status") not in _ALIVE_STATUSES:
             continue
-        if issue.get("detector") == detector and issue.get("file") == file:
+        candidate_detail = issue.get("detail", {})
+        if detector == "concerns":
+            identity = detail.get("concern_identity") if detail else None
+            if not identity or candidate_detail.get("concern_identity") != identity:
+                continue
+        elif issue.get("detector") != detector or issue.get("file") != file:
+            continue
+        if detector != "concerns" or candidate_detail.get("concern_evidence_digest"):
             candidates.append(fid)
     return candidates
 
@@ -70,12 +80,14 @@ def _supersede_id(
     detector = ""
     file = ""
     summary = ""
+    detail: dict | None = None
     if issue:
         detector = issue.get("detector", "")
         file = issue.get("file", "")
         summary = issue.get("summary", "")
+        detail = issue.get("detail") if isinstance(issue.get("detail"), dict) else None
 
-    candidates = _find_candidates(state, detector, file) if detector else []
+    candidates = _find_candidates(state, detector, file, detail) if detector else []
     # Don't include the original in candidates
     candidates = [c for c in candidates if c != issue_id]
 
@@ -94,6 +106,20 @@ def _supersede_id(
     override_note = get_issue_note(plan, issue_id)
     if override_note:
         entry["note"] = override_note
+
+    if detector == "concerns" and detail and len(candidates) == 1:
+        successor = (state.get("work_items") or state.get("issues", {}))[candidates[0]]
+        successor_detail = successor.get("detail", {})
+        evidence = detail.get("concern_evidence_digest")
+        successor_evidence = successor_detail.get("concern_evidence_digest")
+        if evidence and evidence == successor_evidence:
+            _remap_id(plan, issue_id, candidates[0])
+            entry["status"] = "remapped"
+            entry["remapped_to"] = candidates[0]
+            plan["superseded"][issue_id] = entry
+            return True
+        if evidence and successor_evidence:
+            entry["revalidation_reason"] = "concern_evidence_changed"
 
     plan["superseded"][issue_id] = entry
 
@@ -116,6 +142,29 @@ def _supersede_id(
         override["updated_at"] = now
 
     return True
+
+
+def _remap_id(plan: PlanModel, old_id: str, new_id: str) -> None:
+    def replace(ids: list[str]) -> list[str]:
+        return list(
+            dict.fromkeys(
+                new_id if issue_id == old_id else issue_id for issue_id in ids
+            )
+        )
+
+    plan["queue_order"][:] = replace(plan.get("queue_order", []))
+    plan["promoted_ids"][:] = replace(plan.get("promoted_ids", []))
+    for cluster in plan.get("clusters", {}).values():
+        cluster["issue_ids"] = replace(cluster.get("issue_ids", []))
+        for step in cluster.get("action_steps", []):
+            if isinstance(step, dict):
+                step["issue_refs"] = replace(step.get("issue_refs", []))
+    for name in ("skipped", "overrides"):
+        entries = plan.get(name, {})
+        entry = entries.pop(old_id, None)
+        if entry is not None and new_id not in entries:
+            entry["issue_id"] = new_id
+            entries[new_id] = entry
 
 
 def _prune_old_superseded(plan: PlanModel, now_dt: datetime) -> list[str]:

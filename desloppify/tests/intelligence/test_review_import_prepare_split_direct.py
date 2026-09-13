@@ -251,6 +251,30 @@ def test_issue_flow_build_collect_and_auto_resolve_paths(monkeypatch) -> None:
     assert state["work_items"]["review::old"]["status"] == "fixed"
 
 
+def test_confirmed_concern_comparison_distinguishes_evidence() -> None:
+    original = _confirmed_concern()
+    renamed = {**original, "related_files": ["src/renamed.py"]}
+    changed = {**original, "protected_contracts": ["changed caller output"]}
+
+    issues, _, _ = issue_flow_mod.validate_and_build_issues(
+        [original, renamed, changed], {"naming_quality": {}}, "python"
+    )
+    original_detail, renamed_detail, changed_detail = [
+        issue["detail"] for issue in issues
+    ]
+
+    assert original_detail["concern_identity"] == renamed_detail["concern_identity"]
+    assert (
+        original_detail["concern_evidence_digest"]
+        == renamed_detail["concern_evidence_digest"]
+    )
+    assert original_detail["concern_identity"] == changed_detail["concern_identity"]
+    assert (
+        original_detail["concern_evidence_digest"]
+        != changed_detail["concern_evidence_digest"]
+    )
+
+
 def test_resolution_and_state_helper_utilities() -> None:
     state: dict = {
         "issues": {

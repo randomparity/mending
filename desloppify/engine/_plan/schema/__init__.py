@@ -105,6 +105,7 @@ class SupersededEntry(TypedDict, total=False):
     superseded_at: str
     remapped_to: str | None
     candidates: list[str]
+    revalidation_reason: str | None
     note: str | None
 
 

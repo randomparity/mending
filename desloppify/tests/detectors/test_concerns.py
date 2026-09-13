@@ -7,7 +7,7 @@ from desloppify.engine._concerns.generators import (
     cleanup_stale_dismissals,
     generate_concerns,
 )
-from desloppify.engine._concerns.utils import _fingerprint
+from desloppify.engine._concerns.utils import _dismissal_comparison, _fingerprint
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
@@ -326,18 +326,28 @@ class TestDismissals:
         concerns = generate_concerns(state)
         assert len(concerns) == 1
         fp = concerns[0].fingerprint
+        identity, evidence = _dismissal_comparison(
+            state, concerns[0].type, concerns[0].source_issues
+        )
 
         state["concern_dismissals"] = {
             fp: {
                 "dismissed_at": "2026-01-01T00:00:00+00:00",
                 "reasoning": "Single responsibility",
                 "source_issue_ids": [f["id"]],
+                "dismissal_identity": identity,
+                "dismissal_evidence_digest": evidence,
             }
         }
         assert generate_concerns(state) == []
+        state["concern_dismissals"]["duplicate"] = {
+            "dismissal_identity": identity,
+            "dismissal_evidence_digest": evidence,
+        }
+        assert len(generate_concerns(state)) == 1
 
-    def test_dismissed_with_source_ids_suppresses(self):
-        """Dismissals with matching source_issue_ids suppress the concern."""
+    def test_dismissal_resurfaces_when_source_evidence_changes(self):
+        """A changed path-independent source fingerprint reopens the concern."""
         f = _make_issue(
             "smells", "app/big.py", "monster",
             detail={"smell_id": "monster_function", "function": "f", "loc": 200},
@@ -346,16 +356,22 @@ class TestDismissals:
         concerns = generate_concerns(state)
         assert len(concerns) == 1
         fp = concerns[0].fingerprint
+        identity, evidence = _dismissal_comparison(
+            state, concerns[0].type, concerns[0].source_issues
+        )
 
-        # Dismissal with correct source IDs suppresses.
         state["concern_dismissals"] = {
             fp: {
                 "dismissed_at": "2026-01-01T00:00:00+00:00",
                 "reasoning": "Acceptable complexity",
                 "source_issue_ids": [f["id"]],
+                "dismissal_identity": identity,
+                "dismissal_evidence_digest": evidence,
             }
         }
         assert generate_concerns(state) == []
+        f["summary"] = "changed source evidence"
+        assert len(generate_concerns(state)) == 1
 
     def test_stale_dismissal_cleaned_up(self):
         """Dismissals whose source issues are all gone get removed."""
@@ -533,5 +549,3 @@ class TestRegistryIntegration:
             "private_imports", "layer_violation",
         }
         assert expected.issubset(JUDGMENT_DETECTORS)
-
-

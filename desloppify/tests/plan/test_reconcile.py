@@ -31,6 +31,14 @@ def _state_with_issues(*ids: str, status: str = "open") -> dict:
     return {"issues": issues, "scan_count": 5}
 
 
+def _concern(fid: str, status: str, evidence: str = "same") -> dict:
+    return {
+        "id": fid, "status": status, "detector": "concerns", "file": "renamed.py",
+        "tier": 1, "confidence": "high", "summary": fid,
+        "detail": {"concern_identity": "identity", "concern_evidence_digest": evidence},
+    }
+
+
 # ---------------------------------------------------------------------------
 # _supersede_id clears override cluster ref
 # ---------------------------------------------------------------------------
@@ -194,6 +202,54 @@ def test_reconcile_supersedes_resolved_action_references():
     assert "a" not in plan["clusters"]["my-cluster"]["issue_ids"]
     assert "b" in plan["queue_order"]
     assert "b" in plan["promoted_ids"]
+
+
+def test_reconcile_remaps_one_unchanged_concern_everywhere():
+    plan = _plan_with_queue("old")
+    ensure_plan_defaults(plan)
+    plan["skipped"]["old"] = {"issue_id": "old", "kind": "temporary"}
+    plan["overrides"]["old"] = {"issue_id": "old", "cluster": None}
+    plan["promoted_ids"] = ["old"]
+    create_cluster(plan, "cluster")
+    plan["clusters"]["cluster"]["issue_ids"] = ["old"]
+    plan["clusters"]["cluster"]["action_steps"] = [{"issue_refs": ["old"]}]
+    state = {"issues": {"old": _concern("old", "fixed"), "new": _concern("new", "open")}}
+
+    reconcile_plan_after_scan(plan, state)
+
+    assert plan["queue_order"] == ["new"]
+    assert set(plan["skipped"]) == {"new"}
+    assert set(plan["overrides"]) == {"new"}
+    assert plan["promoted_ids"] == ["new"]
+    assert plan["clusters"]["cluster"]["issue_ids"] == ["new"]
+    assert plan["clusters"]["cluster"]["action_steps"][0]["issue_refs"] == ["new"]
+    assert plan["superseded"]["old"]["remapped_to"] == "new"
+
+
+def test_reconcile_marks_changed_concern_for_revalidation():
+    plan = _plan_with_queue("old")
+    state = {"issues": {"old": _concern("old", "fixed"), "new": _concern("new", "open", "changed")}}
+
+    reconcile_plan_after_scan(plan, state)
+
+    entry = plan["superseded"]["old"]
+    assert entry["revalidation_reason"] == "concern_evidence_changed"
+    assert entry["candidates"] == ["new"]
+
+
+def test_reconcile_does_not_transfer_ambiguous_or_incomplete_concerns():
+    for old, successors in (
+        (_concern("old", "fixed"), [_concern("new", "open"), _concern("other", "open")]),
+        ({**_concern("old", "fixed"), "detail": {}}, [_concern("new", "open")]),
+    ):
+        plan = _plan_with_queue("old")
+        state = {"issues": {"old": old, **{issue["id"]: issue for issue in successors}}}
+
+        reconcile_plan_after_scan(plan, state)
+
+        entry = plan["superseded"]["old"]
+        assert plan["queue_order"] == []
+        assert "revalidation_reason" not in entry
 
 
 # ---------------------------------------------------------------------------
