@@ -19,6 +19,21 @@ import desloppify.intelligence.review.prepare_holistic_payload_parts as payload_
 import desloppify.intelligence.review.prepare_holistic_scope as scope_mod
 
 
+def _confirmed_concern(identifier: str = "confirmed-concern") -> dict[str, object]:
+    return {
+        "dimension": "naming_quality", "identifier": identifier,
+        "summary": "Callers duplicate the name policy", "confidence": "high",
+        "suggestion": "Move the policy to its shared owner",
+        "related_files": ["src/a.py", "src/b.py"],
+        "evidence": ["both callers normalize names differently"],
+        "concern_verdict": "confirmed", "root_cause_cluster": "duplicated_name_policy",
+        "maintenance_consequence": "callers will keep diverging",
+        "proposed_owner": "name policy module",
+        "protected_contracts": ["existing caller output"],
+        "verification": "exercise both callers",
+    }
+
+
 def test_contract_validation_accepts_valid_payload_and_dismissed_entries() -> None:
     valid_issue, errors = contracts_validation_mod.validate_review_issue_payload(
         {
@@ -50,21 +65,7 @@ def test_contract_validation_accepts_valid_payload_and_dismissed_entries() -> No
 
 
 def test_contract_validation_requires_confirmed_concern_evidence() -> None:
-    issue = {
-        "dimension": "naming_quality",
-        "identifier": "id1",
-        "summary": "Shared naming policy has drifted",
-        "confidence": "high",
-        "suggestion": "Move policy to its shared owner",
-        "related_files": ["src/a.py"],
-        "evidence": ["both callers normalize names differently"],
-        "concern_verdict": "confirmed",
-        "root_cause_cluster": "duplicated_name_policy",
-        "maintenance_consequence": "callers will keep diverging",
-        "proposed_owner": "name policy module",
-        "protected_contracts": ["existing caller output"],
-        "verification": "exercise both callers",
-    }
+    issue = _confirmed_concern("id1")
     confirmed, errors = contracts_validation_mod.validate_review_issue_payload(
         issue,
         label="issues[0]",
@@ -198,35 +199,9 @@ def test_issue_flow_build_collect_and_auto_resolve_paths(monkeypatch) -> None:
                 "concern_verdict": "dismissed",
                 "concern_fingerprint": "fp2",
             },
-            {
-                "dimension": "naming_quality",
-                "identifier": "shared-name-policy",
-                "summary": "Callers duplicate the name policy",
-                "confidence": "high",
-                "suggestion": "Move the policy to its shared owner",
-                "related_files": ["src/a.py", "src/b.py"],
-                "evidence": ["both callers normalize names differently"],
-                "concern_verdict": "confirmed",
-                "root_cause_cluster": "duplicated_name_policy",
-                "maintenance_consequence": "callers will keep diverging",
-                "proposed_owner": "name policy module",
-                "protected_contracts": ["existing caller output"],
-                "verification": "exercise both callers",
-            },
-            {
-                "dimension": "naming_quality",
-                "identifier": "incomplete-concern",
-                "summary": "A concern without an owner",
-                "confidence": "high",
-                "suggestion": "Move it",
-                "related_files": ["src/a.py"],
-                "evidence": ["line 10"],
-                "concern_verdict": "confirmed",
-                "root_cause_cluster": "duplicated_name_policy",
-                "maintenance_consequence": "callers will keep diverging",
-                "protected_contracts": ["existing caller output"],
-                "verification": "exercise both callers",
-            },
+            _confirmed_concern("shared-name-policy"),
+            {key: value for key, value in _confirmed_concern("incomplete-concern").items()
+             if key != "proposed_owner"},
         ],
         {"naming_quality": {}},
         "python",
