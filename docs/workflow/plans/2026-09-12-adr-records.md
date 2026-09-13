@@ -9,8 +9,9 @@ enables only ADR validation in a dedicated workflow, and validates the installat
 Use the supplied gate assets as one atomic install. Do not alter existing CI,
 Makefile targets, lifecycle behavior, debt policy, or branch protection.
 
-Expected implementation size: 7,000–7,000 changed lines (L) — direct operator-approved
-denominator on 2026-09-13, replacing the prior estimate after measuring the six gate assets and one record.
+Expected implementation size: 6,600–7,000 changed lines (L) — measured from the six gate
+assets and one record. Design denominator: 7,000 changed lines — direct operator approval on
+2026-09-13, replacing the prior estimate; the current branch measures 6,605 additions.
 
 ## File map
 
