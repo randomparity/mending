@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from typing import Any
 
 from desloppify.engine._state.filtering import make_issue
@@ -53,6 +54,11 @@ def _build_holistic_detail(
     }
     detail["summary_hash"] = content_hash
     return detail
+
+
+def _comparison_hash(value: dict[str, Any]) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode()).hexdigest()
 
 
 def validate_and_build_issues(
@@ -145,6 +151,23 @@ def validate_and_build_issues(
                 "verification",
             ):
                 detail[field] = issue[field]
+            detail["concern_identity"] = _comparison_hash(
+                {
+                    "schema": 1,
+                    "dimension": dimension,
+                    "identifier": issue["identifier"],
+                    "root_cause_cluster": issue["root_cause_cluster"],
+                    "proposed_owner": issue["proposed_owner"],
+                }
+            )
+            detail["concern_evidence_digest"] = _comparison_hash(
+                {
+                    "schema": 1,
+                    "maintenance_consequence": issue["maintenance_consequence"],
+                    "protected_contracts": sorted(set(issue["protected_contracts"])),
+                    "verification": issue["verification"],
+                }
+            )
 
         prefix = "concern" if is_confirmed_concern else "holistic"
         issue_file = issue.get("concern_file", "") if is_confirmed_concern else ""

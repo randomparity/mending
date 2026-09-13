@@ -52,6 +52,8 @@ class ConcernDismissal(TypedDict, total=False):
     concern_type: str
     concern_file: str
     source_issue_ids: list[str]
+    dismissal_identity: str
+    dismissal_evidence_digest: str
 
 
 class AssessmentImportAuditEntry(TypedDict, total=False):

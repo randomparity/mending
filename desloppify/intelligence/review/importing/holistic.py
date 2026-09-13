@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from desloppify.engine.concerns import cleanup_stale_dismissals, generate_concerns
+from desloppify.engine._concerns.utils import _dismissal_comparison
 from desloppify.engine._state.merge import MergeScanOptions, merge_scan
 from desloppify.engine._state.schema import StateModel, utc_now
 from desloppify.engine.scoring import HOLISTIC_POTENTIAL
@@ -123,18 +124,25 @@ def import_holistic_issues(
         now = utc_now_fn()
         current_concerns = generate_concerns(state)
         concern_sources = {
-            concern.fingerprint: list(concern.source_issues)
+            concern.fingerprint: concern
             for concern in current_concerns
         }
         for dismissal in dismissed_concerns:
             fingerprint = dismissal["fingerprint"]
+            concern = concern_sources.get(fingerprint)
             store[fingerprint] = {
                 "dismissed_at": now,
                 "reasoning": dismissal.get("reasoning", ""),
                 "concern_type": dismissal.get("concern_type", ""),
                 "concern_file": dismissal.get("concern_file", ""),
-                "source_issue_ids": concern_sources.get(fingerprint, []),
+                "source_issue_ids": list(concern.source_issues) if concern else [],
             }
+            if concern:
+                identity, evidence = _dismissal_comparison(
+                    state, concern.type, concern.source_issues
+                )
+                store[fingerprint]["dismissal_identity"] = identity
+                store[fingerprint]["dismissal_evidence_digest"] = evidence
 
     potentials = ensure_lang_potentials(state, lang_name)
     existing_review = potentials.get("review", 0)

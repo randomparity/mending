@@ -22,6 +22,7 @@ def _try_make_concern(
     file: str,
     fp_keys: tuple[str, ...],
     all_ids: tuple[str, ...],
+    state: StateModel,
     dismissals: dict[str, Any],
     summary: str,
     evidence: tuple[str, ...],
@@ -30,7 +31,7 @@ def _try_make_concern(
 ) -> Concern | None:
     """Create a concern unless a matching dismissal exists."""
     fp = _fingerprint(concern_type, fp_file if fp_file is not None else file, fp_keys)
-    if _is_dismissed(dismissals, fp, all_ids):
+    if _is_dismissed(state, dismissals, concern_type, all_ids):
         return None
     return Concern(
         type=concern_type,
@@ -75,6 +76,7 @@ def _file_concerns(state: StateModel, dismissals: dict[str, Any]) -> list[Concer
             file=file,
             fp_keys=fp_keys,
             all_ids=all_ids,
+            state=state,
             dismissals=dismissals,
             summary=_build_summary(concern_type, judgment_dets, signals),
             evidence=_build_evidence(judgment, signals),
@@ -121,6 +123,7 @@ def _cross_file_patterns(state: StateModel, dismissals: dict[str, Any]) -> list[
             fp_file=",".join(sorted_files[:5]),
             fp_keys=combo_names,
             all_ids=all_ids,
+            state=state,
             dismissals=dismissals,
             summary=(
                 f"{len(files)} files share the same problem pattern "
@@ -176,6 +179,7 @@ def _systemic_smell_patterns(
             fp_file=smell_id,
             fp_keys=(smell_id,),
             all_ids=all_ids,
+            state=state,
             dismissals=dismissals,
             summary=(
                 f"'{smell_id}' appears in {len(unique_files)} files — "
