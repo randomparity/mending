@@ -106,3 +106,30 @@ def test_recover_clears_only_matching_pending_marker() -> None:
     args = _args("recover", state, apply=True, marker=marker, attest="checked GitHub")
     cmd_repair_queue(args)
     assert "github_repair_pending" not in detail
+
+
+def test_sync_search_failure_never_attempts_create() -> None:
+    class FailingSearchClient(_Client):
+        def __init__(self) -> None:
+            super().__init__()
+            self.created = False
+
+        def search(self, repository: str, marker: str):
+            raise RuntimeError("unavailable")
+
+        def create(self, repository: str, candidate) -> None:
+            self.created = True
+
+    state = _state()
+    detail = state["work_items"]["concerns::item"]["detail"]
+    detail["github_repair_revalidated"] = {
+        "marker": marker_for_hashes(IDENTITY, EVIDENCE),
+        "repository": REPOSITORY,
+        "attestation": "verified current evidence",
+    }
+    client = FailingSearchClient()
+
+    cmd_repair_queue(_args("sync", state, apply=True, client=client))
+
+    assert client.created is False
+    assert "github_repair_pending" not in detail
