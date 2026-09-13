@@ -26,19 +26,16 @@ Interfaces: `PromotionCandidate.from_issue(issue: Mapping[str, object]) ->
 PromotionCandidate | None` accepts only an open `concerns` item with nonempty
 `concern_identity` and `concern_evidence_digest` and without
 `previous_concern_identity` or `previous_concern_evidence_digest`. Their absence
-after a later unchanged scan proves the #4 revalidation gate; it does not consult
-historical plan supersession entries. `marker` is SHA-256 over the two hashes.
-`render_issue()` returns title/body built only from the marker, evidence digest,
-and required detail fields that are one-to-eight-word lower-case phrases matching
-ADR-0005's word grammar and structural/denylist checks. A failed field rejects
-the candidate; no raw source string is redacted into public output.
+is necessary but not sufficient: `github_repair_revalidated` must contain the
+same marker and an explicit attestation. `marker` is SHA-256 over the two hashes.
+`render_issue()` returns title/body built only from static labels and the marker,
+identity digest, and evidence digest; it never renders source text.
 
 Verification:
 
-- Mode: focused-test. Contract: incomplete, stale, and unsafe candidates are
-  rejected; equivalent candidates produce the same marker and public body.
-  Fixtures cover email, hostname, IPv4, path, URL, secret-like, prompt-like,
-  opaque-token, and out-of-vocabulary source text.
+- Mode: focused-test. Contract: incomplete, stale, and un-revalidated candidates
+  are rejected; equivalent candidates produce the same marker and source-free
+  public body. Fixtures prove that hostile source text cannot enter the body.
   Red observation: no promotion model exists. Green command:
   `uv run --locked pytest -q desloppify/tests/repair_queue/test_promotion.py`
   exits 0.
@@ -54,21 +51,30 @@ Files: `desloppify/engine/repair_queue.py`,
 `desloppify/tests/repair_queue/test_promotion.py`.
 
 Interfaces: `GitHubIssueClient.run(argv: Sequence[str]) -> CompletedProcess[str]`
-is injected into `sync_candidates`. The service searches with the fixed
-`gh issue list --state all --search MARKER --limit 100 --json number,url`
-argument shape, adopts exactly one `{number, url}`, creates only after an empty
-search, then rechecks under the state lock and persists `PendingPromotion(marker)`
-in a completed transaction before its first create. Pending candidates only
-search/adopt on later runs. It returns `created`, `adopted`, `pending`, `skipped`,
-or `uncertain` records and never constructs a shell command from concern text.
+is injected into `sync_candidates`. Every fixed argv includes the explicit
+`--repo OWNER/REPO` value. The service searches with the fixed `gh issue list
+--state all --search MARKER --limit 100 --json number,url` argument shape. A
+matching existing link uses the fixed `gh issue view NUMBER --json number,url,state`
+form and is read back even if its body marker was edited. Otherwise it adopts
+exactly one `{number, url}`, creates only after an empty search, then rechecks
+under the state lock and persists
+`PendingPromotion(marker)` in a completed transaction before its first create.
+Pending candidates only search/adopt on later runs. It returns `created`,
+`adopted`, `reconciled`, `pending`, `skipped`, or `uncertain` records and never
+constructs a shell command from concern text.
+
+`GitHubIssueClient.resolve_repository(repository: str)` invokes `gh repo view`
+with that explicit repository and accepts only an exact `nameWithOwner` match
+before revalidation persists it.
 
 Verification:
 
 - Mode: focused-test. Contract: open/closed match adoption, zero-match create,
-  duplicate-match, malformed JSON, process error, and lost-create-response
-  paths make the stated result. A crash after the pending transaction forbids a
-  second create; a pending marker remains until attested recovery clears it.
-  Red observation: no adapter exists. Green command:
+  duplicate-match, malformed JSON, process error, human-edited closed link,
+  repository mismatch, stale post-create marker, and lost-create-response paths
+  make the stated result. A crash after the pending transaction forbids a second
+  create; a pending marker remains until attested recovery clears it. Red
+  observation: no adapter exists. Green command:
   `uv run --locked pytest -q desloppify/tests/repair_queue/test_promotion.py`
   exits 0.
 
@@ -88,23 +94,28 @@ Files: `desloppify/app/cli_support/parser.py`,
 `desloppify/engine/_state/merge_issues.py`,
 `desloppify/tests/commands/test_repair_queue.py`.
 
-Interfaces: `desloppify repair-queue sync [--apply] [--state PATH]` defaults to
-dry-run. The apply route rechecks candidates inside `state_lock(path)`, commits
-`github_repair_pending` before a first create, then performs external I/O after
-the lock transaction. A later lock transaction saves only unambiguous links
-under `issue["detail"]["github_repair"]` with `number`, `url`, and `marker`.
-`repair-queue recover
-MARKER --apply --attest TEXT` clears only the matching pending marker after
-explicit operator attestation. State merging preserves a matching repair link or
-pending marker and drops it when concern hashes change. Dry run does not enter
-the state lock or invoke create.
+Interfaces: `desloppify repair-queue revalidate ID --repo OWNER/REPO --apply
+--attest TEXT` first resolves the exact repository identity, then writes the
+explicit matching revalidation attestation.
+`desloppify repair-queue sync --repo OWNER/REPO [--apply] [--state PATH]`
+defaults to dry-run. The apply route rechecks candidates inside `state_lock(path)`,
+commits `github_repair_pending` with the repository before a first create, then
+performs external I/O after the lock transaction. A later lock transaction saves
+only an unambiguous link whose current hashes, pending marker, and repository
+still match, under `issue["detail"]["github_repair"]` with `number`, `url`,
+`state`, `marker`, and `repository`. `repair-queue recover MARKER --repo
+OWNER/REPO --apply --attest TEXT` clears only a matching pending marker after
+explicit operator attestation. State merging preserves matching repair metadata
+and drops it when concern hashes change. Dry run does not enter the state lock or
+invoke create.
 
 Verification:
 
 - Mode: focused-test. Contract: parser routing, dry-run non-mutation, apply
-  persistence, crash-safe pending creation, pending recovery, metadata
-  preservation across an unchanged scan, and stale concern skipping are
-  observable under a fake client.
+  revalidation attestation, persistence, crash-safe pending creation, pending
+  recovery, repository binding, stale-result rejection, metadata preservation,
+  and linked-issue state readback across an unchanged scan are observable under
+  a fake client.
   Red observation: the command is absent. Green command:
   `uv run --locked pytest -q desloppify/tests/commands/test_repair_queue.py`
   exits 0.
