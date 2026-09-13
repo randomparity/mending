@@ -35,10 +35,12 @@ timer window creates no catch-up work.
 
 - A configured timer invokes one one-shot cycle in its host-local window.
 - Concurrent invocations for the same repository produce one active runner.
-- Restart reconciles the recorded claim/PR before a new selection.
-- A cycle cannot exceed the deadline/limits enforced by its Adept lease, one
-  active repair, or one merge permit; a missing cost cap, model, authority,
-  correlation, or receipt parks safely.
+- Restart reconciles an unresolved recorded claim/PR before a new selection;
+  an accepted terminal receipt is already reconciled.
+- A cycle cannot exceed the deadline/limits enforced by its Adept lease: the
+  wrapper bounds each adapter call to the persisted deadline and rechecks its
+  receipt. It allows one active repair and one merge permit; a missing cost
+  cap, model, authority, correlation, or receipt parks safely.
 - Disable prevents new work; re-enable resumes reconciliation rather than
   replaying a missed window.
 

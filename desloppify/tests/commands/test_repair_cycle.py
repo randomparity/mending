@@ -95,7 +95,7 @@ def test_parser_wires_one_shot_repair_cycle() -> None:
     assert args.config == "/etc/mending/repair-cycle.json"
 
 
-def test_terminal_attempt_reconciles_on_restart_without_second_selection() -> None:
+def test_terminal_attempt_restarts_without_second_selection() -> None:
     state = _state()
     client = _Client()
 
@@ -103,7 +103,7 @@ def test_terminal_attempt_reconciles_on_restart_without_second_selection() -> No
     cmd_repair_cycle(_args(state, client))
 
     assert client.selections == 1
-    assert client.reconciliations == 1
+    assert client.reconciliations == 0
     assert state["repair_cycle"]["authoritative_receipt"]["state"] == "terminal"
 
 
@@ -147,7 +147,7 @@ def test_process_lock_allows_only_one_selection_for_concurrent_invocations(tmp_p
         second.result(timeout=5)
 
     assert client.selections == 1
-    assert client.reconciliations == 1
+    assert client.reconciliations == 0
 
 
 def test_missing_model_or_cost_cap_parks_without_external_calls() -> None:
@@ -227,7 +227,7 @@ def test_overdue_adapter_result_parks_before_receipt_is_accepted() -> None:
         def select(self, config, lease, authority) -> AdeptReceipt:
             return self._receipt(lease, state="terminal")
 
-    times = iter((NOW, NOW + timedelta(minutes=2)))
+    times = iter((NOW, NOW, NOW, NOW + timedelta(minutes=2)))
     state = _state()
     cmd_repair_cycle(
         _args(
@@ -313,3 +313,100 @@ def test_non_usd_receipt_parks_and_consumed_merge_stays_daily() -> None:
     cmd_repair_cycle(_args(state, client))
 
     assert state["repair_cycle"]["parked_reason"] == "non-usd-receipt"
+
+
+def test_next_day_replaces_a_recorded_terminal_lease() -> None:
+    config = CycleConfig.from_mapping(_config())
+    state = _state()
+    cycle_state = CycleState.empty()
+    old_lease = cycle_state.begin(config, NOW, attempt_id="old-attempt")
+    assert old_lease is not None
+    cycle_state.record_receipt(
+        AdeptReceipt(
+            attempt_id=old_lease.attempt_id,
+            state="terminal",
+            reference="pr:7",
+            merge_consumed=False,
+            calls=1,
+            cost_usd=Decimal("0.25"),
+            currency="USD",
+        ).to_mapping()
+    )
+    state["repair_cycle"] = cycle_state.to_mapping()
+    client = _Client()
+
+    cmd_repair_cycle(_args(state, client, now=NOW + timedelta(days=1)))
+
+    assert client.reconciliations == 0
+    assert client.selections == 1
+    assert state["repair_cycle"]["current_lease"]["day_key"] == "2026-09-14"
+
+
+def test_disabled_configuration_reconciles_an_existing_lease() -> None:
+    config = CycleConfig.from_mapping(_config())
+    state = _state()
+    cycle_state = CycleState.empty()
+    lease = cycle_state.begin(config, NOW, attempt_id="recorded-attempt")
+    assert lease is not None
+    state["repair_cycle"] = cycle_state.to_mapping()
+    client = _Client()
+
+    cmd_repair_cycle(_args(state, client, config_data=_config(enabled=False)))
+
+    assert client.reconciliations == 1
+    assert client.selections == 0
+    assert state["repair_cycle"]["authoritative_receipt"]["state"] == "terminal"
+
+
+def test_only_an_exact_replayed_merge_receipt_reuses_a_daily_permit() -> None:
+    state = _state()
+    config = CycleConfig.from_mapping(_config())
+    cycle_state = CycleState.empty()
+    lease = cycle_state.begin(config, NOW, attempt_id="recorded-attempt")
+    assert lease is not None
+    initial_receipt = AdeptReceipt(
+        attempt_id=lease.attempt_id,
+        state="active",
+        reference="pr:7",
+        merge_consumed=True,
+        calls=1,
+        cost_usd=Decimal("0.25"),
+        currency="USD",
+    )
+    cycle_state.record_receipt(initial_receipt.to_mapping())
+    cycle_state.consume_merge_permit(lease)
+    state["repair_cycle"] = cycle_state.to_mapping()
+
+    client = _Client()
+    client.receipt = initial_receipt
+    cmd_repair_cycle(_args(state, client))
+
+    assert state["repair_cycle"]["parked_reason"] is None
+
+    client.receipt = AdeptReceipt(
+        attempt_id=lease.attempt_id,
+        state="active",
+        reference="pr:8",
+        merge_consumed=True,
+        calls=1,
+        cost_usd=Decimal("0.25"),
+        currency="USD",
+    )
+    cmd_repair_cycle(_args(state, client))
+
+    assert state["repair_cycle"]["parked_reason"] == "merge-permit-exhausted"
+
+
+def test_expired_lease_does_not_make_another_adapter_call() -> None:
+    config = CycleConfig.from_mapping(_config(runtime_minutes=1))
+    state = _state()
+    cycle_state = CycleState.empty()
+    lease = cycle_state.begin(config, NOW, attempt_id="recorded-attempt")
+    assert lease is not None
+    state["repair_cycle"] = cycle_state.to_mapping()
+    client = _Client()
+
+    cmd_repair_cycle(_args(state, client, now=NOW + timedelta(minutes=2)))
+
+    assert client.reconciliations == 0
+    assert state["repair_cycle"]["parked_reason"] == "timeout"
