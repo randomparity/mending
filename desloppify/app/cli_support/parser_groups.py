@@ -19,6 +19,7 @@ from desloppify.app.cli_support.parser_groups_admin import (  # noqa: F401 (re-e
     _add_zone_parser,
 )
 from desloppify.app.cli_support.parser_groups_plan_impl import add_plan_parser
+from desloppify.app.cli_support.parser_groups_repair_queue import _add_repair_queue_parser
 from desloppify.base.enums import issue_status_tokens
 
 _STATUS_CHOICES = sorted(issue_status_tokens(include_all=True))
@@ -37,6 +38,7 @@ __all__ = [
     "_add_next_parser",
     "add_plan_parser",
     "_add_review_parser",
+    "_add_repair_queue_parser",
     "_add_scan_parser",
     "_add_show_parser",
     "_add_setup_parser",
