@@ -284,6 +284,7 @@ def _supersede_dead_references(
 def _action_referenced_plan_issue_ids(plan: PlanModel) -> set[str]:
     referenced_ids: set[str] = set()
     referenced_ids.update(plan.get("queue_order", []))
+    referenced_ids.update(plan.get("skipped", {}))
     referenced_ids.update(plan.get("promoted_ids", []))
     for cluster in plan.get("clusters", {}).values():
         referenced_ids.update(cluster.get("issue_ids", []))
