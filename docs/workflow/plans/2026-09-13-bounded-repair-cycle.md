@@ -25,7 +25,7 @@ add a scheduler abstraction or Adept-owned behavior.
 ## Task 1: Define cycle configuration and durable scheduler state
 
 Files: `desloppify/engine/repair_cycle.py`,
-`desloppify/tests/repair_cycle/test_state.py`.
+`desloppify/tests/repair_cycle/test_repair_cycle_state.py`.
 
 Interfaces: `CycleConfig.from_mapping(mapping: Mapping[str, object]) -> CycleConfig`
 validates runtime, call count, positive cost cap, model, and enablement.
@@ -40,7 +40,7 @@ Verification:
   model or cost cap parks; malformed limits and day keys are rejected; a new
   host-local day makes one merge permit available without erasing active work.
   Red observation: no cycle model exists. Green command:
-  `uv run --locked pytest -q desloppify/tests/repair_cycle/test_state.py` exits 0.
+  `uv run --locked pytest -q desloppify/tests/repair_cycle/test_repair_cycle_state.py` exits 0.
 
 Acceptance: persisted state cannot authorize model work when required operator
 configuration is absent.
