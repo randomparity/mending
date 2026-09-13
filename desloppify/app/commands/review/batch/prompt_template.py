@@ -51,8 +51,12 @@ def _render_metadata_block(
     repo_root: Path,
     packet_path: Path,
     batch_index: int,
+    batch: dict[str, object],
     context: PromptBatchContext,
 ) -> str:
+    reading_set = batch.get("files_to_read", [])
+    paths = ", ".join(str(path) for path in reading_set if isinstance(path, str))
+    reading_set_text = f"Investigation reading set: {paths}\n\n" if paths else ""
     return (
         "You are a focused subagent reviewer for a single holistic investigation batch.\n\n"
         f"Repository root: {repo_root}\n"
@@ -60,6 +64,7 @@ def _render_metadata_block(
         f"Batch index: {batch_index + 1}\n"
         f"Batch name: {context.name}\n"
         f"Batch rationale: {context.rationale}\n\n"
+        + reading_set_text
     )
 
 
@@ -109,6 +114,10 @@ def _render_output_schema(context: PromptBatchContext, batch_index: int) -> str:
         '    "impact_scope": "local|module|subsystem|codebase",\n'
         '    "fix_scope": "single_edit|multi_file_refactor|architectural_change",\n'
         '    "root_cause_cluster": "optional_cluster_name_when_supported_by_history",\n'
+        '    "maintenance_consequence": "required for confirmed concerns",\n'
+        '    "proposed_owner": "required for confirmed concerns",\n'
+        '    "protected_contracts": ["required for confirmed concerns"],\n'
+        '    "verification": "bounded proof required for confirmed concerns",\n'
         '    "concern_verdict": "confirmed|dismissed  // for concern signals only",\n'
         '    "concern_fingerprint": "abc123  // required when dismissed; copy from signal fingerprint",\n'
         '    "reasoning": "why dismissed  // optional, for dismissed only"\n'
@@ -148,6 +157,7 @@ def render_batch_prompt(
             repo_root=repo_root,
             packet_path=packet_path,
             batch_index=batch_index,
+            batch=batch,
             context=context,
         ),
         render_persona_block(persona),

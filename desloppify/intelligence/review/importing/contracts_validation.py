@@ -35,6 +35,7 @@ def validate_review_issue_payload(
         return None, [f"{label} must be an object"]
 
     dismissed = issue.get("concern_verdict") == "dismissed"
+    confirmed = issue.get("concern_verdict") == "confirmed"
     if dismissed and not allow_dismissed:
         return None, [f"{label}.concern_verdict='dismissed' is not allowed here"]
 
@@ -99,6 +100,25 @@ def validate_review_issue_payload(
     if evidence is None:
         errors.append(f"{label}.evidence must contain at least one concrete evidence string")
 
+    concern_fields: dict[str, str | list[str]] = {}
+    if confirmed:
+        for field in (
+            "root_cause_cluster",
+            "maintenance_consequence",
+            "proposed_owner",
+            "verification",
+        ):
+            value = _normalized_non_empty_text(issue.get(field))
+            if value is None:
+                errors.append(f"{label}.{field} must be non-empty for confirmed concerns")
+            else:
+                concern_fields[field] = value
+        contracts = _normalized_non_empty_text_list(issue.get("protected_contracts"))
+        if contracts is None:
+            errors.append(f"{label}.protected_contracts must be non-empty for confirmed concerns")
+        else:
+            concern_fields["protected_contracts"] = contracts
+
     if errors:
         return None, errors
 
@@ -111,6 +131,9 @@ def validate_review_issue_payload(
         "related_files": related_files or [],
         "evidence": evidence or [],
     }
+    if confirmed:
+        normalized_payload["concern_verdict"] = "confirmed"
+        normalized_payload.update(concern_fields)
     reasoning = _normalized_non_empty_text(issue.get("reasoning"))
     if reasoning is not None:
         normalized_payload["reasoning"] = reasoning

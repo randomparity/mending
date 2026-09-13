@@ -49,6 +49,42 @@ def test_contract_validation_accepts_valid_payload_and_dismissed_entries() -> No
     assert dismissed["concern_verdict"] == "dismissed"
 
 
+def test_contract_validation_requires_confirmed_concern_evidence() -> None:
+    issue = {
+        "dimension": "naming_quality",
+        "identifier": "id1",
+        "summary": "Shared naming policy has drifted",
+        "confidence": "high",
+        "suggestion": "Move policy to its shared owner",
+        "related_files": ["src/a.py"],
+        "evidence": ["both callers normalize names differently"],
+        "concern_verdict": "confirmed",
+        "root_cause_cluster": "duplicated_name_policy",
+        "maintenance_consequence": "callers will keep diverging",
+        "proposed_owner": "name policy module",
+        "protected_contracts": ["existing caller output"],
+        "verification": "exercise both callers",
+    }
+    confirmed, errors = contracts_validation_mod.validate_review_issue_payload(
+        issue,
+        label="issues[0]",
+        allowed_dimensions={"naming_quality"},
+    )
+
+    assert errors == []
+    assert confirmed is not None
+    assert confirmed["concern_verdict"] == "confirmed"
+
+    issue.pop("proposed_owner")
+    missing, errors = contracts_validation_mod.validate_review_issue_payload(
+        issue,
+        label="issues[0]",
+        allowed_dimensions={"naming_quality"},
+    )
+    assert missing is None
+    assert "issues[0].proposed_owner" in errors[0]
+
+
 def test_holistic_cache_update_and_resolution_helpers(monkeypatch) -> None:
     monkeypatch.setattr(holistic_cache_mod, "load_dimensions_for_lang", lambda _name: ([], {"naming_quality": {}}, "sys"))
 

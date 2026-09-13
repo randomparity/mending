@@ -6,12 +6,72 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from desloppify.app.commands.review.packet.policy import DEFAULT_REVIEW_BATCH_MAX_FILES
+
+from .prepare_batches_collectors import _DIMENSION_FILE_MAPPING, _FILE_COLLECTORS
+from .prepare_batches_core import _ensure_holistic_context
 from .prepare_holistic_scope import (
     file_in_allowed_scope,
     filter_batches_to_file_scope,
 )
 
 _CONCERN_BATCH_DIMENSION = "design_coherence"
+
+
+def _unique_paths(paths: list[object], limit: int) -> list[str]:
+    result: list[str] = []
+    for path in paths:
+        if not isinstance(path, str) or not path or path in result:
+            continue
+        result.append(path)
+        if len(result) == limit:
+            break
+    return result
+
+
+def _neighbor_paths(paths: list[str], lang: object) -> list[str]:
+    graph = getattr(lang, "dep_graph", None)
+    if not isinstance(graph, dict):
+        return []
+    neighbors: list[str] = []
+    for path in paths:
+        entry = graph.get(path)
+        if not isinstance(entry, dict):
+            continue
+        for key in ("imports", "importers"):
+            values = entry.get(key, ())
+            if isinstance(values, set | list | tuple):
+                neighbors.extend(item for item in values if isinstance(item, str))
+    return neighbors
+
+
+def _apply_bounded_reading_sets(
+    batches: list[dict[str, Any]],
+    *,
+    holistic_ctx: Any,
+    lang: object,
+    state: dict,
+    all_files: list[str],
+    max_files_per_batch: int | None,
+) -> None:
+    """Attach a deterministic, bounded reading set to each investigation batch."""
+    cap = max_files_per_batch or DEFAULT_REVIEW_BATCH_MAX_FILES
+    context = _ensure_holistic_context(holistic_ctx)
+    rotation = int(state.get("scan_count", 0)) if isinstance(state.get("scan_count", 0), int) else 0
+    for batch in batches:
+        seeds = list(batch.get("files_to_read", []))
+        for dimension in batch.get("dimensions", []):
+            collector = _FILE_COLLECTORS.get(_DIMENSION_FILE_MAPPING.get(dimension, ""))
+            if callable(collector):
+                seeds.extend(collector(context, max_files=cap))
+        selected = _unique_paths(seeds, cap)
+        selected.extend(_neighbor_paths(selected, lang))
+        selected = _unique_paths(selected, cap)
+        remaining = [path for path in sorted(all_files) if path not in selected]
+        if remaining:
+            start = rotation % len(remaining)
+            selected = _unique_paths(selected + remaining[start:] + remaining[:start], cap)
+        batch["files_to_read"] = selected
 
 
 @dataclass(frozen=True)
@@ -109,6 +169,14 @@ def assemble_holistic_batches(
         batch_concerns_fn=deps.batch_concerns_fn,
         log_best_effort_failure_fn=deps.log_best_effort_failure_fn,
         log=deps.logger,
+    )
+    _apply_bounded_reading_sets(
+        batches,
+        holistic_ctx=holistic_ctx,
+        lang=lang,
+        state=state,
+        all_files=all_files,
+        max_files_per_batch=max_files_per_batch,
     )
 
     batches = deps.filter_batches_to_dimensions_fn(

@@ -10,6 +10,25 @@ from desloppify.app.commands.review.prompt_sections import (
 )
 
 
+def test_batch_prompt_renders_bounded_reading_set() -> None:
+    from pathlib import Path
+    from desloppify.app.commands.review.batch.prompt_template import render_batch_prompt
+
+    prompt = render_batch_prompt(
+        repo_root=Path("/repo"),
+        packet_path=Path("/repo/.desloppify/review_packets/p.json"),
+        batch_index=0,
+        batch={
+            "name": "design_coherence",
+            "dimensions": ["design_coherence"],
+            "why": "test",
+            "files_to_read": ["src/seed.py", "src/neighbor.py"],
+        },
+    )
+
+    assert "Investigation reading set: src/seed.py, src/neighbor.py" in prompt
+
+
 class TestRenderMechanicalConcernSignals:
     def test_empty_signals(self):
         assert render_mechanical_concern_signals({}) == ""

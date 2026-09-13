@@ -360,7 +360,11 @@ class TestPrepareHolisticReview:
         assert batch is not None
         assert batch["name"] == "design_coherence"
         assert batch["dimensions"] == ["design_coherence"]
-        assert "files_to_read" not in batch
+        assert batch["files_to_read"] == [
+            "src/file_0.ts",
+            "src/file_1.ts",
+            "src/file_2.ts",
+        ]
         assert batch["concern_signal_count"] == 6
         assert len(batch["concern_signals"]) == 6
         assert batch["concern_signals"][0]["summary"] == "concern 0"
@@ -463,8 +467,9 @@ class TestPrepareHolisticReview:
         ]
         assert len(concern_batches) == 1
         concern_batch = concern_batches[0]
-        # Concern signals are merged into the design_coherence batch
+        # Concern signals are merged into the design_coherence batch and its reading set is capped.
         assert concern_batch.get("concern_signal_count", 0) == 6
+        assert len(concern_batch["files_to_read"]) == 2
 
     def test_prepare_holistic_review_concerns_filtered_when_dim_inactive(
         self, tmp_path, monkeypatch
@@ -1662,4 +1667,3 @@ class TestFilterBatchesToDimensions:
         assert filtered[0]["name"] == "low_level_elegance"
         assert filtered[0]["dimensions"] == ["low_level_elegance"]
         assert "files_to_read" not in filtered[0]
-

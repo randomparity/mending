@@ -33,6 +33,11 @@ class ReviewIssuePayload(TypedDict, total=False):
     concern_fingerprint: str
     concern_type: str
     concern_file: str
+    root_cause_cluster: str
+    maintenance_consequence: str
+    proposed_owner: str
+    protected_contracts: list[str]
+    verification: str
 
 
 class ReviewScopePayload(TypedDict, total=False):
