@@ -24,6 +24,7 @@ from desloppify.app.commands.scan.coverage import (
     seed_runtime_coverage_warnings as _seed_runtime_coverage_warnings,
 )
 from desloppify.app.commands.scan.plan_reconcile import (
+    capture_active_refresh_at_scan_start,
     reconcile_plan_post_scan as _reconcile_plan_post_scan_impl,
 )
 from desloppify.app.commands.scan.helpers import (
@@ -168,6 +169,7 @@ class ScanRuntime:
     scan_diff: dict[str, object] | None = None
     prev_dim_scores: dict[str, object] | None = None
     prev_last_scan: str | None = None
+    active_refresh_at_scan_start: bool = False
 
 
 @dataclass
@@ -454,6 +456,7 @@ def merge_scan_results(
 
     target_score = target_strict_score_from_config(runtime.config)
     runtime.prev_last_scan = str(runtime.state.get("last_scan", "") or "") or None
+    capture_active_refresh_at_scan_start(runtime)
 
     diff = merge_scan(
         runtime.state,

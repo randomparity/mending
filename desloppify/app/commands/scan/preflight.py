@@ -146,19 +146,7 @@ def scan_queue_preflight(args: object) -> None:
         pass  # Fall through to the normal gate
 
     remaining = breakdown.queue_total
-    _log_preflight(plan, "blocked", f"{remaining} item(s) remaining", remaining)
-    # GATE — block both FROZEN (objective work) and PHASE_TRANSITION
-    # (subjective/workflow items remain)
-    raise CommandError(
-        f"{remaining} item{'s' if remaining != 1 else ''}"
-        " remaining in your queue.\n"
-        "  Scanning mid-cycle regenerates issue IDs and breaks triage state.\n"
-        "  Work through items with `desloppify next`, then scan when clear.\n\n"
-        "  To force a rescan (resets your plan-start score):\n"
-        '    desloppify scan --force-rescan --attest "I understand this is not '
-        "the intended workflow and I am intentionally skipping queue "
-        'completion"'
-    )
+    _log_preflight(plan, "allowed", "active work refresh", remaining)
 
 
 __all__ = ["scan_queue_preflight"]

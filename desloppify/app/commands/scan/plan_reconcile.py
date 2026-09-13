@@ -284,6 +284,39 @@ def _is_mid_cycle_scan(plan: dict[str, object], state: state_mod.StateModel) -> 
     return not live_planned_queue_empty(plan)
 
 
+def _is_active_refresh(
+    plan: dict[str, object], state: state_mod.StateModel, *, force_rescan: bool
+) -> bool:
+    """Return whether this scan must preserve the loaded plan unchanged."""
+    if force_rescan or not is_mid_cycle(plan):
+        return False
+    issues = state.get("work_items") or state.get("issues") or {}
+    skipped = plan.get("skipped") or {}
+    return any(
+        isinstance(issue_id, str)
+        and issue_id not in skipped
+        and not is_synthetic_id(issue_id)
+        and issues.get(issue_id, {}).get("status") == "open"
+        for issue_id in plan.get("queue_order", [])
+    )
+
+
+def capture_active_refresh_at_scan_start(runtime: Any) -> None:
+    """Record whether the loaded plan has active work before state merge."""
+    plan_path = runtime.state_path.parent / "plan.json" if runtime.state_path else None
+    try:
+        plan = load_plan(plan_path)
+    except PLAN_LOAD_EXCEPTIONS as exc:
+        logger.warning("Active refresh check skipped (plan load failed): %s", exc)
+        runtime.active_refresh_at_scan_start = False
+        return
+    runtime.active_refresh_at_scan_start = _is_active_refresh(
+        plan,
+        runtime.state,
+        force_rescan=getattr(runtime, "force_rescan", False),
+    )
+
+
 def _display_reconcile_results(
     result: ReconcileResult,
     plan: dict,
@@ -362,9 +395,14 @@ def reconcile_plan_post_scan(runtime: Any) -> None:
         logger.warning("Plan reconciliation skipped (load failed): %s", exc)
         return
 
+    force_rescan = getattr(runtime, "force_rescan", False)
+    if getattr(runtime, "active_refresh_at_scan_start", False) or _is_active_refresh(
+        plan, runtime.state, force_rescan=force_rescan
+    ):
+        return
+
     phase_before = current_lifecycle_phase(plan)
 
-    force_rescan = getattr(runtime, "force_rescan", False)
     dirty = _reset_cycle_for_force_rescan(plan) if force_rescan else False
     if force_rescan and phase_before == "plan":
         old_postflight_scan_count = None
@@ -479,6 +517,7 @@ def reconcile_plan_post_scan(runtime: Any) -> None:
 
 
 __all__ = [
+    "capture_active_refresh_at_scan_start",
     "_clear_plan_start_scores_if_queue_empty",
     "_display_reconcile_results",
     "_has_objective_cycle",

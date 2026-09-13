@@ -104,11 +104,11 @@ def test_queue_drained_with_non_scan_lifecycle_allows_scan():
         scan_queue_preflight(args)
 
 
-# ── Queue remaining = gate ──────────────────────────────────
+# ── Queue remaining = refresh ───────────────────────────────
 
 
-def test_queue_remaining_blocks_scan():
-    """When queue has remaining items, scan is blocked with CommandError."""
+def test_queue_remaining_allows_scan():
+    """An active queue permits an observation refresh."""
     from desloppify.app.commands.helpers.queue_progress import QueueBreakdown
 
     args = SimpleNamespace(profile=None, force_rescan=False, state=None, lang="python")
@@ -127,11 +127,9 @@ def test_queue_remaining_blocks_scan():
             "desloppify.app.commands.scan.preflight.plan_aware_queue_breakdown",
             return_value=QueueBreakdown(queue_total=5, workflow=0),
         ),
-        pytest.raises(CommandError) as exc_info,
     ):
         mock_state_mod.load_state.return_value = {"issues": {}}
         scan_queue_preflight(args)
-    assert "remaining in your queue" in str(exc_info.value)
 
 
 def test_queue_with_only_subjective_items_allows_scan():
