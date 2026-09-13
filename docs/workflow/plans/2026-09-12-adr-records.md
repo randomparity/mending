@@ -1,7 +1,7 @@
 # Adopt immutable ADR records
 
 Install a repository-owned, profile-driven ADR validation gate and establish its
-first accepted record. The implementation copies the six coordinated gate assets,
+new accepted record. The implementation copies the six coordinated gate assets,
 enables only ADR validation in a dedicated workflow, and validates the installation.
 
 ## Global Constraints
@@ -9,8 +9,8 @@ enables only ADR validation in a dedicated workflow, and validates the installat
 Use the supplied gate assets as one atomic install. Do not alter existing CI,
 Makefile targets, lifecycle behavior, debt policy, or branch protection.
 
-Expected implementation size: 6,600–7,000 changed lines (L) — direct operator-approved
-denominator on 2026-09-13 after measuring the six gate assets and one record.
+Expected implementation size: 7,000–7,000 changed lines (L) — direct operator-approved
+denominator on 2026-09-13, replacing the prior estimate after measuring the six gate assets and one record.
 
 ## File map
 
@@ -30,7 +30,9 @@ with the complete set. Expected command: `./.github/scripts/check-records-test.s
 ## Task 2 — Add the adoption ADR and validate it
 
 Interfaces: ADR 0002 is consumed by the ADR profile. Write the accepted adoption
-decision and run `RECORD_PROFILES=adr ./.github/scripts/check-records.sh`.
+decision and run `BASE_SHA=$(git merge-base HEAD origin/main) RECORD_PROFILES=adr \
+./.github/scripts/check-records.sh`. The pre-existing legacy ADR 0001 remains
+a warning outside this change.
 
 Verification: Mode: focused-test. The checker validates ADR structure and the
 enabled profile. Expected command exits zero.

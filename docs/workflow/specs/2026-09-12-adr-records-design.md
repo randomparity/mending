@@ -25,4 +25,6 @@ the workflow selects `adr`, and the local suite and checker pass with ADR 0002.
 ## Validation
 
 Run `./.github/scripts/check-records-test.sh` and
-`RECORD_PROFILES=adr ./.github/scripts/check-records.sh`; both exit zero.
+`BASE_SHA=$(git merge-base HEAD origin/main) RECORD_PROFILES=adr \
+./.github/scripts/check-records.sh`; both exit zero. Pre-existing ADR 0001
+remains a legacy warning and is outside this change.
