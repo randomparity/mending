@@ -21,7 +21,7 @@ which carries these 27 fixes:
 
 Merged these independent, compatible bug-fix PRs in full:
 
-- #616, #617, #629, #631, #634, #635, #653, #654, #661–#663, #666,
+- #611, #616, #617, #629, #631, #634, #635, #653, #654, #661–#663, #666,
   #668, #670, #684, #693, #710, #735, and #739.
 
 Imported only the independently bounded Rust coverage fixes from #712 and #722:
@@ -48,12 +48,12 @@ behavior change that is not independently safe to transplant:
 
 The following need separate design or compatibility work before adoption:
 
-- #611 (tree-sitter compatibility cap), #614 and #734 (new language support),
-  #622 (raw suppression matching can hide findings), #623 and #626 (new public
+- #614 and #734 (new language support), #622 (raw suppression matching can hide
+  findings), #623 and #626 (new public
   configuration), #624 (can resolve imports outside the scan root), #630
   (golangci-lint v2 command breaks v1 installations), #632 and #633 (can
   over-credit coverage), #723 (tool-version and language-flag assumptions), and
   #740 (broad Kotlin import suppression).
 
 The lists above account for all 90 open PRs: #744 is the integration wrapper,
-48 individual PRs contributed imported code (two partially), and 41 are deferred.
+49 individual PRs contributed imported code (two partially), and 40 are deferred.
