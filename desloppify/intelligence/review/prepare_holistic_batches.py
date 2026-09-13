@@ -6,8 +6,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from desloppify.app.commands.review.packet.policy import DEFAULT_REVIEW_BATCH_MAX_FILES
-
 from .prepare_batches_collectors import _DIMENSION_FILE_MAPPING, _FILE_COLLECTORS
 from .prepare_batches_core import _ensure_holistic_context
 from .prepare_holistic_scope import (
@@ -16,6 +14,7 @@ from .prepare_holistic_scope import (
 )
 
 _CONCERN_BATCH_DIMENSION = "design_coherence"
+_DEFAULT_REVIEW_BATCH_MAX_FILES = 80
 
 
 def _unique_paths(paths: list[object], limit: int) -> list[str]:
@@ -55,7 +54,7 @@ def _apply_bounded_reading_sets(
     max_files_per_batch: int | None,
 ) -> None:
     """Attach a deterministic, bounded reading set to each investigation batch."""
-    cap = max_files_per_batch or DEFAULT_REVIEW_BATCH_MAX_FILES
+    cap = max_files_per_batch or _DEFAULT_REVIEW_BATCH_MAX_FILES
     context = _ensure_holistic_context(holistic_ctx)
     rotation = int(state.get("scan_count", 0)) if isinstance(state.get("scan_count", 0), int) else 0
     for batch in batches:

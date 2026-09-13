@@ -85,6 +85,39 @@ def test_contract_validation_requires_confirmed_concern_evidence() -> None:
     assert "issues[0].proposed_owner" in errors[0]
 
 
+def test_bounded_reading_set_rotates_clean_files() -> None:
+    batches = [{"dimensions": ["unknown"]}]
+
+    holistic_batches_mod._apply_bounded_reading_sets(
+        batches,
+        holistic_ctx={},
+        lang=SimpleNamespace(),
+        state={"scan_count": 1},
+        all_files=["src/c.py", "src/a.py", "src/b.py"],
+        max_files_per_batch=2,
+    )
+
+    assert batches[0]["files_to_read"] == ["src/b.py", "src/c.py"]
+
+
+def test_bounded_reading_set_prioritizes_signal_and_direct_neighbor() -> None:
+    batches = [{"dimensions": ["unknown"], "files_to_read": ["src/seed.py"]}]
+    lang = SimpleNamespace(
+        dep_graph={"src/seed.py": {"imports": ["src/neighbor.py"]}}
+    )
+
+    holistic_batches_mod._apply_bounded_reading_sets(
+        batches,
+        holistic_ctx={},
+        lang=lang,
+        state={"scan_count": 0},
+        all_files=["src/extra.py", "src/neighbor.py", "src/seed.py"],
+        max_files_per_batch=2,
+    )
+
+    assert batches[0]["files_to_read"] == ["src/seed.py", "src/neighbor.py"]
+
+
 def test_holistic_cache_update_and_resolution_helpers(monkeypatch) -> None:
     monkeypatch.setattr(holistic_cache_mod, "load_dimensions_for_lang", lambda _name: ([], {"naming_quality": {}}, "sys"))
 
