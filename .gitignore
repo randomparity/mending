@@ -4,6 +4,7 @@ __pycache__/
 .desloppify/
 .desloppify.*/
 .venv/
+.tools/
 build/
 dist/
 .mypy_cache/
