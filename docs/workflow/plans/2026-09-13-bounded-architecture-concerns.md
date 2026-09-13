@@ -18,15 +18,17 @@ Files: `desloppify/intelligence/review/importing/contracts_types.py`,
 `desloppify/intelligence/review/importing/contracts_validation.py`,
 `desloppify/app/commands/review/batch/prompt_template.py`, and focused tests.
 
-Interfaces: confirmed payloads add non-empty `root_cause_cluster`, `maintenance_consequence`,
-`proposed_owner`, `protected_contracts`, and `verification`; ordinary and dismissed payloads
-retain their current shape. The prompt schema and task instructions name the same fields.
+Interfaces: confirmed payloads retain `concern_verdict: "confirmed"` and add non-empty
+`root_cause_cluster`, `maintenance_consequence`, `proposed_owner`, `protected_contracts`, and
+`verification`; ordinary and dismissed payloads retain their current shape. The prompt schema
+and task instructions name the same fields.
 
 Verification:
 
-- Mode: focused-test. Contract: a complete confirmed concern validates and an incomplete one
-  fails with the missing field. Red observation: the current validator accepts a confirmed
-  concern with no architecture evidence. Green command: `uv run pytest -q desloppify/tests/commands/review/test_review_batch_core_direct.py` exits 0.
+- Mode: focused-test. Contract: a complete confirmed concern retains its marker and an incomplete
+  one is skipped while a valid ordinary result in the same batch remains. Red observation: the
+  current validator accepts a confirmed concern with no architecture evidence and normalization
+  aborts the batch. Green command: `uv run pytest -q desloppify/tests/commands/review/test_review_batch_core_direct.py` exits 0.
 
 Steps: write the focused failing tests; make confirmed-only validation and prompt requirements
 explicit; rerun the focused test; commit the coherent contract change.
@@ -39,14 +41,16 @@ Files: `desloppify/app/commands/review/batch/core_models.py`,
 `desloppify/app/commands/review/batch/core_normalize.py`,
 `desloppify/intelligence/review/importing/holistic_issue_flow.py`, and focused tests.
 
-Interfaces: normalized confirmed concerns forward their required evidence; holistic concern
-details retain it for later #4 revalidation. Ordinary reviews forward no new required fields.
+Interfaces: normalized confirmed concerns forward their marker and required evidence; holistic
+import classifies them as concern details for later #4 revalidation. Ordinary reviews forward no
+new required fields.
 
 Verification:
 
-- Mode: focused-test. Contract: a normalized complete confirmed concern stores its architecture
-  evidence while ordinary and dismissed payloads stay compatible. Red observation: current
-  normalization drops the concern-only fields. Green command: `uv run pytest -q desloppify/tests/commands/review/test_review_batch_core_direct.py desloppify/tests/review/context/test_holistic_review.py` exits 0.
+- Mode: focused-test. Contract: a normalized complete confirmed concern stores its marker and
+  architecture evidence as a concern while ordinary and dismissed payloads stay compatible. Red
+  observation: current normalization drops the marker and concern-only fields. Green command:
+  `uv run pytest -q desloppify/tests/commands/review/test_review_batch_core_direct.py desloppify/tests/review/context/test_holistic_review.py` exits 0.
 
 Steps: write the focused failing persistence assertion; propagate the typed fields through the
 existing normalized model and importer; rerun both focused modules; commit the propagation.

@@ -9,11 +9,13 @@ verification evidence needed to distinguish an architectural concern from a line
 ## Scope
 
 Extend the existing confirmed-concern payload through prompt rendering, batch normalization,
-and holistic import. A confirmed concern will require a root-cause cluster, maintenance
-consequence, proposed owner, protected contracts, and bounded verification in addition to
-the existing files and source evidence. A missing required field rejects only that result;
-dismissed signals and ordinary review issues retain their current contracts. The existing
-batch cap remains the bound; it is not tied to a score, and empty `issues` remains valid.
+and holistic import. A confirmed concern retains `concern_verdict: "confirmed"` end to end and
+requires a root-cause cluster, maintenance consequence, proposed owner, protected contracts,
+and bounded verification in addition to the existing files and source evidence. A missing
+confirmed-only field skips that result while retaining other valid batch results; malformed
+ordinary review entries keep the existing batch-rejection behavior. Dismissed signals and
+ordinary review issues retain their current contracts. The existing batch cap remains the bound;
+it is not tied to a score, and empty `issues` remains valid.
 
 ## Failure model
 
@@ -43,15 +45,16 @@ field, while malformed output remains non-actionable.
 ### Eval cases
 
 - `confirmed-complete`: a confirmed concern with every required field normalizes and persists.
-- `confirmed-incomplete`: a confirmed concern missing ownership evidence is rejected.
+- `confirmed-incomplete`: a confirmed concern missing ownership evidence is skipped without
+  discarding a valid ordinary result in the same batch.
 - `ordinary-compatible`: an ordinary review issue still normalizes without concern-only fields.
 - `dismissed-compatible`: a dismissed concern retains only its fingerprint contract.
 
 ## Success
 
-- A confirmed architecture concern produced by an existing batch names one root-cause cluster,
-  concrete evidence, the maintenance consequence, proposed owner, protected contracts, and a
-  bounded verification strategy.
+- A confirmed architecture concern produced by an existing batch retains its confirmed marker and
+  names one root-cause cluster, concrete evidence, the maintenance consequence, proposed owner,
+  protected contracts, and a bounded verification strategy.
 - The batch prompt permits zero concerns and never requires an issue because of an assessment.
 - Existing ordinary and dismissed review payloads remain accepted by their current contracts.
 
