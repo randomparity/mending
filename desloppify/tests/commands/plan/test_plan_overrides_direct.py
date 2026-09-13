@@ -175,10 +175,6 @@ def test_override_resolve_cmd_resolves_state_backed_strategy_item(monkeypatch) -
     )
     monkeypatch.setattr(override_resolve_cmd_mod, "load_plan", lambda: plan)
     monkeypatch.setattr(
-        override_resolve_cmd_mod, "append_log_entry", lambda *_args, **_kwargs: None
-    )
-    monkeypatch.setattr(override_resolve_cmd_mod, "save_plan", lambda _plan: None)
-    monkeypatch.setattr(
         override_resolve_cmd_mod,
         "resolve_workflow_patterns",
         lambda *_args, **_kwargs: pytest.fail(
