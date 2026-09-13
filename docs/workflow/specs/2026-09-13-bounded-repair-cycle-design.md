@@ -10,13 +10,14 @@ delegating repair authority and execution to Adept.
 Add one systemd service/timer recipe, a configured one-shot wrapper, and local
 cycle state. The timer's operator-selected `OnCalendar` is the sole window
 authority and uses the host timezone. The wrapper accepts runtime, model-call
-limit, positive cumulative API-cost cap, and orchestrator model; runtime and
+limit, positive cumulative USD API-cost cap, and orchestrator model; runtime and
 calls default to 90 minutes and 100. It locks one repository, persists a unique
 attempt lease before external I/O, verifies a repository-bound Adept authority
 proof, and reconciles a recorded lease before selection. Adept receives the
 lease/proof and returns a correlated receipt with state, claim/PR reference,
-merge-permit consumption, and measured calls/cost/currency. Unknown, missing,
-or over-budget receipts park; a missed timer window creates no catch-up work.
+merge-permit consumption, and measured calls/cost/currency. Only USD receipts
+are accepted. Unknown, missing, non-USD, or over-budget receipts park; a missed
+timer window creates no catch-up work.
 
 ### Failure model
 
