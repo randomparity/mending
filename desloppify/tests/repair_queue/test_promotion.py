@@ -10,6 +10,7 @@ from desloppify.engine.repair_queue import (
     marker_for_hashes,
     render_issue,
 )
+from desloppify.engine._state.merge_issues import upsert_issues
 
 
 def _issue(*, revalidated: bool = True) -> dict:
@@ -84,3 +85,36 @@ def test_client_searches_all_states_with_explicit_repository() -> None:
     result = GitHubIssueClient(run).search("owner/repository", "marker")
     assert [(item.number, item.url, item.state) for item in result] == [(7, "https://example.test/7", None)]
     assert calls == [["gh", "issue", "list", "--repo", "owner/repository", "--state", "all", "--search", "marker", "--limit", "100", "--json", "number,url"]]
+
+
+def test_scan_merge_preserves_only_matching_repair_metadata() -> None:
+    issue = _issue()
+    issue.update(
+        file=".", tier=2, confidence="high", summary="current concern", suppressed=False
+    )
+    marker = marker_for_hashes("a" * 64, "b" * 64)
+    issue["detail"]["github_repair"] = {
+        "marker": marker,
+        "repository": "owner/repository",
+        "number": 7,
+        "url": "https://example.test/7",
+        "state": "open",
+    }
+    issue["detail"]["github_repair_revalidated"] = {
+        "marker": marker,
+        "repository": "owner/repository",
+        "attestation": "verified current evidence",
+    }
+    incoming = {**issue, "detail": {"concern_identity": "a" * 64, "concern_evidence_digest": "b" * 64}}
+    existing = {issue["id"]: issue}
+
+    upsert_issues(existing, [incoming], [], "2026-09-13T00:00:00Z", lang=None)
+
+    detail = existing[issue["id"]]["detail"]
+    assert detail["github_repair"]["number"] == 7
+    assert detail["github_repair_revalidated"]["marker"] == marker
+
+    changed = {**incoming, "detail": {"concern_identity": "a" * 64, "concern_evidence_digest": "c" * 64}}
+    upsert_issues(existing, [changed], [], "2026-09-14T00:00:00Z", lang=None)
+    assert "github_repair" not in existing[issue["id"]]["detail"]
+    assert "github_repair_revalidated" not in existing[issue["id"]]["detail"]
