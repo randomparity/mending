@@ -237,6 +237,18 @@ def test_reconcile_marks_changed_concern_for_revalidation():
     assert entry["candidates"] == ["new"]
 
 
+def test_reconcile_never_remaps_concern_to_another_detector():
+    plan = _plan_with_queue("old")
+    other = {**_concern("other", "open"), "detector": "test"}
+    state = {"issues": {"old": _concern("old", "fixed"), "other": other}}
+
+    reconcile_plan_after_scan(plan, state)
+
+    entry = plan["superseded"]["old"]
+    assert entry["candidates"] == []
+    assert entry["remapped_to"] is None
+
+
 def test_reconcile_does_not_transfer_ambiguous_or_incomplete_concerns():
     for old, successors in (
         (_concern("old", "fixed"), [_concern("new", "open"), _concern("other", "open")]),

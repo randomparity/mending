@@ -11,7 +11,7 @@ from desloppify.engine._concerns.text import (
     _build_summary,
     _classify,
 )
-from desloppify.engine._concerns.utils import _is_dismissed
+from desloppify.engine._concerns.utils import _dismissal_comparison, _is_dismissed
 
 
 def _make_issue(
@@ -486,23 +486,34 @@ class TestIsDismissed:
     """Dismissal matching logic."""
 
     def test_not_dismissed_when_no_entry(self):
-        assert _is_dismissed({}, "fp123", ("id1",)) is False
+        assert _is_dismissed({}, {}, "test", ("id1",)) is False
 
     def test_not_dismissed_when_entry_is_not_dict(self):
-        assert _is_dismissed({"fp123": "invalid"}, "fp123", ("id1",)) is False
-        assert _is_dismissed({"fp123": None}, "fp123", ("id1",)) is False
+        assert _is_dismissed({}, {"entry": "invalid"}, "test", ("id1",)) is False
+        assert _is_dismissed({}, {"entry": None}, "test", ("id1",)) is False
 
-    def test_dismissed_when_source_ids_match(self):
-        dismissals = {"fp123": {"source_issue_ids": ["id1", "id2"]}}
-        assert _is_dismissed(dismissals, "fp123", ("id2", "id1")) is True
+    def test_dismissed_when_comparison_matches(self):
+        identity, evidence = _dismissal_comparison({}, "test", ("id1", "id2"))
+        dismissals = {
+            "entry": {
+                "dismissal_identity": identity,
+                "dismissal_evidence_digest": evidence,
+            }
+        }
+        assert _is_dismissed({}, dismissals, "test", ("id2", "id1")) is True
 
-    def test_not_dismissed_when_source_ids_differ(self):
-        dismissals = {"fp123": {"source_issue_ids": ["id1"]}}
-        assert _is_dismissed(dismissals, "fp123", ("id1", "id_new")) is False
+    def test_not_dismissed_when_comparison_differs(self):
+        identity, evidence = _dismissal_comparison({}, "test", ("id1",))
+        dismissals = {
+            "entry": {
+                "dismissal_identity": identity,
+                "dismissal_evidence_digest": evidence,
+            }
+        }
+        assert _is_dismissed({}, dismissals, "test", ("id1", "id_new")) is False
 
-    def test_dismissed_with_empty_sources_matches_empty(self):
-        dismissals = {"fp123": {"source_issue_ids": []}}
-        assert _is_dismissed(dismissals, "fp123", ()) is True
+    def test_legacy_dismissal_without_comparison_is_unknown(self):
+        assert _is_dismissed({}, {"entry": {"source_issue_ids": []}}, "test", ()) is False
 
 
 # ── Targeted _file_concerns generator tests ──────────────────────────
@@ -549,8 +560,15 @@ class TestFileConcernsGenerator:
         concerns = _file_concerns(state, {})
         fp = concerns[0].fingerprint
         src_ids = concerns[0].source_issues
+        identity, evidence = _dismissal_comparison(state, concerns[0].type, src_ids)
 
-        dismissals = {fp: {"source_issue_ids": list(src_ids)}}
+        dismissals = {
+            fp: {
+                "source_issue_ids": list(src_ids),
+                "dismissal_identity": identity,
+                "dismissal_evidence_digest": evidence,
+            }
+        }
         assert _file_concerns(state, dismissals) == []
 
     def test_multiple_files_each_get_concern(self):
@@ -665,8 +683,15 @@ class TestCrossFilePatternsGenerator:
         assert len(patterns) == 1
         fp = patterns[0].fingerprint
         src_ids = patterns[0].source_issues
+        identity, evidence = _dismissal_comparison(state, patterns[0].type, src_ids)
 
-        dismissals = {fp: {"source_issue_ids": list(src_ids)}}
+        dismissals = {
+            fp: {
+                "source_issue_ids": list(src_ids),
+                "dismissal_identity": identity,
+                "dismissal_evidence_digest": evidence,
+            }
+        }
         assert _cross_file_patterns(state, dismissals) == []
 
     def test_multiple_distinct_patterns(self):
