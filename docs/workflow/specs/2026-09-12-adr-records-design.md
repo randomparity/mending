@@ -7,7 +7,7 @@ architectural decisions can be malformed or disappear without a dedicated PR che
 
 ## Scope
 
-Install the records gate, enable its ADR profile, and create ADR 0001. The
+Install the records gate, enable its ADR profile, and create ADR 0002. The
 workflow remains advisory; branch protection is outside this change.
 
 ## Failure model
@@ -20,7 +20,7 @@ workflow remains advisory; branch protection is outside this change.
 ## Success
 
 The six gate assets are installed, only the three Bash entry points are executable,
-the workflow selects `adr`, and the local suite and checker pass with ADR 0001.
+the workflow selects `adr`, and the local suite and checker pass with ADR 0002.
 
 ## Validation
 

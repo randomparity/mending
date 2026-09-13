@@ -1,4 +1,4 @@
-# 0001 — Adopt immutable ADR records
+# 0002 — Adopt immutable ADR records
 
 ## Status
 
