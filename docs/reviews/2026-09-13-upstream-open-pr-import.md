@@ -24,9 +24,11 @@ Merged these independent, compatible bug-fix PRs in full:
 - #611, #616, #617, #629, #631, #634, #635, #653, #654, #661–#663, #666,
   #668, #670, #684, #693, #710, #735, and #739.
 
-Imported only the independently bounded Rust coverage fixes from #712 and #722:
-`include!` ownership modelling and bounded dependency resolution. The remaining
-commits in those PRs are coupled to broader triage and policy behavior.
+Imported only independently bounded fixes from #712, #722, and #723:
+`include!` ownership modelling, bounded dependency resolution, and filtering of
+non-actionable cppcheck `information` records. The remaining commits in #712
+and #722 are coupled to broader triage and policy behavior; #723's
+compile-database and cppcheck-flag changes remain deferred.
 
 Where upstream changes exposed a defect, this branch adds or strengthens a
 regression: Java PMD now asserts GNU-parseable `text` output; Kotlin/JVM source
@@ -52,8 +54,7 @@ The following need separate design or compatibility work before adoption:
   findings), #623 and #626 (new public
   configuration), #624 (can resolve imports outside the scan root), #630
   (golangci-lint v2 command breaks v1 installations), #632 and #633 (can
-  over-credit coverage), #723 (tool-version and language-flag assumptions), and
-  #740 (broad Kotlin import suppression).
+  over-credit coverage), and #740 (broad Kotlin import suppression).
 
 The lists above account for all 90 open PRs: #744 is the integration wrapper,
-49 individual PRs contributed imported code (two partially), and 40 are deferred.
+50 individual PRs contributed imported code (three partially), and 39 are deferred.
