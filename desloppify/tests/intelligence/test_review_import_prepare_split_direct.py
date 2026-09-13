@@ -198,15 +198,48 @@ def test_issue_flow_build_collect_and_auto_resolve_paths(monkeypatch) -> None:
                 "concern_verdict": "dismissed",
                 "concern_fingerprint": "fp2",
             },
+            {
+                "dimension": "naming_quality",
+                "identifier": "shared-name-policy",
+                "summary": "Callers duplicate the name policy",
+                "confidence": "high",
+                "suggestion": "Move the policy to its shared owner",
+                "related_files": ["src/a.py", "src/b.py"],
+                "evidence": ["both callers normalize names differently"],
+                "concern_verdict": "confirmed",
+                "root_cause_cluster": "duplicated_name_policy",
+                "maintenance_consequence": "callers will keep diverging",
+                "proposed_owner": "name policy module",
+                "protected_contracts": ["existing caller output"],
+                "verification": "exercise both callers",
+            },
+            {
+                "dimension": "naming_quality",
+                "identifier": "incomplete-concern",
+                "summary": "A concern without an owner",
+                "confidence": "high",
+                "suggestion": "Move it",
+                "related_files": ["src/a.py"],
+                "evidence": ["line 10"],
+                "concern_verdict": "confirmed",
+                "root_cause_cluster": "duplicated_name_policy",
+                "maintenance_consequence": "callers will keep diverging",
+                "protected_contracts": ["existing caller output"],
+                "verification": "exercise both callers",
+            },
         ],
         {"naming_quality": {}},
         "python",
     )
-    assert len(issues) == 1
-    assert skipped == []
+    assert len(issues) == 2
+    assert skipped[0]["identifier"] == "incomplete-concern"
     assert dismissed and dismissed[0]["fingerprint"] == "fp2"
     assert issues[0]["detail"]["summary_hash"]
     assert "content_hash" not in issues[0]["detail"]
+    concern = issues[1]
+    assert concern["detector"] == "concerns"
+    assert concern["detail"]["concern_verdict"] == "confirmed"
+    assert concern["detail"]["proposed_owner"] == "name policy module"
 
     imported = issue_flow_mod.collect_imported_dimensions(
         issues_list=[{"dimension": "Naming Quality"}],

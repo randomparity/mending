@@ -28,7 +28,7 @@ Verification:
 - Mode: focused-test. Contract: clean input yields a bounded rotating fallback; drifted input
   puts the signal path and direct neighbor before fallback; neither output exceeds the cap. Red
   observation: current builders discard the configured cap and prompt has no reading set. Green
-  command: `uv run pytest -q desloppify/tests/review/context/test_holistic_review.py desloppify/tests/review/batch/test_prompt_sections.py` exits 0.
+  command: `uv run pytest -q desloppify/tests/review/context/test_holistic_review.py desloppify/tests/review/batch/test_prompt_sections.py desloppify/tests/intelligence/test_review_import_prepare_split_direct.py` exits 0.
 
 Steps: write clean and drifted fixture tests; reuse existing collector and dependency-graph data
 to build the capped ordered path list; render it in the batch prompt; rerun the focused tests.
@@ -51,7 +51,7 @@ Verification:
 - Mode: focused-test. Contract: a complete confirmed concern retains its marker and an incomplete
   one is skipped while a valid ordinary result in the same batch remains. Red observation: the
   current validator accepts a confirmed concern with no architecture evidence and normalization
-  aborts the batch. Green command: `uv run pytest -q desloppify/tests/commands/review/test_review_batch_core_direct.py` exits 0.
+  aborts the batch. Green command: `uv run pytest -q desloppify/tests/commands/review/test_review_batch_core_direct.py desloppify/tests/intelligence/test_review_import_prepare_split_direct.py` exits 0.
 
 Steps: write the focused failing tests; make confirmed-only validation and prompt requirements
 explicit; rerun the focused test; commit the coherent contract change.
@@ -73,7 +73,7 @@ Verification:
 - Mode: focused-test. Contract: a normalized complete confirmed concern stores its marker and
   architecture evidence as a concern while ordinary and dismissed payloads stay compatible. Red
   observation: current normalization drops the marker and concern-only fields. Green command:
-  `uv run pytest -q desloppify/tests/commands/review/test_review_batch_core_direct.py desloppify/tests/review/context/test_holistic_review.py` exits 0.
+  `uv run pytest -q desloppify/tests/commands/review/test_review_batch_core_direct.py desloppify/tests/review/context/test_holistic_review.py desloppify/tests/intelligence/test_review_import_prepare_split_direct.py` exits 0.
 
 Steps: write the focused failing persistence assertion; propagate the typed fields through the
 existing normalized model and importer; remove the batch-path low-score issue requirement; retain
