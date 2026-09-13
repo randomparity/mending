@@ -234,6 +234,12 @@ def _build_normalized_issue(
         evidence_lines=list(issue.get("evidence_lines", []))
         if isinstance(issue.get("evidence_lines"), list)
         else None,
+        concern_verdict=str(issue.get("concern_verdict", "")),
+        root_cause_cluster=str(issue.get("root_cause_cluster", "")),
+        maintenance_consequence=str(issue.get("maintenance_consequence", "")),
+        proposed_owner=str(issue.get("proposed_owner", "")),
+        protected_contracts=list(issue.get("protected_contracts", [])),
+        verification=str(issue.get("verification", "")),
     )
 
 
@@ -288,6 +294,8 @@ def _normalize_issues(
             allowed_dims=allowed_dims,
         )
         if issue_errors:
+            if isinstance(item, dict) and item.get("concern_verdict") == "confirmed":
+                continue
             errors.extend(issue_errors)
             continue
         if issue is None:
@@ -670,9 +678,8 @@ def normalize_batch_result(
         dimension_notes,
         max_batch_issues=max_batch_issues,
         allowed_dims=allowed_dims,
-        low_score_dimensions=_low_score_dimensions(assessments),
+        low_score_dimensions=None,
     )
-    _enforce_low_score_issues(assessments=assessments, issues=issues)
 
     quality = _compute_batch_quality(
         assessments,

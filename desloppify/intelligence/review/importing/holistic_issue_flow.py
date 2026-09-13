@@ -137,6 +137,14 @@ def validate_and_build_issues(
         if is_confirmed_concern:
             detail["concern_type"] = issue.get("concern_type", "")
             detail["concern_verdict"] = "confirmed"
+            for field in (
+                "root_cause_cluster",
+                "maintenance_consequence",
+                "proposed_owner",
+                "protected_contracts",
+                "verification",
+            ):
+                detail[field] = issue[field]
 
         prefix = "concern" if is_confirmed_concern else "holistic"
         issue_file = issue.get("concern_file", "") if is_confirmed_concern else ""

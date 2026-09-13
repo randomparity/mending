@@ -19,6 +19,21 @@ import desloppify.intelligence.review.prepare_holistic_payload_parts as payload_
 import desloppify.intelligence.review.prepare_holistic_scope as scope_mod
 
 
+def _confirmed_concern(identifier: str = "confirmed-concern") -> dict[str, object]:
+    return {
+        "dimension": "naming_quality", "identifier": identifier,
+        "summary": "Callers duplicate the name policy", "confidence": "high",
+        "suggestion": "Move the policy to its shared owner",
+        "related_files": ["src/a.py", "src/b.py"],
+        "evidence": ["both callers normalize names differently"],
+        "concern_verdict": "confirmed", "root_cause_cluster": "duplicated_name_policy",
+        "maintenance_consequence": "callers will keep diverging",
+        "proposed_owner": "name policy module",
+        "protected_contracts": ["existing caller output"],
+        "verification": "exercise both callers",
+    }
+
+
 def test_contract_validation_accepts_valid_payload_and_dismissed_entries() -> None:
     valid_issue, errors = contracts_validation_mod.validate_review_issue_payload(
         {
@@ -47,6 +62,64 @@ def test_contract_validation_accepts_valid_payload_and_dismissed_entries() -> No
     assert errors == []
     assert dismissed is not None
     assert dismissed["concern_verdict"] == "dismissed"
+
+
+def test_contract_validation_requires_confirmed_concern_evidence() -> None:
+    issue = _confirmed_concern("id1")
+    confirmed, errors = contracts_validation_mod.validate_review_issue_payload(
+        issue,
+        label="issues[0]",
+        allowed_dimensions={"naming_quality"},
+    )
+
+    assert errors == []
+    assert confirmed is not None
+    assert confirmed["concern_verdict"] == "confirmed"
+
+    issue.pop("proposed_owner")
+    missing, errors = contracts_validation_mod.validate_review_issue_payload(
+        issue,
+        label="issues[0]",
+        allowed_dimensions={"naming_quality"},
+    )
+    assert missing is None
+    assert "issues[0].proposed_owner" in errors[0]
+
+
+def test_bounded_reading_set_rotates_clean_files() -> None:
+    batches = [{"dimensions": ["unknown"]}]
+
+    holistic_batches_mod._apply_bounded_reading_sets(
+        batches,
+        holistic_ctx={},
+        lang=SimpleNamespace(),
+        state={"scan_count": 1},
+        all_files=["src/c.py", "src/a.py", "src/b.py"],
+        allowed_review_files={"src/a.py", "src/b.py", "src/c.py"},
+        max_files_per_batch=2,
+    )
+
+    assert batches[0]["files_to_read"] == ["src/b.py", "src/c.py"]
+
+
+def test_bounded_reading_set_prioritizes_signal_and_direct_neighbor() -> None:
+    batches = [{"dimensions": ["unknown"], "files_to_read": ["src/seed.py"]}]
+    lang = SimpleNamespace(
+        dep_graph={"src/seed.py": {"imports": {"src/neighbor.py", "../secret.py"}}}
+    )
+
+    holistic_batches_mod._apply_bounded_reading_sets(
+        batches,
+        holistic_ctx={},
+        lang=lang,
+        state={"scan_count": 0},
+        all_files=["src/extra.py", "src/neighbor.py", "src/seed.py"],
+        allowed_review_files={"src/extra.py", "src/neighbor.py", "src/seed.py"},
+        max_files_per_batch=2,
+    )
+
+    assert batches[0]["files_to_read"] == ["src/seed.py", "src/neighbor.py"]
+    assert "../secret.py" not in batches[0]["files_to_read"]
 
 
 def test_holistic_cache_update_and_resolution_helpers(monkeypatch) -> None:
@@ -129,15 +202,22 @@ def test_issue_flow_build_collect_and_auto_resolve_paths(monkeypatch) -> None:
                 "concern_verdict": "dismissed",
                 "concern_fingerprint": "fp2",
             },
+            _confirmed_concern("shared-name-policy"),
+            {key: value for key, value in _confirmed_concern("incomplete-concern").items()
+             if key != "proposed_owner"},
         ],
         {"naming_quality": {}},
         "python",
     )
-    assert len(issues) == 1
-    assert skipped == []
+    assert len(issues) == 2
+    assert skipped[0]["identifier"] == "incomplete-concern"
     assert dismissed and dismissed[0]["fingerprint"] == "fp2"
     assert issues[0]["detail"]["summary_hash"]
     assert "content_hash" not in issues[0]["detail"]
+    concern = issues[1]
+    assert concern["detector"] == "concerns"
+    assert concern["detail"]["concern_verdict"] == "confirmed"
+    assert concern["detail"]["proposed_owner"] == "name policy module"
 
     imported = issue_flow_mod.collect_imported_dimensions(
         issues_list=[{"dimension": "Naming Quality"}],

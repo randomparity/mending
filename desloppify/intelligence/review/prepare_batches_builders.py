@@ -196,6 +196,7 @@ def batch_concerns(
         "why": "; ".join(why_parts),
         "concern_signals": concern_signals,
         "concern_signal_count": len(concern_signals),
+        "files_to_read": files[:max_files] if max_files is not None else files,
     }
     if detector_counts:
         result["judgment_finding_counts"] = detector_counts

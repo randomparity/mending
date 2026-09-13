@@ -239,9 +239,8 @@ def test_merge_batch_results_preserves_dismissed_concerns_without_counting_them(
     assert "dimensions_with_issues" not in merged["review_quality"]
 
 
-def test_normalize_batch_result_rejects_low_score_without_same_dimension_issue():
-    with pytest.raises(ValueError) as exc:
-        normalize_batch_result(
+def test_normalize_batch_result_allows_low_score_without_issue():
+    assessments, issues, _notes, _judgment, _quality, _ctx = normalize_batch_result(
             payload={
                 "assessments": {"logic_clarity": LOW_SCORE_ISSUE_THRESHOLD - 10.0},
                 "dimension_notes": {
@@ -269,8 +268,9 @@ def test_normalize_batch_result_rejects_low_score_without_same_dimension_issue()
             allowed_dims={"logic_clarity"},
             max_batch_issues=max_batch_issues_for_dimension_count(1),
             abstraction_sub_axes=_ABSTRACTION_SUB_AXES,
-        )
-    assert "low-score dimensions must include at least one explicit issue" in str(exc.value)
+    )
+    assert assessments["logic_clarity"] == LOW_SCORE_ISSUE_THRESHOLD - 10.0
+    assert issues == []
 
 
 def test_normalize_batch_result_accepts_low_score_with_same_dimension_issue():

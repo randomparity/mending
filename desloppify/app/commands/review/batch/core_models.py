@@ -21,6 +21,12 @@ class NormalizedBatchIssuePayload(TypedDict):
     fix_scope: str
     reasoning: NotRequired[str]
     evidence_lines: NotRequired[list[int]]
+    concern_verdict: NotRequired[str]
+    root_cause_cluster: NotRequired[str]
+    maintenance_consequence: NotRequired[str]
+    proposed_owner: NotRequired[str]
+    protected_contracts: NotRequired[list[str]]
+    verification: NotRequired[str]
 
 
 class DismissedConcernPayload(TypedDict):
@@ -91,6 +97,12 @@ class NormalizedBatchIssue:
     fix_scope: str
     reasoning: str = ""
     evidence_lines: list[int] | None = None
+    concern_verdict: str = ""
+    root_cause_cluster: str = ""
+    maintenance_consequence: str = ""
+    proposed_owner: str = ""
+    protected_contracts: list[str] | None = None
+    verification: str = ""
 
     def to_payload(self) -> NormalizedBatchIssuePayload:
         payload: NormalizedBatchIssuePayload = {
@@ -108,6 +120,13 @@ class NormalizedBatchIssue:
             payload["reasoning"] = self.reasoning
         if self.evidence_lines:
             payload["evidence_lines"] = list(self.evidence_lines)
+        if self.concern_verdict:
+            payload["concern_verdict"] = self.concern_verdict
+            payload["root_cause_cluster"] = self.root_cause_cluster
+            payload["maintenance_consequence"] = self.maintenance_consequence
+            payload["proposed_owner"] = self.proposed_owner
+            payload["protected_contracts"] = list(self.protected_contracts or [])
+            payload["verification"] = self.verification
         return payload
 
 
