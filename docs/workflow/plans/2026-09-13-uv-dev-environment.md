@@ -12,12 +12,12 @@ Tech stack: Python 3.11+, uv, GNU Make, POSIX shell.
 ## Global Constraints
 
 - Preserve the existing `full` extra and Python 3.11 support.
-- Use the official uv installer only when no `uv` executable is on `PATH`.
+- Use pinned and checksummed uv archives only when no `uv` executable is on `PATH`.
 - Do not modify a user's shell profile or global PATH.
 - Commit uv-managed lock output; never hand-edit it.
 - Keep the change limited to development provisioning and its tests/docs.
 
-Expected implementation size: 500–1,000 changed lines (M) — the generated
+Expected implementation size: 700–1,400 changed lines (M) — the generated
 cross-platform lockfile dominates a small manifest, Makefile, test, and doc change.
 
 ## Task 1: Define and lock the development environment
@@ -52,25 +52,28 @@ locked Makefile command execution.
 
 **Verification inventory:**
 
-- **Contract:** an available uv executable receives the exact full locked sync
-  invocation. **Mode:** focused-test. **Red:**
+- **Contract:** available and repository-local uv executables receive the exact
+  full locked sync invocation, while download failure does not invoke Python.
+  **Mode:** focused-test. **Red:**
   `pytest desloppify/tests/workflows/test_make_setup.py -q` fails before the
   test and target exist. **Green:** the same command passes after a fake uv
   executable records `sync --locked --extra full`.
 
 Steps:
 
-1. Write the focused setup-target test using a temporary executable fake uv and
-   a command log outside the repository.
+1. Write the focused setup-target test using a temporary executable fake uv,
+   fake downloader, checksummed archive, and command log outside the repository.
 2. Run the test to observe the missing-target failure.
-3. Add `setup`, a repository-local unmanaged fallback installer, and a locked
-   `uv sync --extra full` invocation.
-4. Make existing gates invoke `uv run --locked`; retain the old install targets
-   as aliases to `setup`.
+3. Add `setup`, pinned checksum variables, a repository-local unmanaged archive
+   fallback, and a locked `uv sync --extra full` invocation.
+4. Make existing gate drivers invoke `uv run --locked`; retain the old install
+   targets as aliases to `setup`. Keep package-smoke's temporary wheel
+   installation on pip after its locked build and twine commands.
 5. Run the focused test and `make setup`.
 
-Acceptance: the target does not fall back to pip, uses a discovered uv binary
-when present, and all gates use the locked project environment.
+Acceptance: the target does not fall back to pip, uses a discovered or verified
+repository-local uv binary, exits on bootstrap failure, and all gate drivers
+use the locked project environment except the isolated package-smoke wheel install.
 
 ## Task 3: Document developer use
 

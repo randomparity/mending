@@ -15,15 +15,18 @@ developer environments and CI jobs can resolve different package versions.
 Use uv as the project environment manager. Declare development-only tools in a
 PEP 735 `dev` dependency group, commit `uv.lock`, and provide a `make setup`
 target that syncs the `full` extra and default `dev` group from that lockfile.
-When uv is absent, install an unmanaged repository-local copy without changing
-the user's shell configuration.
+When uv is absent, download a pinned platform archive, verify its SHA-256, and
+install it as an unmanaged repository-local copy without changing the user's
+shell configuration.
 
 ## Consequences
 
-Developers receive a reproducible `.venv`, and Makefile gates use the same
-locked tools. Updating dependency metadata requires an intentional lockfile
-refresh. The setup path requires a POSIX shell, a downloader, and network access
-only when uv is unavailable or dependencies are not cached.
+Developers receive a reproducible `.venv`, and Makefile gate drivers use the
+same locked tools. Package smoke retains a separate pip wheel installation to
+test the built artifact outside the editable environment. Updating dependency
+metadata requires an intentional lockfile refresh. The setup path requires a
+POSIX shell, a downloader, an archiver, and network access only when uv is
+unavailable or dependencies are not cached.
 
 ## Considered & rejected
 
@@ -31,6 +34,9 @@ only when uv is unavailable or dependencies are not cached.
   separate pip install commands for core and full tools and no committed lockfile.
 - **Install uv globally and edit shell profiles.** judgment: a repository setup
   target should not modify a developer's shell configuration.
+- **Execute the mutable installer script.** verified: the official installer is
+  a network-fetched script; a pinned archive plus SHA-256 check verifies the
+  executable bytes before they run.
 - **Use transient `uv --with` tools.** verified: uv's project dependency groups
   are resolved into the lockfile, while transient tool additions are not project
   metadata and do not establish a durable development environment.

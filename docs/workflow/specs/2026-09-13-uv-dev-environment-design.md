@@ -17,28 +17,36 @@ Declare the Makefile's existing developer tools in a PEP 735 `dev` dependency
 group. Keep scanner capabilities in the existing `full` extra. Commit the
 universal `uv.lock` generated for the complete resolution.
 
-`make setup` first uses `uv` from `PATH`. If unavailable, it downloads the
-official installer to a temporary file, installs an unmanaged binary at
-`.tools/uv`, and invokes that exact binary. It does not alter shell profiles or
-the global PATH. It then runs `uv sync --locked --extra full`, which creates an
-exact editable `.venv` using the locked full and default `dev` dependencies.
+`make setup` first uses `uv` from `PATH`. If unavailable, it downloads a pinned
+uv 0.12.13 archive for Linux or macOS on x86_64 or arm64, verifies its embedded
+SHA-256 value, extracts it to `.tools/uv`, and invokes that exact binary. It
+fails before extraction for an unsupported platform, unavailable downloader or
+archiver, download error, or checksum mismatch. It does not alter shell profiles
+or the global PATH. It then runs `uv sync --locked --extra full`, which creates
+an exact editable `.venv` using the locked full and default `dev` dependencies.
 
-All Makefile gates depend on `setup` and execute their tools with `uv run
---locked`. `install-ci-tools` and `install-full-tools` remain compatibility
+All Makefile gate drivers depend on `setup` and execute their project tools with
+`uv run --locked`. `package-smoke` is the deliberate exception after its locked
+build and twine driver steps: it installs the built wheel into a new temporary
+venv with pip so the wheel is tested independently of the editable development
+environment. `install-ci-tools` and `install-full-tools` remain compatibility
 aliases for `setup` rather than retaining a second pip-based installation path.
 
 ## Failure handling
 
-The setup shell exits on failed downloads, installation, locking, or syncing.
-An unavailable downloader or a malformed installer cannot fall through to a
+The setup shell exits on failed platform detection, downloads, checksum
+verification, extraction, locking, or syncing. It cannot fall through to a
 system Python invocation. A stale or missing lockfile fails under `--locked`,
 requiring an intentional `uv lock` update in the same change as a dependency
 manifest edit.
 
 ## Verification
 
-The setup test supplies an executable fake `uv` and asserts that `make setup`
-calls `sync --locked --extra full`. The locked environment is then used to run
-the focused test, `uv lock --check`, and the existing core checks. The optional
-full suite is exercised under Python 3.11 when the resolved packages support
-the host.
+Hermetic setup tests supply an executable fake `uv` for the PATH branch, then a
+fake downloader that returns a checksummed archive for the absent-uv branch;
+both assert `sync --locked --extra full`. A failing downloader proves the target
+exits without invoking a system Python. A package-smoke assertion proves its
+build driver uses `uv run --locked` while its temporary wheel installation stays
+isolated. The locked environment is then used to run the focused test, `uv lock
+--check`, and the existing core checks. The optional full suite is exercised
+under Python 3.11 when the resolved packages support the host.
