@@ -17,10 +17,27 @@ the earlier disposition.
 Store a canonical, path-independent identity and a separate digest of the
 governing concern evidence on confirmed imported concerns. Reconciliation may
 transfer a plan reference only for one old and one new concern with the same
-identity and unchanged governing evidence. A changed digest records a stale
-disposition for downstream promotion and execution owners to revalidate; a
-missing or ambiguous comparison is unknown and transfers nothing. Dismissals retain their recorded
-reconsideration evidence, so they remain declined until that evidence changes.
+identity and unchanged governing evidence. Confirmed identity hashes canonical
+JSON (`schema: 1`) of normalized `dimension`, `identifier`,
+`root_cause_cluster`, and `proposed_owner`; evidence digest hashes canonical
+JSON of normalized `maintenance_consequence`, sorted unique
+`protected_contracts`, and `verification`. Canonical JSON uses sorted keys and
+compact separators; paths, related-file paths, summary text, and free-form
+evidence are excluded from both inputs.
+
+A same-identity changed digest leaves the old plan entry superseded with
+`revalidation_reason: concern_evidence_changed` and the observed successor as
+its candidate. This is the durable handoff for downstream promotion and
+execution owners; this record does not perform their work. Missing evidence or
+multiple matching successors is unknown and transfers nothing.
+
+A dismissal keeps the existing normalized signal fingerprint. Import resolves
+that fingerprint to the current generated concern and stores a dismissal
+identity hash of concern type plus sorted source-detector names, alongside a
+digest of sorted path-independent source-finding suppression fingerprints.
+Suppression applies only when exactly one stored dismissal has both values. A
+changed digest is the recorded reconsideration trigger; missing or ambiguous
+evidence does not suppress the generated concern.
 
 ## Consequences
 

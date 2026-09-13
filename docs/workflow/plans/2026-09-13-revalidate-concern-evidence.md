@@ -22,20 +22,29 @@ Files: `desloppify/engine/_concerns/`,
 `desloppify/engine/_state/schema_types_review.py`.
 
 Interfaces: a confirmed concern detail carries `concern_identity` and
-`concern_evidence_digest`; a dismissal carries the same comparison inputs or an
-explicit unknown shape. The identity excludes path-only fields. The digest
-contains the stable governing claim fields defined by ADR 0004.
+`concern_evidence_digest`, each a SHA-256 hash of canonical compact JSON with
+sorted keys and `schema: 1`. Identity inputs are normalized `dimension`,
+`identifier`, `root_cause_cluster`, and `proposed_owner`. Evidence inputs are
+normalized `maintenance_consequence`, sorted unique `protected_contracts`, and
+`verification`. Path, related-file, summary, and free-form evidence fields are
+excluded. Dismissal payload normalization retains its existing fingerprint;
+import resolves it to one generated concern, then stores concern-type/sorted-
+detector identity and sorted suppression-fingerprint evidence. Missing or
+non-unique dismissal evidence is unknown and does not suppress.
 
 Verification:
 
-- Mode: focused-test. Contract: equivalent semantic concerns with renamed paths
-  compare equal, and a governing-field change alters only the evidence result.
-  Red observation: current details have no canonical comparison fields. Green
-  command: `uv run --locked pytest -q desloppify/tests/intelligence/test_review_import_prepare_split_direct.py desloppify/tests/detectors/test_concerns.py` exits 0.
+- Mode: focused-test. Contract: a path-only rename preserves both confirmed
+  hashes; each listed identity/evidence input changes its listed hash; and a
+  dismissal suppresses only one unchanged generated identity/evidence pair.
+  Red observation: current details have no canonical comparison fields and a
+  dismissal stores source IDs only. Green command:
+  `uv run --locked pytest -q desloppify/tests/intelligence/test_review_import_prepare_split_direct.py desloppify/tests/detectors/test_concerns.py` exits 0.
 
 Steps: add focused fixtures; add the narrow canonicalization helper at the
-concern boundary; persist its outputs for confirmed imports and dismissals; run
-the focused tests.
+concern boundary; persist confirmed hashes; derive dismissal hashes from its
+surviving fingerprint after normalization; require exactly one matching stored
+dismissal; run the focused tests.
 
 Acceptance: persisted concern data can distinguish identity from freshness
 without depending on a file-addressed work-item ID.
@@ -46,21 +55,27 @@ Files: `desloppify/engine/_plan/scan_issue_reconcile.py` and
 `desloppify/tests/plan/test_reconcile.py`.
 
 Interfaces: reconciliation accepts one old/new concern pair only when the
-canonical identity and evidence digest match. It rewrites the existing plan
-references through the current supersession/remap path. A changed digest,
-missing evidence, failed analysis, or multiple candidates records no transfer.
+canonical identity and evidence digest match. It replaces the old ID in
+`queue_order`, `skipped`, `overrides`, cluster `issue_ids`, action `issue_refs`,
+and `promoted_ids`, then writes `status: remapped` and `remapped_to`. A
+same-identity changed digest uses ordinary supersession with
+`revalidation_reason: concern_evidence_changed` and the successor candidate.
+Missing evidence, failed analysis, or multiple candidates records no transfer
+and no revalidation reason.
 
 Verification:
 
-- Mode: focused-test. Contract: a unique supported rename remaps a plan
-  reference; ambiguous and changed-evidence fixtures preserve the old
-  reference and mark it stale. Red observation: current reconciliation
-  selects candidates by detector and file only. Green command:
+- Mode: focused-test. Contract: one supported rename remaps each named plan
+  collection; ambiguity and missing evidence retain ordinary supersession;
+  changed evidence persists the revalidation reason without transferring a
+  reference. Red observation: current reconciliation selects candidates by
+  detector and file only. Green command:
   `uv run --locked pytest -q desloppify/tests/plan/test_reconcile.py desloppify/tests/plan/test_epic_triage_reconcile_and_migration.py` exits 0.
 
 Steps: write rename, ambiguity, changed-evidence, and missing-evidence fixtures;
-add the conservative candidate comparison; route only the unique equal pair
-through the existing plan-reference update; run the focused tests.
+add conservative comparison and targeted reference replacement; record the
+changed-evidence reason only on a unique same-identity successor; run the
+focused tests.
 
 Acceptance: the plan never gains a successor reference from an ambiguous or
 stale comparison.
@@ -74,10 +89,11 @@ the existing review discovery, GitHub queue, or scheduler contracts.
 
 Verification:
 
-- Mode: focused-test. Contract: an unchanged recheck preserves the disposition,
-  while a changed evidence fixture requires revalidation before later consumers
-  can use it. Red observation: current imports and reconciliation do not share
-  comparison evidence. Green command: `uv run --locked pytest -q desloppify/tests/intelligence/test_review_import_prepare_split_direct.py desloppify/tests/plan/test_reconcile.py` exits 0.
+- Mode: focused-test. Contract: an unchanged recheck preserves the plan
+  disposition; a changed pair preserves the downstream revalidation reason;
+  an unchanged dismissal remains hidden and a changed dismissal is visible.
+  Red observation: current imports and reconciliation do not share comparison
+  evidence. Green command: `uv run --locked pytest -q desloppify/tests/intelligence/test_review_import_prepare_split_direct.py desloppify/tests/plan/test_reconcile.py` exits 0.
 
 Steps: execute the focused integration fixtures; inspect the narrow diff; run
 `make lint`, `make typecheck`, `make arch`, `make ci-contracts`, and `make tests`;
