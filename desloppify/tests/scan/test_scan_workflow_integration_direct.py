@@ -160,6 +160,56 @@ def test_merge_scan_results_persists_state_and_reconciles_plan(tmp_path):
     assert isinstance(plan_start.get("strict"), float)
 
 
+def test_merge_scan_results_preserves_last_active_item_resolved_by_scan(tmp_path):
+    state_path = tmp_path / "state.json"
+    scan_file = rel(str(tmp_path / "src" / "legacy.py"))
+    active_issue = state_mod.make_issue(
+        "structural",
+        scan_file,
+        "legacy_large_file",
+        tier=2,
+        confidence="high",
+        summary="Legacy module should be split",
+        detail={"loc": 260},
+    )
+    active_id = active_issue["id"]
+    plan = empty_plan()
+    plan["queue_order"] = [active_id]
+    plan["plan_start_scores"] = {
+        "strict": 70.0,
+        "overall": 71.0,
+        "objective": 72.0,
+        "verified": 69.0,
+    }
+    save_plan(plan, tmp_path / "plan.json")
+
+    state = state_mod.empty_state()
+    state["scan_path"] = rel(str(tmp_path))
+    state["issues"][active_id] = active_issue
+    runtime = ScanRuntime(
+        args=SimpleNamespace(force_resolve=False),
+        state_path=state_path,
+        state=state,
+        path=tmp_path,
+        config={"ignore": [], "needs_rescan": False, "holistic_max_age_days": 30},
+        lang=None,
+        lang_label="",
+        profile="full",
+        effective_include_slow=True,
+        zone_overrides=None,
+    )
+
+    merge_scan_results(
+        runtime,
+        [],
+        potentials={"structural": 0},
+        codebase_metrics=None,
+    )
+
+    assert state_mod.load_state(state_path)["issues"][active_id]["status"] == "auto_resolved"
+    assert load_plan(tmp_path / "plan.json") == plan
+
+
 def test_merge_scan_results_preserves_prior_state_when_save_fails(
     tmp_path, monkeypatch
 ):
