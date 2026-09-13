@@ -16,6 +16,7 @@ from desloppify.engine._state.issue_semantics import (
     is_import_only_issue,
     is_assessment_request,
 )
+from desloppify.engine.repair_queue import marker_for_hashes
 
 
 def find_suspect_detectors(
@@ -56,6 +57,29 @@ def find_suspect_detectors(
             suspect.add(detector)
 
     return suspect
+
+
+def _preserve_repair_metadata(previous_detail: object, detail: dict) -> None:
+    """Keep queue metadata only while it remains bound to current concern hashes."""
+    if not isinstance(previous_detail, Mapping):
+        return
+    identity = detail.get("concern_identity")
+    evidence_digest = detail.get("concern_evidence_digest")
+    if not isinstance(identity, str) or not isinstance(evidence_digest, str):
+        return
+    marker = marker_for_hashes(identity, evidence_digest)
+    for key in (
+        "github_repair",
+        "github_repair_pending",
+        "github_repair_revalidated",
+    ):
+        record = previous_detail.get(key)
+        if (
+            isinstance(record, Mapping)
+            and record.get("marker") == marker
+            and isinstance(record.get("repository"), str)
+        ):
+            detail[key] = dict(record)
 
 
 def _mark_scan_verified(
@@ -251,6 +275,8 @@ def upsert_issues(
         previous = existing[issue_id]
         detail = dict(issue.get("detail", {}))
         previous_detail = previous.get("detail")
+        if detector == "concerns":
+            _preserve_repair_metadata(previous_detail, detail)
         if (
             detector == "concerns"
             and isinstance(previous_detail, dict)
