@@ -1,0 +1,62 @@
+# Bounded architecture concerns
+
+## Problem
+
+Existing holistic review batches can carry detector signals, but a confirmed signal is
+stored like a general review issue. The batch prompt does not require the ownership and
+verification evidence needed to distinguish an architectural concern from a line-level fix.
+
+## Scope
+
+Extend the existing confirmed-concern payload through prompt rendering, batch normalization,
+and holistic import. A confirmed concern will require a root-cause cluster, maintenance
+consequence, proposed owner, protected contracts, and bounded verification in addition to
+the existing files and source evidence. A missing required field rejects only that result;
+dismissed signals and ordinary review issues retain their current contracts. The existing
+batch cap remains the bound; it is not tied to a score, and empty `issues` remains valid.
+
+## Failure model
+
+- Actors and deployments: a local review runner emits JSON that the local import path reads.
+- Invariants and assets at stake: confirmed concerns retain evidence and never masquerade as
+  validated GitHub work; ordinary-review and dismissed-signal compatibility stays intact.
+- Accepted failure classes: a malformed confirmed concern is skipped because its evidence is
+  incomplete; broader selection, freshness, queue writes, and scheduling belong to #4–#6.
+- Covered elsewhere: #4 owns revalidation and disposition; #5 owns GitHub promotion; #6 owns
+  scheduled execution; #7 owns pilot and language validation.
+
+### AI-SPEC
+
+A batch reviewer, triggered by `review --run-batches`, reads the supplied blind packet and
+returns JSON. It may use only packet and repository evidence, must emit no concern when the
+required evidence is absent, and falls back to an empty array for clean code. The output is
+bounded by the existing batch cap; success is a normalized confirmed concern with each required
+field, while malformed output remains non-actionable.
+
+### Failure-mode map
+
+- Structured output: schema compliance and field accuracy are severity 4 because incomplete
+  concern evidence can mislead later repair selection.
+- Content generation: unsupported ownership claims are severity 4 because they can promote an
+  unfounded repair proposal; the output must instead be omitted.
+
+### Eval cases
+
+- `confirmed-complete`: a confirmed concern with every required field normalizes and persists.
+- `confirmed-incomplete`: a confirmed concern missing ownership evidence is rejected.
+- `ordinary-compatible`: an ordinary review issue still normalizes without concern-only fields.
+- `dismissed-compatible`: a dismissed concern retains only its fingerprint contract.
+
+## Success
+
+- A confirmed architecture concern produced by an existing batch names one root-cause cluster,
+  concrete evidence, the maintenance consequence, proposed owner, protected contracts, and a
+  bounded verification strategy.
+- The batch prompt permits zero concerns and never requires an issue because of an assessment.
+- Existing ordinary and dismissed review payloads remain accepted by their current contracts.
+
+## Validation
+
+- Focused tests exercise prompt requirements and the complete, incomplete, ordinary, and
+  dismissed normalization cases in the review batch test modules.
+- `make lint`, `make typecheck`, `make arch`, `make ci-contracts`, and `make tests` remain green.
