@@ -32,6 +32,10 @@ limit, and USD cost cap. Runtime and call limit may be omitted to use their
 }
 ```
 
+The command enforces the selected runtime while each adapter call is running,
+then rechecks the lease deadline before accepting its receipt. A deadline
+overrun parks the recorded attempt; it never starts another selection.
+
 Set `enabled` to `false` to park new work while retaining enough local state to
 reconcile an already-recorded attempt. A missing model or positive USD cap also
 parks before model work. Only USD Adept receipts are accepted; another currency
@@ -60,8 +64,9 @@ systemctl disable --now mending-repair-cycle.timer
 ```
 
 Re-enabling invokes a later timer window; it does not replay a skipped one. If
-the scheduler finds a recorded attempt, it reconciles that attempt before any
-new selection.
+the scheduler finds an unresolved recorded attempt, it reconciles that attempt
+before any new selection. An already-recorded terminal receipt needs no second
+external reconciliation.
 
 ## Adept boundary and pilot
 

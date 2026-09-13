@@ -4,19 +4,23 @@ from __future__ import annotations
 
 import argparse
 import json
+import signal
+import threading
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Any, Callable, Protocol, TypeVar, cast
 
 from desloppify.app.commands.helpers.state import state_path
 from desloppify.base.exception_sets import CommandError
 from desloppify.engine._state.persistence import save_state, state_lock
 from desloppify.engine._state.schema_types import StateModel
 from desloppify.engine.repair_cycle import CycleConfig, CycleLease, CycleState
+
+_Result = TypeVar("_Result")
 
 
 @dataclass(frozen=True)
@@ -94,19 +98,36 @@ def cmd_repair_cycle(args: argparse.Namespace) -> None:
     client = cast(AdeptCycleClient, getattr(args, "client", None) or _UnavailableAdeptCycleClient())
     with _locked_state(args) as state:
         cycle_state = _cycle_state(state)
+        if cycle_state.current_lease is not None:
+            if _has_terminal_receipt(cycle_state):
+                _begin_and_select(args, state, cycle_state, config, client)
+                return
+            if _reconcile(args, state, cycle_state, config, client):
+                _begin_and_select(args, state, cycle_state, config, client)
+            return
         if config.park_reason is not None:
             _park(state, cycle_state, config.park_reason)
             return
-        if cycle_state.current_lease is not None:
-            _reconcile(args, state, cycle_state, config, client)
-            return
-        lease = cycle_state.begin(config, now)
-        if lease is None:
-            _park(state, cycle_state, "daily-attempt-complete")
-            return
-        _store_cycle_state(state, cycle_state)
-        _persist_before_external_call(args, state)
-        _select(args, state, cycle_state, config, client, lease)
+        _begin_and_select(args, state, cycle_state, config, client, now)
+
+
+def _begin_and_select(
+    args: argparse.Namespace,
+    state: dict[str, Any],
+    cycle_state: CycleState,
+    config: CycleConfig,
+    client: AdeptCycleClient,
+    now: datetime | None = None,
+) -> None:
+    if config.park_reason is not None:
+        return
+    lease = cycle_state.begin(config, now or _now(args))
+    if lease is None:
+        _park(state, cycle_state, "daily-attempt-complete")
+        return
+    _store_cycle_state(state, cycle_state)
+    _persist_before_external_call(args, state)
+    _select(args, state, cycle_state, config, client, lease)
 
 
 def _select(
@@ -118,7 +139,11 @@ def _select(
     lease: CycleLease,
 ) -> None:
     try:
-        authority = client.verify_authority(config.repository)
+        authority = _call_before_deadline(
+            args,
+            lease,
+            lambda: client.verify_authority(config.repository),
+        )
     except TimeoutError:
         _park(state, cycle_state, "timeout")
         return
@@ -129,7 +154,11 @@ def _select(
         _park(state, cycle_state, "invalid-authority-proof")
         return
     try:
-        receipt = client.select(config, lease, authority)
+        receipt = _call_before_deadline(
+            args,
+            lease,
+            lambda: client.select(config, lease, authority),
+        )
     except TimeoutError:
         _park(state, cycle_state, "timeout")
         return
@@ -145,19 +174,24 @@ def _reconcile(
     cycle_state: CycleState,
     config: CycleConfig,
     client: AdeptCycleClient,
-) -> None:
+) -> bool:
     lease = cycle_state.current_lease
     if lease is None:
-        return
+        return False
     try:
-        receipt = client.reconcile(config.repository, lease)
+        receipt = _call_before_deadline(
+            args,
+            lease,
+            lambda: client.reconcile(config.repository, lease),
+        )
     except TimeoutError:
         _park(state, cycle_state, "timeout")
-        return
+        return False
     except Exception:
         _park(state, cycle_state, "reconciliation-unavailable")
-        return
-    _accept_receipt(state, cycle_state, lease, receipt, _now(args))
+        return False
+    accepted = _accept_receipt(state, cycle_state, lease, receipt, _now(args))
+    return accepted and isinstance(receipt, AdeptReceipt) and receipt.state == "terminal"
 
 
 def _accept_receipt(
@@ -166,22 +200,23 @@ def _accept_receipt(
     lease: CycleLease,
     receipt: object,
     now: datetime,
-) -> None:
+) -> bool:
     if not isinstance(receipt, AdeptReceipt):
         _park(state, cycle_state, "invalid-receipt")
-        return
+        return False
     reason = _receipt_reason(cycle_state, lease, receipt, now)
     if reason is not None:
         _park(state, cycle_state, reason)
-        return
+        return False
     if receipt.state == "unknown":
         _park(state, cycle_state, "unknown-receipt")
-        return
+        return False
     cycle_state.record_receipt(receipt.to_mapping())
     if receipt.merge_consumed:
         cycle_state.consume_merge_permit(lease)
     _store_cycle_state(state, cycle_state)
     print(f"Repair cycle {receipt.state}.")
+    return True
 
 
 def _receipt_reason(
@@ -210,13 +245,59 @@ def _receipt_reason(
         return "runtime-exhausted"
     if receipt.calls > lease.call_limit or receipt.cost_usd > lease.cost_cap_usd:
         return "budget-exhausted"
-    if receipt.merge_consumed and not _merge_permit_accepts(cycle_state, lease):
+    if receipt.merge_consumed and not _merge_permit_accepts(cycle_state, lease, receipt):
         return "merge-permit-exhausted"
     return None
 
 
-def _merge_permit_accepts(cycle_state: CycleState, lease: CycleLease) -> bool:
-    return lease.merge_permit and cycle_state.merge_permit_day in {None, lease.day_key}
+def _merge_permit_accepts(
+    cycle_state: CycleState,
+    lease: CycleLease,
+    receipt: AdeptReceipt,
+) -> bool:
+    if not lease.merge_permit:
+        return False
+    if cycle_state.merge_permit_day is None:
+        return True
+    return (
+        cycle_state.merge_permit_day == lease.day_key
+        and cycle_state.authoritative_receipt == receipt.to_mapping()
+    )
+
+
+def _has_terminal_receipt(cycle_state: CycleState) -> bool:
+    lease = cycle_state.current_lease
+    receipt = cycle_state.authoritative_receipt
+    return (
+        lease is not None
+        and receipt is not None
+        and receipt.get("attempt_id") == lease.attempt_id
+        and receipt.get("state") == "terminal"
+    )
+
+
+def _call_before_deadline(
+    args: argparse.Namespace,
+    lease: CycleLease,
+    operation: Callable[[], _Result],
+) -> _Result:
+    remaining_seconds = (lease.deadline - _now(args)).total_seconds()
+    if remaining_seconds <= 0:
+        raise TimeoutError("repair-cycle runtime exhausted")
+    if threading.current_thread() is not threading.main_thread():
+        return operation()
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    signal.signal(signal.SIGALRM, _deadline_exceeded)
+    signal.setitimer(signal.ITIMER_REAL, remaining_seconds)
+    try:
+        return operation()
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+
+
+def _deadline_exceeded(_signum: int, _frame: object) -> None:
+    raise TimeoutError("repair-cycle runtime exhausted")
 
 
 def _valid_authority(proof: object, repository: str) -> bool:

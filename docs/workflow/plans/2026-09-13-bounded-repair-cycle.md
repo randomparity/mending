@@ -11,7 +11,7 @@ locked `uv` toolchain apply.
 - Use systemd `OnCalendar` as the sole host-timezone window authority and do not catch up missed windows.
 - Default runtime is 90 minutes and default model-call budget is 100; configured values override them.
 - A positive USD cost cap and orchestrator model are required before model work.
-- Missing authority, disabled configuration, stale/unknown external state, failed proof, or budget exhaustion parks before new work.
+- Missing authority, disabled configuration, stale/unknown external state, failed proof, or budget exhaustion parks before new work; disabled mode still reconciles a recorded lease.
 - Adept remains the owner of claims, reviews, execution, and merge gates.
 
 Expected implementation size: 1,250–1,400 changed lines (M) — command/configuration,
@@ -70,8 +70,9 @@ timeout, nonmatching correlation, missing receipt, proof failure, or over-budget
 Verification:
 
 - Mode: focused-test. Contract: two simultaneous invocations yield one runner;
-  restart after claim/create/merge reconciles its matching attempt instead of
-  duplicating; disabled, timeout, stale base, revoked authority, unknown receipt,
+  restart after claim/create/merge reconciles an unresolved matching attempt instead
+  of duplicating; an accepted terminal receipt may roll into a later day without
+  another external call; disabled, timeout, stale base, revoked authority, unknown receipt,
   exhausted runtime/calls/cost, and no-work states make no selection. Green command:
   `uv run --locked pytest -q desloppify/tests/commands/test_repair_cycle.py`
   exits 0.
