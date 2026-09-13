@@ -402,6 +402,32 @@ class TestDismissals:
         assert "stale_fp_abc123" not in state["concern_dismissals"]
         assert fp in state["concern_dismissals"]
 
+    def test_cleanup_keeps_dismissal_for_renamed_unchanged_concern(self):
+        old = _make_issue(
+            "smells", "app/old.py", "monster",
+            detail={"smell_id": "monster_function", "function": "f", "loc": 200},
+        )
+        state = _state_with_issues(old)
+        concern = generate_concerns(state)[0]
+        identity, evidence = _dismissal_comparison(
+            state, concern.type, concern.source_issues
+        )
+        state["concern_dismissals"] = {
+            concern.fingerprint: {
+                "source_issue_ids": [old["id"]],
+                "dismissal_identity": identity,
+                "dismissal_evidence_digest": evidence,
+            }
+        }
+        renamed = _make_issue(
+            "smells", "app/new.py", "monster",
+            detail={"smell_id": "monster_function", "function": "f", "loc": 200},
+        )
+        state["issues"] = {renamed["id"]: renamed}
+
+        assert cleanup_stale_dismissals(state) == 0
+        assert generate_concerns(state) == []
+
     def test_stale_dismissal_without_source_ids_not_cleaned(self):
         """Dismissals without source_issue_ids are preserved (legacy)."""
         f = _make_issue(

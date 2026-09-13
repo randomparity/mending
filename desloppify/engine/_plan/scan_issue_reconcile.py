@@ -49,7 +49,11 @@ def _find_candidates(
         candidate_detail = issue.get("detail", {})
         if detector == "concerns":
             identity = detail.get("concern_identity") if detail else None
-            if not identity or candidate_detail.get("concern_identity") != identity:
+            if (
+                issue.get("detector") != detector
+                or not identity
+                or candidate_detail.get("concern_identity") != identity
+            ):
                 continue
         elif issue.get("detector") != detector or issue.get("file") != file:
             continue

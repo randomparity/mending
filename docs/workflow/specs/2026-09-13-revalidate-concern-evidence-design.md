@@ -36,7 +36,9 @@ of concern type plus sorted source-detector names, with a hash of sorted
 path-independent source-finding suppression fingerprints. Exactly one stored
 dismissal with both hashes suppresses the concern. Changed source evidence is
 the recorded reconsideration trigger; missing or ambiguous evidence is unknown
-and leaves the concern visible. This implements ADR 0004.
+and leaves the concern visible. Cleanup retains a dismissal whose old source IDs
+are gone only when exactly one current generated concern has the same hashes.
+This implements ADR 0004.
 
 The change owns concern identity, state, reconciliation, and focused fixtures.
 It excludes concern discovery/grouping (#3), GitHub queue work (#5), scheduling
@@ -65,14 +67,16 @@ of comparison, and plan reconciliation remains the owner of reference movement.
 - An ambiguous identity match, incomplete import, or failed analysis transfers
   neither approval nor a plan reference.
 - A recorded dismissal stays declined only for one matching identity/evidence
-  pair and reappears after its recorded reconsideration trigger changes.
+  pair, including a supported rename, and reappears after its recorded
+  reconsideration trigger changes.
 
 ## Validation
 
 - Focused state/import tests prove identity and evidence persistence, unchanged
-  rename transfer, `protected_contracts` governing-decision invalidation, and
-  dismissal reconsideration.
+  rename transfer, `protected_contracts` governing-decision invalidation,
+  dismissal cleanup across a rename, and dismissal reconsideration.
 - Focused reconcile tests prove ambiguity and incomplete evidence leave both
-  plan references and approval transfer untouched.
+  plan references and approval transfer untouched, including a same-hash item
+  from a non-concern detector.
 - `make lint`, `make typecheck`, `make arch`, `make ci-contracts`, and
   `make tests` remain green.

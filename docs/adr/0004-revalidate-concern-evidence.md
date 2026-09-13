@@ -39,7 +39,9 @@ identity hash of concern type plus sorted source-detector names, alongside a
 digest of sorted path-independent source-finding suppression fingerprints.
 Suppression applies only when exactly one stored dismissal has both values. A
 changed digest is the recorded reconsideration trigger; missing or ambiguous
-evidence does not suppress the generated concern.
+evidence does not suppress the generated concern. Cleanup retains a dismissal
+whose source IDs disappeared only when exactly one current generated concern
+has the same identity and evidence hashes.
 
 ## Consequences
 

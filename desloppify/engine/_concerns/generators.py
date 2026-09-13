@@ -13,7 +13,7 @@ from .signals import _extract_signals, _has_elevated_signals
 from .state import _group_by_file, _open_issues
 from .text import _build_evidence, _build_question, _build_summary, _classify
 from .types import Concern
-from .utils import _fingerprint, _is_dismissed
+from .utils import _dismissal_comparison, _fingerprint, _is_dismissed
 
 
 def _try_make_concern(
@@ -227,11 +227,20 @@ def cleanup_stale_dismissals(state: StateModel) -> int:
     if not dismissals:
         return 0
     open_ids = {finding.get("id", "") for finding in _open_issues(state)}
+    current = generate_concerns({**state, "concern_dismissals": {}})
+    comparisons = [
+        _dismissal_comparison(state, concern.type, concern.source_issues)
+        for concern in current
+    ]
     stale_fingerprints = [
         fingerprint
         for fingerprint, entry in dismissals.items()
         if entry.get("source_issue_ids")
         and not any(source_id in open_ids for source_id in entry["source_issue_ids"])
+        and comparisons.count(
+            (entry.get("dismissal_identity"), entry.get("dismissal_evidence_digest"))
+        )
+        != 1
     ]
     for fingerprint in stale_fingerprints:
         del dismissals[fingerprint]
