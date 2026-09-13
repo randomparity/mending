@@ -55,7 +55,7 @@ def candidate_from_issue(
     if detail.get("previous_concern_identity") or detail.get("previous_concern_evidence_digest"):
         return None
     marker = marker_for_hashes(identity, evidence_digest)
-    if require_revalidation and not _has_matching_record(
+    if require_revalidation and not _has_current_revalidation(
         detail.get("github_repair_revalidated"), marker, repository
     ):
         return None
@@ -98,6 +98,15 @@ def _has_matching_record(record: object, marker: str, repository: str) -> bool:
     return isinstance(record, Mapping) and record.get("marker") == marker and record.get("repository") == repository
 
 
+def _has_current_revalidation(record: object, marker: str, repository: str) -> bool:
+    attestation = record.get("attestation") if isinstance(record, Mapping) else None
+    return (
+        _has_matching_record(record, marker, repository)
+        and isinstance(attestation, str)
+        and bool(attestation.strip())
+    )
+
+
 class GitHubIssueClient:
     """Minimal injected wrapper around fixed-argument ``gh`` operations."""
 
@@ -118,10 +127,10 @@ class GitHubIssueClient:
         payload = self._json(
             [
                 "gh", "issue", "list", "--repo", repository, "--state", "all",
-                "--search", marker, "--limit", "100", "--json", "number,url",
+                "--search", marker, "--limit", "100", "--json", "number,url,state",
             ]
         )
-        return _decode_issues(payload, allow_state=False)
+        return _decode_issues(payload, allow_state=True)
 
     def view(self, repository: str, number: int) -> GitHubIssue:
         """Read a linked issue independent of mutable body-marker text."""
@@ -134,7 +143,12 @@ class GitHubIssueClient:
     def create(self, repository: str, candidate: PromotionCandidate) -> None:
         """Attempt one creation; callers must re-search before linking state."""
         title, body = render_issue(candidate)
-        self._call(["gh", "issue", "create", "--repo", repository, "--title", title, "--body", body])
+        self._call(
+            [
+                "gh", "issue", "create", "--repo", repository, "--title", title,
+                "--body", body, "--label", "status:ready",
+            ]
+        )
 
     def _json(self, argv: Sequence[str]) -> object:
         process = self._call(argv)

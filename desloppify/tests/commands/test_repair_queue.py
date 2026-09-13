@@ -5,7 +5,7 @@ from contextlib import contextmanager
 
 from desloppify.app.commands.repair_queue import cmd_repair_queue
 from desloppify.cli import create_parser
-from desloppify.engine.repair_queue import marker_for_hashes
+from desloppify.engine.repair_queue import GitHubIssue, marker_for_hashes
 
 
 IDENTITY = "a" * 64
@@ -96,6 +96,30 @@ def test_sync_dry_run_does_not_create_or_mutate() -> None:
     cmd_repair_queue(args)
     assert client.searches == [(REPOSITORY, marker_for_hashes(IDENTITY, EVIDENCE))]
     assert "github_repair_pending" not in detail
+
+
+def test_sync_adopts_closed_match_with_last_read_state() -> None:
+    class ClosedMatchClient(_Client):
+        def search(self, repository: str, marker: str):
+            return [GitHubIssue(7, "https://example.test/7", "closed")]
+
+    state = _state()
+    detail = state["work_items"]["concerns::item"]["detail"]
+    detail["github_repair_revalidated"] = {
+        "marker": marker_for_hashes(IDENTITY, EVIDENCE),
+        "repository": REPOSITORY,
+        "attestation": "verified current evidence",
+    }
+
+    cmd_repair_queue(_args("sync", state, apply=True, client=ClosedMatchClient()))
+
+    assert detail["github_repair"] == {
+        "marker": marker_for_hashes(IDENTITY, EVIDENCE),
+        "repository": REPOSITORY,
+        "number": 7,
+        "url": "https://example.test/7",
+        "state": "closed",
+    }
 
 
 def test_recover_clears_only_matching_pending_marker() -> None:

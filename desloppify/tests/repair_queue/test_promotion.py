@@ -39,6 +39,15 @@ def test_candidate_requires_matching_durable_revalidation() -> None:
     assert candidate.marker == marker_for_hashes("a" * 64, "b" * 64)
 
 
+@pytest.mark.parametrize("attestation", [None, "  ", 3])
+def test_candidate_requires_non_empty_string_revalidation_attestation(
+    attestation: object,
+) -> None:
+    issue = _issue()
+    issue["detail"]["github_repair_revalidated"]["attestation"] = attestation
+    assert candidate_from_issue(issue, "owner/repository") is None
+
+
 def test_candidate_rejects_transient_revalidation_change() -> None:
     issue = _issue()
     issue["detail"]["previous_concern_identity"] = "c" * 64
@@ -80,11 +89,40 @@ def test_client_searches_all_states_with_explicit_repository() -> None:
 
     def run(argv, **_kwargs):
         calls.append(argv)
-        return subprocess.CompletedProcess(argv, 0, '[{"number":7,"url":"https://example.test/7"}]', "")
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            '[{"number":7,"url":"https://example.test/7","state":"CLOSED"}]',
+            "",
+        )
 
     result = GitHubIssueClient(run).search("owner/repository", "marker")
-    assert [(item.number, item.url, item.state) for item in result] == [(7, "https://example.test/7", None)]
-    assert calls == [["gh", "issue", "list", "--repo", "owner/repository", "--state", "all", "--search", "marker", "--limit", "100", "--json", "number,url"]]
+    assert [(item.number, item.url, item.state) for item in result] == [
+        (7, "https://example.test/7", "closed")
+    ]
+    assert calls == [
+        [
+            "gh", "issue", "list", "--repo", "owner/repository", "--state", "all",
+            "--search", "marker", "--limit", "100", "--json", "number,url,state",
+        ]
+    ]
+
+
+def test_client_creates_actionable_issue_with_fixed_arguments() -> None:
+    calls: list[list[str]] = []
+
+    def run(argv, **_kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    candidate = candidate_from_issue(_issue(), "owner/repository")
+    assert candidate is not None
+    title, body = render_issue(candidate)
+    GitHubIssueClient(run).create("owner/repository", candidate)
+    assert calls == [[
+        "gh", "issue", "create", "--repo", "owner/repository", "--title", title,
+        "--body", body, "--label", "status:ready",
+    ]]
 
 
 def test_scan_merge_preserves_only_matching_repair_metadata() -> None:
