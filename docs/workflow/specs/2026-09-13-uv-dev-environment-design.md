@@ -32,6 +32,13 @@ not alter shell profiles or the global PATH. It then runs `uv sync --locked
 --extra full`, which creates an exact editable `.venv` using the locked full
 and default `dev` dependencies.
 
+Checksum verification prefers `sha256sum`, then falls back to `shasum -a 256`;
+both forms calculate a digest locally and compare it to the Makefile's embedded
+archive hash. Setup fails actionably when neither command is available or the
+verification command fails. The version preflight parses `uv --version` as
+three numeric components and compares them numerically with POSIX awk; it does
+not use lexical comparison or GNU-only `sort -V`.
+
 All Makefile gate drivers depend on `setup` and execute their project tools with
 the selected `uv run --locked`. `package-smoke` creates its temporary venv with
 the selected locked uv Python, then deliberately uses that venv's pip to install
@@ -54,10 +61,13 @@ Hermetic setup tests supply a compatible and an incompatible executable fake
 archive for the absent-uv branch; compatible branches assert `sync --locked
 --extra full` and the incompatible branch exits before sync. The fallback test
 then invokes a gate and verifies the same repository-local binary receives `run
---locked`. Tests cover each supported target selector and an unsupported-libc
-rejection. A failing downloader proves the target exits without invoking a
-system Python. A package-smoke assertion proves its build driver and
-temporary-venv creation use the selected `uv run --locked`, while its wheel
-installation stays isolated. The locked environment is then used to run the
-focused test, `uv lock --check`, and the existing core checks. The optional full
-suite is exercised under Python 3.11 when the resolved packages support the host.
+--locked`. Version tests accept 0.12.1, 0.12.10, 0.12.13, and a newer minor
+release while rejecting 0.12.0 before sync. Checksum tests cover `sha256sum`,
+the `shasum -a 256` fallback, and missing/verifier-failure exits. Tests cover
+each supported target selector and an unsupported-libc rejection. A failing
+downloader proves the target exits without invoking a system Python. A
+package-smoke assertion proves its build driver and temporary-venv creation use
+the selected `uv run --locked`, while its wheel installation stays isolated. The
+locked environment is then used to run the focused test, `uv lock --check`, and
+the existing core checks. The optional full suite is exercised under Python 3.11
+when the resolved packages support the host.

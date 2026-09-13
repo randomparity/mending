@@ -15,11 +15,13 @@ Tech stack: Python 3.11+, uv, GNU Make, POSIX shell.
 - Use one selector for PATH and repository-local uv binaries.
 - Fail setup when the selected uv is older than 0.12.1.
 - Support only pinned, checksummed Linux GNU/musl and macOS x86_64/aarch64 uv archives.
+- Verify archives with `sha256sum` or `shasum -a 256`; fail if neither works.
+- Compare uv major/minor/patch components numerically with POSIX awk.
 - Do not modify a user's shell profile or global PATH.
 - Commit uv-managed lock output; never hand-edit it.
 - Keep the change limited to development provisioning and its tests/docs.
 
-Expected implementation size: 800–1,500 changed lines (M) — the generated
+Expected implementation size: 900–1,600 changed lines (M) — the generated
 cross-platform lockfile dominates a small manifest, Makefile, test, and doc change.
 
 ## Task 1: Define and lock the development environment
@@ -66,7 +68,9 @@ Steps:
 
 1. Write the focused setup-target test using compatible and incompatible
    temporary fake uv executables, a fake downloader, checksummed GNU/musl
-   archive, target-selector overrides, and command log outside the repository.
+   archive, fake `sha256sum` and `shasum` commands, target-selector overrides,
+   and command log outside the repository. Cover accepted 0.12.1, 0.12.10,
+   0.12.13, and newer-minor versions plus rejected 0.12.0.
 2. Run the test to observe the missing-target failure.
 3. Add `setup`, pinned checksum variables, a repository-local unmanaged archive
    fallback, and a locked `uv sync --extra full` invocation.

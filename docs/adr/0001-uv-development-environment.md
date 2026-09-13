@@ -32,6 +32,10 @@ a lockfile refresh only when it makes the current resolution stale. The setup
 path requires a POSIX shell, a downloader, an archiver, and network access only
 when uv is unavailable or dependencies are not cached.
 
+The bootstrap selects `sha256sum` or `shasum -a 256` and fails if neither can
+verify the embedded archive hash. It compares the selected uv's three numeric
+version components with POSIX awk, avoiding lexical and GNU-only comparisons.
+
 ## Considered & rejected
 
 - **Keep per-target pip installation.** verified: the existing Makefile has
