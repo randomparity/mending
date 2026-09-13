@@ -12,10 +12,13 @@ locked `uv` toolchain apply.
 - Do not implement Adept claims, execution, scheduling, discovery, or pilot work.
 - Public payloads exclude raw evidence, paths, and unvalidated free-form text.
 
-Expected implementation size: 520–650 changed lines — parser/command wiring,
+Expected implementation size: 650–700 changed lines — parser/command wiring,
 deterministic marker and payload rendering, injected transport, locked state persistence,
-and focused transport fixtures. The campaign denominator remains the fixed 250 (M);
-this estimate records variance and does not change that denominator.
+and focused transport fixtures. The implementation is 667 code/test lines: the
+pending-create transaction, explicit repository verification, stale-result check,
+and matching scan-metadata preservation are required recovery contracts surfaced
+by the independent design review. The campaign denominator remains the fixed
+250 (M); this estimate records variance and does not change that denominator.
 
 ## Task 1: Define promotion records and public rendering
 
