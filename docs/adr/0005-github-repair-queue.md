@@ -18,8 +18,8 @@ Add a one-shot `repair-queue sync` command backed by a small injected `gh`
 subprocess adapter. The command is a dry run unless `--apply` is supplied.
 It accepts only current `concerns` work items with complete identity and
 evidence digests and without ADR-0004's transient prior-digest fields. Their
-absence on a later unchanged scan is the required revalidation; the plan's
-superseded record is historical provenance, not an unbounded promotion block.
+absence is necessary freshness evidence; the plan's superseded record is
+historical provenance, not an unbounded promotion block.
 For each eligible item, it derives a deterministic marker from those digests,
 queries GitHub across open and closed issues for that marker, and adopts exactly
 one match. Before its first create it rechecks and persists a pending marker in
