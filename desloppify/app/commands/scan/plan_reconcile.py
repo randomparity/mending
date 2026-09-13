@@ -284,6 +284,11 @@ def _is_mid_cycle_scan(plan: dict[str, object], state: state_mod.StateModel) -> 
     return not live_planned_queue_empty(plan)
 
 
+def _is_active_refresh(plan: dict[str, object], *, force_rescan: bool) -> bool:
+    """Return whether this scan must preserve the loaded plan unchanged."""
+    return not force_rescan and is_mid_cycle(plan) and not live_planned_queue_empty(plan)
+
+
 def _display_reconcile_results(
     result: ReconcileResult,
     plan: dict,
@@ -362,9 +367,12 @@ def reconcile_plan_post_scan(runtime: Any) -> None:
         logger.warning("Plan reconciliation skipped (load failed): %s", exc)
         return
 
+    force_rescan = getattr(runtime, "force_rescan", False)
+    if _is_active_refresh(plan, force_rescan=force_rescan):
+        return
+
     phase_before = current_lifecycle_phase(plan)
 
-    force_rescan = getattr(runtime, "force_rescan", False)
     dirty = _reset_cycle_for_force_rescan(plan) if force_rescan else False
     if force_rescan and phase_before == "plan":
         old_postflight_scan_count = None

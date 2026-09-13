@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -204,6 +205,34 @@ class TestRefreshPlanStartBaseline:
 # ---------------------------------------------------------------------------
 
 class TestReconcilePlanPostScan:
+
+    def test_active_refresh_preserves_plan_before_reconciliation(self, monkeypatch):
+        plan = empty_plan()
+        plan["plan_start_scores"] = {
+            "strict": 70.0,
+            "overall": 71.0,
+            "objective": 72.0,
+            "verified": 69.0,
+        }
+        plan["queue_order"] = ["issue-1", "issue-2"]
+        plan["overrides"] = {"issue-1": {"issue_id": "issue-1", "cluster": "work"}}
+        plan["clusters"] = {
+            "work": {"name": "work", "issue_ids": ["issue-1", "issue-2"]}
+        }
+        original = copy.deepcopy(plan)
+        state = _make_state(issues={
+            "issue-1": _make_issue(status="auto_resolved"),
+            "issue-2": _make_issue(status="open"),
+        })
+
+        saved: list[dict] = []
+        monkeypatch.setattr(reconcile_mod, "load_plan", lambda _path=None: plan)
+        monkeypatch.setattr(reconcile_mod, "save_plan", lambda p, _path=None: saved.append(p))
+
+        reconcile_mod.reconcile_plan_post_scan(_runtime(state=state))
+
+        assert saved == []
+        assert plan == original
 
     def test_saves_when_superseded_issues_detected(self, monkeypatch):
         plan = empty_plan()

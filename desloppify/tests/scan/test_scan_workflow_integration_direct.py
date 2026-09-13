@@ -5,7 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from desloppify import state as state_mod
+import desloppify.app.commands.scan.workflow as workflow_mod
 from desloppify.app.commands.helpers.command_runtime import CommandRuntime
 from desloppify.app.commands.scan.workflow import (
     ScanRuntime,
@@ -155,6 +158,43 @@ def test_merge_scan_results_persists_state_and_reconciles_plan(tmp_path):
     assert stale_id in plan_after.get("superseded", {})
     plan_start = plan_after.get("plan_start_scores", {})
     assert isinstance(plan_start.get("strict"), float)
+
+
+def test_merge_scan_results_preserves_prior_state_when_save_fails(
+    tmp_path, monkeypatch
+):
+    state_path = tmp_path / "state.json"
+    prior_state = state_mod.empty_state()
+    prior_state["scan_count"] = 4
+    state_mod.save_state(prior_state, state_path)
+
+    runtime = ScanRuntime(
+        args=SimpleNamespace(force_resolve=False),
+        state_path=state_path,
+        state=state_mod.empty_state(),
+        path=tmp_path,
+        config={"ignore": [], "needs_rescan": False, "holistic_max_age_days": 30},
+        lang=None,
+        lang_label="",
+        profile="full",
+        effective_include_slow=True,
+        zone_overrides=None,
+    )
+    reconciled: list[object] = []
+
+    def fail_save(*_args, **_kwargs):
+        raise OSError("interrupted save")
+
+    monkeypatch.setattr(workflow_mod, "save_state", fail_save)
+    monkeypatch.setattr(
+        workflow_mod, "_reconcile_plan_post_scan", lambda _runtime: reconciled.append(True)
+    )
+
+    with pytest.raises(OSError, match="interrupted save"):
+        merge_scan_results(runtime, [], potentials={}, codebase_metrics=None)
+
+    assert reconciled == []
+    assert state_mod.load_state(state_path)["scan_count"] == 4
 
 
 def test_framework_runtime_cache_stays_out_of_persisted_review_cache(tmp_path: Path):
