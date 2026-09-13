@@ -4,7 +4,8 @@
 
 Existing holistic review batches can carry detector signals, but a confirmed signal is
 stored like a general review issue. The batch prompt does not require the ownership and
-verification evidence needed to distinguish an architectural concern from a line-level fix.
+verification evidence needed to distinguish an architectural concern from a line-level fix,
+and the existing collector output is not carried as a bounded batch reading set.
 
 ## Scope
 
@@ -15,7 +16,12 @@ and bounded verification in addition to the existing files and source evidence. 
 confirmed-only field skips that result while retaining other valid batch results; malformed
 ordinary review entries keep the existing batch-rejection behavior. Dismissed signals and
 ordinary review issues retain their current contracts. The existing batch cap remains the bound;
-it is not tied to a score, and empty `issues` remains valid.
+it is not tied to a score, and empty `issues` remains valid. Batch preparation will expose at
+most `review_batch_max_files` paths (default 80): dimension/concern signal paths first, their
+direct dependency-graph neighbors next when available, then a lexically ordered rotating slice
+of other allowed production paths starting at `scan_count % remaining_count`. Prompts render the
+result as an investigation reading set. The rotation is packet preparation only; it writes no
+state and does not own freshness or scheduling.
 
 ## Failure model
 
@@ -49,6 +55,9 @@ field, while malformed output remains non-actionable.
   discarding a valid ordinary result in the same batch.
 - `ordinary-compatible`: an ordinary review issue still normalizes without concern-only fields.
 - `dismissed-compatible`: a dismissed concern retains only its fingerprint contract.
+- `selection-clean`: an empty signal set produces a bounded rotating reading set.
+- `selection-drifted`: a signal seed and its direct neighbor precede the rotating fallback and
+  never exceed the configured bound.
 
 ## Success
 
@@ -56,6 +65,8 @@ field, while malformed output remains non-actionable.
   names one root-cause cluster, concrete evidence, the maintenance consequence, proposed owner,
   protected contracts, and a bounded verification strategy.
 - The batch prompt permits zero concerns and never requires an issue because of an assessment.
+- A batch exposes a bounded reading set that prioritizes current signal paths and direct neighbors
+  before a deterministic rotating broader sample of allowed production files.
 - Existing ordinary and dismissed review payloads remain accepted by their current contracts.
 
 ## Validation
