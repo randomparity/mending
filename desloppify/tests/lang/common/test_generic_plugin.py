@@ -747,6 +747,12 @@ class TestJavaPmdCommand:
 
         assert "--threads 0" in PMD_COMMAND
 
+    def test_java_pmd_command_uses_gnu_parseable_output(self):
+        from desloppify.languages.java import PMD_COMMAND
+
+        assert "-f text" in PMD_COMMAND
+        assert "textcolor" not in PMD_COMMAND
+
     def test_java_pmd_thread_arg_accepts_pmd_core_relative_values(self):
         from desloppify.languages.java import _pmd_threads_arg
 
