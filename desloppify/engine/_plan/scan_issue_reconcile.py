@@ -143,6 +143,11 @@ def _supersede_id(
         ids = cluster.get("issue_ids", [])
         if issue_id in ids:
             ids.remove(issue_id)
+        for step in cluster.get("action_steps", []):
+            if isinstance(step, dict):
+                step["issue_refs"] = [
+                    fid for fid in step.get("issue_refs", []) if fid != issue_id
+                ]
 
     # Clear stale cluster reference from override
     override = plan.get("overrides", {}).get(issue_id)
@@ -247,8 +252,12 @@ def _referenced_plan_issue_ids(plan: PlanModel) -> set[str]:
     referenced_ids.update(plan.get("queue_order", []))
     referenced_ids.update(plan.get("skipped", {}).keys())
     referenced_ids.update(plan.get("overrides", {}).keys())
+    referenced_ids.update(plan.get("promoted_ids", []))
     for cluster in plan.get("clusters", {}).values():
         referenced_ids.update(cluster.get("issue_ids", []))
+        for step in cluster.get("action_steps", []):
+            if isinstance(step, dict):
+                referenced_ids.update(step.get("issue_refs", []))
     already_superseded = set(plan.get("superseded", {}).keys())
     return {
         fid for fid in referenced_ids - already_superseded
@@ -338,6 +347,9 @@ def _action_referenced_plan_issue_ids(plan: PlanModel) -> set[str]:
     referenced_ids.update(plan.get("promoted_ids", []))
     for cluster in plan.get("clusters", {}).values():
         referenced_ids.update(cluster.get("issue_ids", []))
+        for step in cluster.get("action_steps", []):
+            if isinstance(step, dict):
+                referenced_ids.update(step.get("issue_refs", []))
     return {
         fid for fid in referenced_ids
         if isinstance(fid, str)

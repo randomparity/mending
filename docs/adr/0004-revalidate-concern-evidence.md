@@ -27,12 +27,12 @@ decision change without resolving or tracking an ADR file. Canonical JSON uses
 sorted keys and compact separators; paths, related-file paths, summary text,
 and free-form evidence are excluded from both inputs.
 
-A changed identity or digest supersedes the plan reference with
-`revalidation_reason: concern_evidence_changed`, whether the current concern
-kept its ID or is an observed successor. The live issue remains open; the
-superseded plan record is the durable handoff for downstream promotion and
-execution owners. Missing evidence or multiple matching successors is unknown
-and transfers nothing.
+A same-ID changed identity or digest supersedes the plan reference with
+`revalidation_reason: concern_evidence_changed`. A renamed successor must first
+have the same identity before its digest can be compared. The live issue remains
+open; the superseded plan record is the durable handoff for downstream promotion
+and execution owners. Missing evidence or multiple matching successors is
+unknown and transfers nothing.
 
 A dismissal keeps the existing normalized signal fingerprint. Import resolves
 that fingerprint to the current generated concern and stores a dismissal

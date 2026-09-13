@@ -253,6 +253,39 @@ def test_reconcile_supersedes_same_id_concern_with_changed_evidence():
     assert state["issues"][issue_id]["detail"]["concern_evidence_digest"] == "changed"
 
 
+def test_reconcile_revalidates_same_id_concern_in_promoted_ids():
+    issue_id = "concerns::module.py::architecture"
+    plan = empty_plan()
+    plan["promoted_ids"] = [issue_id]
+    state = {"issues": {issue_id: _concern(issue_id, "open")}}
+
+    upsert_issues(
+        state["issues"], [_concern(issue_id, "open", "changed")], [],
+        "2026-09-13T00:00:00+00:00", lang=None,
+    )
+    reconcile_plan_after_scan(plan, state)
+
+    assert plan["promoted_ids"] == []
+    assert plan["superseded"][issue_id]["revalidation_reason"] == "concern_evidence_changed"
+
+
+def test_reconcile_revalidates_same_id_concern_in_action_refs():
+    issue_id = "concerns::module.py::architecture"
+    plan = empty_plan()
+    create_cluster(plan, "cluster")
+    plan["clusters"]["cluster"]["action_steps"] = [{"issue_refs": [issue_id]}]
+    state = {"issues": {issue_id: _concern(issue_id, "open")}}
+
+    upsert_issues(
+        state["issues"], [_concern(issue_id, "open", "changed")], [],
+        "2026-09-13T00:00:00+00:00", lang=None,
+    )
+    reconcile_plan_after_scan(plan, state)
+
+    assert plan["clusters"]["cluster"]["action_steps"][0]["issue_refs"] == []
+    assert plan["superseded"][issue_id]["revalidation_reason"] == "concern_evidence_changed"
+
+
 def test_reconcile_never_remaps_concern_to_another_detector():
     plan = _plan_with_queue("old")
     other = {**_concern("other", "open"), "detector": "test"}
