@@ -234,6 +234,27 @@ class TestReconcilePlanPostScan:
         assert saved == []
         assert plan == original
 
+    def test_drained_active_plan_reconciles_stale_queue_entries(self, monkeypatch):
+        plan = empty_plan()
+        plan["plan_start_scores"] = {
+            "strict": 70.0,
+            "overall": 71.0,
+            "objective": 72.0,
+            "verified": 69.0,
+        }
+        plan["queue_order"] = ["issue-1"]
+        state = _make_state(issues={})
+
+        saved: list[dict] = []
+        monkeypatch.setattr(reconcile_mod, "load_plan", lambda _path=None: plan)
+        monkeypatch.setattr(reconcile_mod, "save_plan", lambda p, _path=None: saved.append(p))
+
+        reconcile_mod.reconcile_plan_post_scan(_runtime(state=state))
+
+        assert len(saved) == 1
+        assert saved[0]["queue_order"] == []
+        assert "issue-1" in saved[0]["superseded"]
+
     def test_saves_when_superseded_issues_detected(self, monkeypatch):
         plan = empty_plan()
         plan["queue_order"] = ["issue-1", "issue-2"]
