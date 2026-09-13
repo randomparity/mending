@@ -164,9 +164,12 @@ def _accept_receipt(
     state: dict[str, Any],
     cycle_state: CycleState,
     lease: CycleLease,
-    receipt: AdeptReceipt,
+    receipt: object,
     now: datetime,
 ) -> None:
+    if not isinstance(receipt, AdeptReceipt):
+        _park(state, cycle_state, "invalid-receipt")
+        return
     reason = _receipt_reason(cycle_state, lease, receipt, now)
     if reason is not None:
         _park(state, cycle_state, reason)
@@ -210,9 +213,10 @@ def _merge_permit_accepts(cycle_state: CycleState, lease: CycleLease) -> bool:
     return lease.merge_permit and cycle_state.merge_permit_day in {None, lease.day_key}
 
 
-def _valid_authority(proof: AuthorityProof, repository: str) -> bool:
+def _valid_authority(proof: object, repository: str) -> bool:
     return (
-        proof.repository == repository
+        isinstance(proof, AuthorityProof)
+        and proof.repository == repository
         and all(isinstance(value, str) and value.strip() for value in (
             proof.policy_id,
             proof.policy_revision,

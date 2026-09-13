@@ -172,6 +172,30 @@ def test_invalid_authority_proof_parks_before_selection() -> None:
     assert state["repair_cycle"]["parked_reason"] == "invalid-authority-proof"
 
 
+def test_malformed_adapter_results_park_before_attribute_access() -> None:
+    class _MalformedAuthorityClient(_Client):
+        def verify_authority(self, repository: str):
+            self.verifications += 1
+            return "not-a-proof"
+
+    malformed_authority_state = _state()
+    malformed_authority_client = _MalformedAuthorityClient()
+    cmd_repair_cycle(_args(malformed_authority_state, malformed_authority_client))
+
+    assert malformed_authority_client.selections == 0
+    assert malformed_authority_state["repair_cycle"]["parked_reason"] == "invalid-authority-proof"
+
+    class _MalformedReceiptClient(_Client):
+        def select(self, config, lease, authority):
+            self.selections += 1
+            return "not-a-receipt"
+
+    malformed_receipt_state = _state()
+    cmd_repair_cycle(_args(malformed_receipt_state, _MalformedReceiptClient()))
+
+    assert malformed_receipt_state["repair_cycle"]["parked_reason"] == "invalid-receipt"
+
+
 def test_unknown_reconciliation_parks_without_new_selection() -> None:
     config = CycleConfig.from_mapping(_config())
     state = _state()
