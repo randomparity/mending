@@ -12,12 +12,13 @@ locked `uv` toolchain apply.
 - Do not implement Adept claims, execution, scheduling, discovery, or pilot work.
 - Public payloads exclude raw evidence, paths, and unvalidated free-form text.
 
-Expected implementation size: 650–700 changed lines — parser/command wiring,
+Expected implementation size: 650–800 changed lines — parser/command wiring,
 deterministic marker and payload rendering, injected transport, locked state persistence,
-and focused transport fixtures. The implementation is 667 code/test lines: the
+and focused transport fixtures. The implementation is 776 code/test lines: the
 pending-create transaction, explicit repository verification, stale-result check,
-and matching scan-metadata preservation are required recovery contracts surfaced
-by the independent design review. The campaign denominator remains the fixed
+matching scan-metadata preservation, atomic `status:ready` creation, revalidation
+attestation validation, and closed-match state readback are required recovery
+contracts surfaced by independent review. The campaign denominator remains the fixed
 250 (M); this estimate records variance and does not change that denominator.
 
 ## Task 1: Define promotion records and public rendering
@@ -56,7 +57,7 @@ Files: `desloppify/engine/repair_queue.py`,
 Interfaces: `GitHubIssueClient.run(argv: Sequence[str]) -> CompletedProcess[str]`
 is injected into `sync_candidates`. Every fixed argv includes the explicit
 `--repo OWNER/REPO` value. The service searches with the fixed `gh issue list
---state all --search MARKER --limit 100 --json number,url` argument shape. A
+--state all --search MARKER --limit 100 --json number,url,state` argument shape. A
 matching existing link uses the fixed `gh issue view NUMBER --json number,url,state`
 form and is read back even if its body marker was edited. Otherwise it adopts
 exactly one `{number, url}`, creates only after an empty search, then rechecks
