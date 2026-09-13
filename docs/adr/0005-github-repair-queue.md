@@ -25,22 +25,35 @@ queries GitHub across open and closed issues for that marker, and adopts exactly
 one match. Before its first create it rechecks and persists a pending marker in
 a completed state-lock transaction. It creates only after that transaction,
 then re-searches and writes the resulting number and URL only after one result.
+A matching durable local link is read back by its issue number before marker
+search, so a human-edited, closed, or dismissed issue is reconciled rather than
+recreated when its body marker is absent.
 
 The public body uses only the deterministic marker, evidence digest, and
-allowlisted, normalized owner, contracts, and verification fields. Every source
-field must be a lower-case, single-line phrase of one to eight words matching
-`[a-z][a-z0-9_-]{0,31}`. It must not contain a path separator, dot, colon, at
-sign, URL or address pattern, IP literal, opaque 32+-hex value, or a word from
-the denylist `credential`, `host`, `ignore`, `instruction`, `key`, `password`,
-`prompt`, `secret`, `system`, or `token`. A rejected required field prevents
-promotion rather than being emitted or silently replaced. Raw evidence,
-identifiers, summary text, and unapproved fields are never emitted.
+static field labels. Owner, contracts, verification, evidence, identifiers,
+summary text, and every other source value remain local; their deterministic
+identity/evidence hashes provide public provenance without publishing arbitrary
+review text.
 
 An ambiguous lookup, malformed CLI result, command failure, or uncertain create
 result leaves the pending marker in state and creates no link. Later syncs for a
 pending marker only search and adopt; they never create again. An operator may
 clear a pending marker only through an explicit attested recovery command after
 checking GitHub, then a later sync can make a new first attempt.
+
+`repair-queue revalidate ID --apply --attest TEXT` records a matching marker and
+operator attestation under the state lock. Sync accepts only that durable,
+current revalidation record. State merging drops it when either concern hash
+changes. After external I/O, sync rechecks the current hashes, repository, and
+pending marker in a second state-lock transaction before recording a link; a
+stale result remains unlinked.
+
+Every command requires an explicit `OWNER/REPO` identity. Revalidation resolves
+it with `gh repo view --json nameWithOwner` and requires the exact requested
+identity before writing state. Later operations pass that verified value to every
+`gh` invocation and persist it with pending and linked records; a mismatched
+state record is fail-closed. This avoids ambient-repository writes when an
+operator supplies another state path.
 
 The at-most-one guarantee applies to writers sharing one state file. The state
 lock serializes those writers. Independent state files/checkouts are unsupported
@@ -49,10 +62,10 @@ and are reported as a scope checkpoint rather than coordinated remotely.
 ## Consequences
 
 GitHub becomes the actionable queue while local state retains the durable link,
-pending-attempt marker, and raw observation. Tests can inject adapter responses
-without credentials or network access. Operators need `gh` authentication only
-for `--apply`; claims, scope authorization, scheduling, and execution remain
-Adept/#6 concerns.
+last-read GitHub state, pending-attempt marker, revalidation attestation, and
+raw observation. Tests can inject adapter responses without credentials or
+network access. Operators need `gh` authentication only for `--apply`; claims,
+scope authorization, scheduling, and execution remain Adept/#6 concerns.
 
 ## Considered & rejected
 
