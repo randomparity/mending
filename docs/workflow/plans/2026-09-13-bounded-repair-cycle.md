@@ -10,7 +10,7 @@ locked `uv` toolchain apply.
 - Implement one systemd deployment recipe; do not add a daemon or scheduler abstraction.
 - Use systemd `OnCalendar` as the sole host-timezone window authority and do not catch up missed windows.
 - Default runtime is 90 minutes and default model-call budget is 100; configured values override them.
-- A positive cost cap and orchestrator model are required before model work.
+- A positive USD cost cap and orchestrator model are required before model work.
 - Missing authority, disabled configuration, stale/unknown external state, failed proof, or budget exhaustion parks before new work.
 - Adept remains the owner of claims, reviews, execution, and merge gates.
 
@@ -55,7 +55,8 @@ and `AdeptCycleClient.select(config: CycleConfig, lease: CycleLease,
 authority: AuthorityProof) -> AdeptReceipt` are injected boundaries. `AuthorityProof`
 contains repository, immutable policy identity/revision, and opaque proof ID.
 `AdeptReceipt` contains the attempt ID, `active|terminal|unknown` state, claim/PR
-reference, merge-permit consumption, calls, cost, and currency. The command locks,
+reference, merge-permit consumption, calls, cost, and currency. Only USD receipts
+are accepted. The command locks,
 persists the lease before I/O, verifies authority before selection, and parks on
 timeout, nonmatching correlation, missing receipt, proof failure, or over-budget use.
 
