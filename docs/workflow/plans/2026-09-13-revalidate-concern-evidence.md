@@ -19,6 +19,7 @@ state propagation, reconciliation, and focused fixtures.
 
 Files: `desloppify/engine/_concerns/`,
 `desloppify/intelligence/review/importing/holistic_issue_flow.py`, and
+`desloppify/intelligence/review/importing/holistic.py`, and
 `desloppify/engine/_state/schema_types_review.py`.
 
 Interfaces: a confirmed concern detail carries `concern_identity` and
@@ -26,8 +27,11 @@ Interfaces: a confirmed concern detail carries `concern_identity` and
 sorted keys and `schema: 1`. Identity inputs are normalized `dimension`,
 `identifier`, `root_cause_cluster`, and `proposed_owner`. Evidence inputs are
 normalized `maintenance_consequence`, sorted unique `protected_contracts`, and
-`verification`. Path, related-file, summary, and free-form evidence fields are
-excluded. Dismissal payload normalization retains its existing fingerprint;
+`verification`. `protected_contracts` is the sole governing-decision fixture;
+its normalized-value change represents the governing-decision change without an
+ADR-file lookup or a distinct ADR-evidence surface. Path, related-file,
+summary, and free-form evidence fields are excluded. Dismissal payload
+normalization retains its existing fingerprint;
 import resolves it to one generated concern, then stores concern-type/sorted-
 detector identity and sorted suppression-fingerprint evidence. Missing or
 non-unique dismissal evidence is unknown and does not suppress.
@@ -36,7 +40,8 @@ Verification:
 
 - Mode: focused-test. Contract: a path-only rename preserves both confirmed
   hashes; each listed identity/evidence input changes its listed hash; and a
-  dismissal suppresses only one unchanged generated identity/evidence pair.
+  dismissal suppresses only one unchanged generated identity/evidence pair. A
+  `protected_contracts` mutation changes the governing-evidence digest.
   Red observation: current details have no canonical comparison fields and a
   dismissal stores source IDs only. Green command:
   `uv run --locked pytest -q desloppify/tests/intelligence/test_review_import_prepare_split_direct.py desloppify/tests/detectors/test_concerns.py` exits 0.
@@ -51,7 +56,8 @@ without depending on a file-addressed work-item ID.
 
 ## Task 2: Reconcile one proven successor conservatively
 
-Files: `desloppify/engine/_plan/scan_issue_reconcile.py` and
+Files: `desloppify/engine/_plan/scan_issue_reconcile.py`,
+`desloppify/engine/_plan/schema/__init__.py`, and
 `desloppify/tests/plan/test_reconcile.py`.
 
 Interfaces: reconciliation accepts one old/new concern pair only when the
@@ -75,7 +81,8 @@ Verification:
 Steps: write rename, ambiguity, changed-evidence, and missing-evidence fixtures;
 add conservative comparison and targeted reference replacement; record the
 changed-evidence reason only on a unique same-identity successor; run the
-focused tests.
+focused tests. Add the optional `SupersededEntry` revalidation-reason field
+needed to persist that plan record.
 
 Acceptance: the plan never gains a successor reference from an ambiguous or
 stale comparison.

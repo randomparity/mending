@@ -21,9 +21,11 @@ identity and unchanged governing evidence. Confirmed identity hashes canonical
 JSON (`schema: 1`) of normalized `dimension`, `identifier`,
 `root_cause_cluster`, and `proposed_owner`; evidence digest hashes canonical
 JSON of normalized `maintenance_consequence`, sorted unique
-`protected_contracts`, and `verification`. Canonical JSON uses sorted keys and
-compact separators; paths, related-file paths, summary text, and free-form
-evidence are excluded from both inputs.
+`protected_contracts`, and `verification`. `protected_contracts` is the sole
+governing-decision fixture: a normalized-value change represents a governing
+decision change without resolving or tracking an ADR file. Canonical JSON uses
+sorted keys and compact separators; paths, related-file paths, summary text,
+and free-form evidence are excluded from both inputs.
 
 A same-identity changed digest leaves the old plan entry superseded with
 `revalidation_reason: concern_evidence_changed` and the observed successor as

@@ -14,8 +14,10 @@ For confirmed imported concerns, hash canonical JSON with schema version 1.
 Identity inputs are normalized `dimension`, `identifier`, `root_cause_cluster`,
 and `proposed_owner`; evidence inputs are normalized
 `maintenance_consequence`, sorted unique `protected_contracts`, and
-`verification`. Paths, related-file paths, summary text, and free-form evidence
-are excluded. Persist both hashes in concern detail. During post-scan plan
+`verification`. `protected_contracts` is the sole governing-decision fixture;
+its normalized-value change represents that decision change without an ADR-file
+lookup or a new ADR-evidence surface. Paths, related-file paths, summary text,
+and free-form evidence are excluded. Persist both hashes in concern detail. During post-scan plan
 reconciliation, move an old plan reference to a new ID only when one successor
 shares both hashes. The move replaces the old ID in queue, skip, override,
 cluster, action-reference, and promoted-ID collections, then records the old
@@ -68,7 +70,8 @@ of comparison, and plan reconciliation remains the owner of reference movement.
 ## Validation
 
 - Focused state/import tests prove identity and evidence persistence, unchanged
-  rename transfer, governing-evidence invalidation, and dismissal reconsideration.
+  rename transfer, `protected_contracts` governing-decision invalidation, and
+  dismissal reconsideration.
 - Focused reconcile tests prove ambiguity and incomplete evidence leave both
   plan references and approval transfer untouched.
 - `make lint`, `make typecheck`, `make arch`, `make ci-contracts`, and
