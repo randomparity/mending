@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
+from desloppify.app.commands import repair_cycle
 from desloppify.app.commands.repair_cycle import (
     AdeptReceipt,
     AuthorityProof,
@@ -409,4 +410,21 @@ def test_expired_lease_does_not_make_another_adapter_call() -> None:
     cmd_repair_cycle(_args(state, client, now=NOW + timedelta(minutes=2)))
 
     assert client.reconciliations == 0
+    assert state["repair_cycle"]["parked_reason"] == "timeout"
+
+
+def test_deadline_timer_interrupts_before_adapter_selection(monkeypatch) -> None:
+    def expire_immediately(_which: int, seconds: float) -> tuple[float, float]:
+        if seconds:
+            repair_cycle._deadline_exceeded(repair_cycle.signal.SIGALRM, None)
+        return (0.0, 0.0)
+
+    monkeypatch.setattr(repair_cycle.signal, "setitimer", expire_immediately)
+    state = _state()
+    client = _Client()
+
+    cmd_repair_cycle(_args(state, client))
+
+    assert client.verifications == 0
+    assert client.selections == 0
     assert state["repair_cycle"]["parked_reason"] == "timeout"
