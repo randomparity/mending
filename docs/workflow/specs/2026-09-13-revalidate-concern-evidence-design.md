@@ -25,8 +25,9 @@ entry as remapped to the successor.
 
 For a same-ID changed identity or evidence, supersede the plan reference and
 write `revalidation_reason: concern_evidence_changed`; the current issue remains
-open. A renamed successor must first have the same identity before its evidence
-can be compared. This durable plan-state handoff is consumed later by the
+open and every prior plan reference is removed. A renamed successor must first
+have the same identity before its evidence can be compared. This durable
+plan-state handoff retains any override note and is consumed later by the
 excluded promotion and execution owners. Missing fields, failed analysis, and
 multiple candidates are unknown states: they do not move a reference or write a
 revalidation reason.

@@ -149,9 +149,11 @@ def _supersede_id(
                     fid for fid in step.get("issue_refs", []) if fid != issue_id
                 ]
 
-    # Clear stale cluster reference from override
+    # Revalidation invalidates the old override after its note is copied above.
     override = plan.get("overrides", {}).get(issue_id)
-    if override and override.get("cluster"):
+    if revalidation_reason:
+        plan.get("overrides", {}).pop(issue_id, None)
+    elif override and override.get("cluster"):
         override["cluster"] = None
         override["updated_at"] = now
 
@@ -188,6 +190,8 @@ def _supersede_changed_concern_references(
         issue = issues.get(issue_id)
         if not isinstance(issue, dict) or not _has_changed_concern_evidence(issue):
             continue
+        if issue.get("status") in {"deferred", "triaged_out"}:
+            issue["status"] = "open"
         if _supersede_id(
             plan,
             state,
@@ -506,10 +510,6 @@ def reconcile_plan_after_scan(
         if not name.startswith(EPIC_PREFIX)
     }
 
-    # Sync state status for issues in plan.skipped that are still "open" in state.
-    # This migrates existing data: temporary skips → deferred, triaged_out skips → triaged_out.
-    _sync_skipped_issue_statuses(plan, state)
-
     _supersede_changed_concern_references(
         plan,
         state,
@@ -517,6 +517,10 @@ def reconcile_plan_after_scan(
         now=now,
         result=result,
     )
+
+    # Sync state status for issues in plan.skipped that are still "open" in state.
+    # This migrates existing data: temporary skips → deferred, triaged_out skips → triaged_out.
+    _sync_skipped_issue_statuses(plan, state)
 
     _supersede_dead_references(
         plan,

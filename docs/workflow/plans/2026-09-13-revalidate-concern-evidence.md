@@ -12,7 +12,7 @@ execution scheduler. Python 3.11+ and the locked `uv` toolchain apply.
 - Reuse the existing state and plan reconciliation boundaries.
 - Touch only ADR 0004, concern identity/state/reconciliation modules, and fixtures.
 
-Expected implementation size: 480–550 changed lines (M) — canonical comparison,
+Expected implementation size: 520–600 changed lines (M) — canonical comparison,
 state propagation, conservative cleanup and reconciliation, and focused fixtures.
 
 ## Task 1: Persist canonical concern comparison evidence
@@ -72,7 +72,8 @@ changed identity or digest supersedes the plan reference with
 `revalidation_reason: concern_evidence_changed`; the live issue stays open. A
 renamed successor must first have the same identity before its evidence can be
 compared. Missing evidence, failed analysis, or multiple candidates records no
-transfer and no revalidation reason.
+transfer and no revalidation reason. Revalidation removes every prior plan
+reference and retains any override note in the superseded record.
 For a same-ID recheck, state upsert carries the prior complete hashes into the
 current detail so reconciliation can make that comparison before the next scan.
 
