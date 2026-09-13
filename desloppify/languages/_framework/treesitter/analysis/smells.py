@@ -125,7 +125,13 @@ _TERMINATOR_TYPES = frozenset({
     "continue_statement", "continue",
     "throw_statement", "throw_expression",
     "raise_statement",
-    "yield_statement",  # Not strictly terminating, but often last in generators
+})
+
+# Declarations that are hoisted over the surrounding statement sequence, so they
+# stay reachable even when they follow a terminator. C# local functions are the
+# common case: `return result; void Check(...) { ... }` is idiomatic, not dead code.
+_HOISTED_DECLARATION_TYPES = frozenset({
+    "local_function_statement",
 })
 
 # Node types whose children form a statement sequence.
@@ -173,13 +179,23 @@ def detect_unreachable_code(
 
 
 def _check_sequence_for_unreachable(block_node, filepath: str, entries: list[dict]):
-    """Check a statement sequence for code after terminators."""
+    """Check a statement sequence for code after terminators.
+
+    ERROR nodes are skipped: where the parser lost sync the tree no longer
+    describes the real control flow, so anything after a terminator there is a
+    parse artifact rather than dead code.
+    """
     children = block_node.children
     saw_terminator = False
     terminator_type = ""
 
     for child in children:
         if child.type in _IGNORABLE_NODE_TYPES:
+            continue
+        if child.type in _HOISTED_DECLARATION_TYPES:
+            continue
+        if child.type == "ERROR":
+            saw_terminator = False
             continue
 
         if saw_terminator:
