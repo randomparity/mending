@@ -10,15 +10,31 @@ evidence that justified declining the work.
 
 ## Scope
 
-For confirmed imported concerns, derive a canonical identity from the stable
-architectural claim and a separate digest from its governing evidence. Persist
-both in the existing concern detail and dismissal record. During post-scan plan
-reconciliation, move an old plan reference to a new ID only when one candidate
-shares both values. When identity matches but evidence differs, retain a
-revalidation marker for downstream promotion and execution owners until a fresh
-review records the new evidence. Missing fields, failed analysis, and multiple
-candidates are unknown states: they do not move a reference or revive a
-declined concern. This implements ADR 0004.
+For confirmed imported concerns, hash canonical JSON with schema version 1.
+Identity inputs are normalized `dimension`, `identifier`, `root_cause_cluster`,
+and `proposed_owner`; evidence inputs are normalized
+`maintenance_consequence`, sorted unique `protected_contracts`, and
+`verification`. Paths, related-file paths, summary text, and free-form evidence
+are excluded. Persist both hashes in concern detail. During post-scan plan
+reconciliation, move an old plan reference to a new ID only when one successor
+shares both hashes. The move replaces the old ID in queue, skip, override,
+cluster, action-reference, and promoted-ID collections, then records the old
+entry as remapped to the successor.
+
+For same-identity changed evidence, retain ordinary supersession and write
+`revalidation_reason: concern_evidence_changed` with that successor in the old
+entry's candidate list. This durable plan-state handoff is consumed later by
+the excluded promotion and execution owners. Missing fields, failed analysis,
+and multiple candidates are unknown states: they do not move a reference or
+write a revalidation reason.
+
+For a dismissal, retain the existing normalized signal fingerprint through the
+current import boundary. Resolve it against generated concerns and store a hash
+of concern type plus sorted source-detector names, with a hash of sorted
+path-independent source-finding suppression fingerprints. Exactly one stored
+dismissal with both hashes suppresses the concern. Changed source evidence is
+the recorded reconsideration trigger; missing or ambiguous evidence is unknown
+and leaves the concern visible. This implements ADR 0004.
 
 The change owns concern identity, state, reconciliation, and focused fixtures.
 It excludes concern discovery/grouping (#3), GitHub queue work (#5), scheduling
@@ -41,12 +57,13 @@ of comparison, and plan reconciliation remains the owner of reference movement.
 
 - A supported path rename preserves a single concern's plan reference and
   recorded disposition when its canonical identity and governing evidence match.
-- A changed sibling or governing-decision input records a stale disposition for
-  downstream promotion and execution owners until review supplies replacement evidence.
+- A same-identity changed-evidence pair records
+  `revalidation_reason: concern_evidence_changed` on the old superseded entry
+  for downstream promotion and execution owners.
 - An ambiguous identity match, incomplete import, or failed analysis transfers
   neither approval nor a plan reference.
-- A recorded dismissal stays declined for the same evidence and reappears only
-  after its recorded reconsideration trigger changes.
+- A recorded dismissal stays declined only for one matching identity/evidence
+  pair and reappears after its recorded reconsideration trigger changes.
 
 ## Validation
 
