@@ -8,20 +8,23 @@ delegating repair authority and execution to Adept.
 ## Scope
 
 Add one systemd service/timer recipe, a configured one-shot wrapper, and local
-cycle state. The timer interprets its configured calendar window in the host
-timezone. The wrapper accepts an operator-selected window, runtime, model call
+cycle state. The timer's operator-selected `OnCalendar` is the sole window
+authority and uses the host timezone. The wrapper accepts runtime, model-call
 limit, positive cumulative API-cost cap, and orchestrator model; runtime and
-calls default to 90 minutes and 100. It locks one repository, reconciles an
-existing Adept claim or PR before selection, and starts no model work without
-the required configuration and approved target authority. A missed window is
-recorded as skipped and does not create catch-up work.
+calls default to 90 minutes and 100. It locks one repository, persists a unique
+attempt lease before external I/O, verifies a repository-bound Adept authority
+proof, and reconciles a recorded lease before selection. Adept receives the
+lease/proof and returns a correlated receipt with state, claim/PR reference,
+merge-permit consumption, and measured calls/cost/currency. Unknown, missing,
+or over-budget receipts park; a missed timer window creates no catch-up work.
 
 ### Failure model
 
 - Actors and deployments: a local systemd service invokes one configured
   repository; Adept, GitHub, and model APIs are external boundaries.
-- Invariants and assets: one active repair and one merged repair per local-day
-  window; scheduler state survives restart; authority cannot be inferred.
+- Invariants and assets: one active repair and one consumed merge permit per
+  local day; scheduler state and correlation survive restart; authority cannot
+  be inferred.
 - Accepted failure classes: unavailable external services, expired runtime,
   exhausted budgets, and incomplete proof park the repository for that window.
 - Covered elsewhere: concern discovery #3, revalidation #4, GitHub promotion
@@ -32,8 +35,9 @@ recorded as skipped and does not create catch-up work.
 - A configured timer invokes one one-shot cycle in its host-local window.
 - Concurrent invocations for the same repository produce one active runner.
 - Restart reconciles the recorded claim/PR before a new selection.
-- A cycle cannot exceed its configured runtime, calls, cost cap, one active
-  repair, or one merge; a missing cost cap, model, or authority parks safely.
+- A cycle cannot exceed the deadline/limits enforced by its Adept lease, one
+  active repair, or one merge permit; a missing cost cap, model, authority,
+  correlation, or receipt parks safely.
 - Disable prevents new work; re-enable resumes reconciliation rather than
   replaying a missed window.
 
@@ -42,7 +46,7 @@ recorded as skipped and does not create catch-up work.
 - Focused tests construct overlap, restart after claim/create/merge, window
   rollover, timeout, budget exhaustion, disabled, stale-base, and revoked-
   authority states; each proves no unpermitted new repair or merge occurs.
-- A systemd recipe test validates the service/timer arguments, user-selected
-  calendar value, host-local interpretation, and no catch-up setting.
+- A systemd recipe test validates the dedicated account, restricted paths,
+  user-selected `OnCalendar`, host-local interpretation, and no-catch-up setting.
 - Integration fakes the Adept adapter; no test calls a live model, GitHub, or
   target repository.

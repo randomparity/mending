@@ -8,7 +8,7 @@ locked `uv` toolchain apply.
 ## Global Constraints
 
 - Implement one systemd deployment recipe; do not add a daemon or scheduler abstraction.
-- Use the host timezone for the configured calendar window and do not catch up missed windows.
+- Use systemd `OnCalendar` as the sole host-timezone window authority and do not catch up missed windows.
 - Default runtime is 90 minutes and default model-call budget is 100; configured values override them.
 - A positive cost cap and orchestrator model are required before model work.
 - Missing authority, disabled configuration, stale/unknown external state, failed proof, or budget exhaustion parks before new work.
@@ -23,16 +23,17 @@ Files: `desloppify/engine/repair_cycle.py`,
 `desloppify/tests/repair_cycle/test_state.py`.
 
 Interfaces: `CycleConfig.from_mapping(mapping: Mapping[str, object]) -> CycleConfig`
-validates window, runtime, call count, positive cost cap, model, and enablement.
-`CycleState` records the host-local day key, active repair identity, merge count,
-budget use, and parked reason. State is read and written only under the existing
+validates runtime, call count, positive cost cap, model, and enablement.
+`CycleLease` has a generated attempt ID, host-local day key, deadline, ceilings,
+and one merge permit. `CycleState` records the current lease, its authoritative
+receipt, and parked reason. State is read and written only under the existing
 state lock; it contains no copied Adept claim payload.
 
 Verification:
 
 - Mode: focused-test. Contract: defaults apply only to runtime/calls; a missing
   model or cost cap parks; malformed limits and day keys are rejected; a new
-  host-local day resets the daily merge budget without erasing active work.
+  host-local day makes one merge permit available without erasing active work.
   Red observation: no cycle model exists. Green command:
   `uv run --locked pytest -q desloppify/tests/repair_cycle/test_state.py` exits 0.
 
@@ -48,20 +49,22 @@ Files: `desloppify/app/commands/repair_cycle.py`,
 `desloppify/app/commands/registry.py`,
 `desloppify/tests/commands/test_repair_cycle.py`.
 
-Interfaces: `AdeptCycleClient.reconcile(repository: str) -> ExistingWork`,
-`AdeptCycleClient.select(config: CycleConfig) -> Selection`, and
-`cmd_repair_cycle(args: argparse.Namespace) -> None` are injected boundaries.
-The command takes an exclusive lock, checks disablement/window/authority/budgets,
-reconciles recorded work first, and starts at most one eligible repair. It writes
-the next durable state before and after external I/O; timeout, proof failure,
-or unknown response parks and starts nothing else.
+Interfaces: `AdeptCycleClient.verify_authority(repository: str) -> AuthorityProof`,
+`AdeptCycleClient.reconcile(repository: str, lease: CycleLease) -> AdeptReceipt`,
+and `AdeptCycleClient.select(config: CycleConfig, lease: CycleLease,
+authority: AuthorityProof) -> AdeptReceipt` are injected boundaries. `AuthorityProof`
+contains repository, immutable policy identity/revision, and opaque proof ID.
+`AdeptReceipt` contains the attempt ID, `active|terminal|unknown` state, claim/PR
+reference, merge-permit consumption, calls, cost, and currency. The command locks,
+persists the lease before I/O, verifies authority before selection, and parks on
+timeout, nonmatching correlation, missing receipt, proof failure, or over-budget use.
 
 Verification:
 
 - Mode: focused-test. Contract: two simultaneous invocations yield one runner;
-  restart after claim/create/merge reconciles instead of duplicating; disabled,
-  timeout, stale base, revoked authority, exhausted runtime/calls/cost, and
-  no-work states make no selection. Green command:
+  restart after claim/create/merge reconciles its matching attempt instead of
+  duplicating; disabled, timeout, stale base, revoked authority, unknown receipt,
+  exhausted runtime/calls/cost, and no-work states make no selection. Green command:
   `uv run --locked pytest -q desloppify/tests/commands/test_repair_cycle.py`
   exits 0.
 
@@ -75,14 +78,16 @@ Files: `docs/systemd/mending-repair-cycle.service`,
 `desloppify/tests/ci/test_repair_cycle_recipe.py`.
 
 Interfaces: the service invokes the installed `desloppify repair-cycle` command
-with a root-owned environment file; the timer exposes an operator-editable
+as a dedicated service account. A restricted environment file and state directory
+are owned for that account; the timer exposes the sole operator-editable
 `OnCalendar` value and sets `Persistent=false` so missed windows are skipped.
 
 Verification:
 
 - Mode: focused-test. Contract: the unit invokes only the one-shot command,
-  exposes the host-local calendar configuration, disables catch-up, and does
-  not embed a model, token, or cost secret. Green command:
+  exposes the host-local calendar configuration, uses the dedicated principal
+  and restricted paths, disables catch-up, and does not embed a model, token,
+  or cost secret. Green command:
   `uv run --locked pytest -q desloppify/tests/ci/test_repair_cycle_recipe.py`
   exits 0.
 
