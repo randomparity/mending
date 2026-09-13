@@ -33,13 +33,13 @@ class AuthorityProof:
 class AdeptReceipt:
     """The narrow correlated outcome the scheduler may persist and reconcile."""
 
-    attempt_id: str
-    state: str
-    reference: str | None
-    merge_consumed: bool
-    calls: int
-    cost_usd: Decimal
-    currency: str
+    attempt_id: object
+    state: object
+    reference: object
+    merge_consumed: object
+    calls: object
+    cost_usd: object
+    currency: object
 
     def to_mapping(self) -> dict[str, object]:
         """Return JSON-safe receipt fields without any external claim payload."""
@@ -98,7 +98,7 @@ def cmd_repair_cycle(args: argparse.Namespace) -> None:
             _park(state, cycle_state, config.park_reason)
             return
         if cycle_state.current_lease is not None:
-            _reconcile(state, cycle_state, config, client, now)
+            _reconcile(args, state, cycle_state, config, client)
             return
         lease = cycle_state.begin(config, now)
         if lease is None:
@@ -106,23 +106,23 @@ def cmd_repair_cycle(args: argparse.Namespace) -> None:
             return
         _store_cycle_state(state, cycle_state)
         _persist_before_external_call(args, state)
-        _select(state, cycle_state, config, client, lease, now)
+        _select(args, state, cycle_state, config, client, lease)
 
 
 def _select(
+    args: argparse.Namespace,
     state: dict[str, Any],
     cycle_state: CycleState,
     config: CycleConfig,
     client: AdeptCycleClient,
     lease: CycleLease,
-    now: datetime,
 ) -> None:
     try:
         authority = client.verify_authority(config.repository)
     except TimeoutError:
         _park(state, cycle_state, "timeout")
         return
-    except (RuntimeError, ValueError):
+    except Exception:
         _park(state, cycle_state, "authority-unavailable")
         return
     if not _valid_authority(authority, config.repository):
@@ -133,18 +133,18 @@ def _select(
     except TimeoutError:
         _park(state, cycle_state, "timeout")
         return
-    except (RuntimeError, ValueError):
+    except Exception:
         _park(state, cycle_state, "selection-unavailable")
         return
-    _accept_receipt(state, cycle_state, lease, receipt, now)
+    _accept_receipt(state, cycle_state, lease, receipt, _now(args))
 
 
 def _reconcile(
+    args: argparse.Namespace,
     state: dict[str, Any],
     cycle_state: CycleState,
     config: CycleConfig,
     client: AdeptCycleClient,
-    now: datetime,
 ) -> None:
     lease = cycle_state.current_lease
     if lease is None:
@@ -154,10 +154,10 @@ def _reconcile(
     except TimeoutError:
         _park(state, cycle_state, "timeout")
         return
-    except (RuntimeError, ValueError):
+    except Exception:
         _park(state, cycle_state, "reconciliation-unavailable")
         return
-    _accept_receipt(state, cycle_state, lease, receipt, now)
+    _accept_receipt(state, cycle_state, lease, receipt, _now(args))
 
 
 def _accept_receipt(
@@ -190,15 +190,21 @@ def _receipt_reason(
     receipt: AdeptReceipt,
     now: datetime,
 ) -> str | None:
+    if not isinstance(receipt.attempt_id, str) or not receipt.attempt_id:
+        return "invalid-receipt"
     if receipt.attempt_id != lease.attempt_id:
         return "receipt-correlation-mismatch"
-    if receipt.state not in {"active", "terminal", "unknown"}:
+    if not isinstance(receipt.state, str) or receipt.state not in {"active", "terminal", "unknown"}:
         return "invalid-receipt"
-    if receipt.currency != "USD":
+    if receipt.reference is not None and not isinstance(receipt.reference, str):
+        return "invalid-receipt"
+    if not isinstance(receipt.merge_consumed, bool):
+        return "invalid-receipt"
+    if not isinstance(receipt.currency, str) or receipt.currency != "USD":
         return "non-usd-receipt"
     if isinstance(receipt.calls, bool) or not isinstance(receipt.calls, int) or receipt.calls < 0:
         return "invalid-receipt"
-    if not receipt.cost_usd.is_finite() or receipt.cost_usd < 0:
+    if not isinstance(receipt.cost_usd, Decimal) or not receipt.cost_usd.is_finite() or receipt.cost_usd < 0:
         return "invalid-receipt"
     if now > lease.deadline:
         return "runtime-exhausted"
@@ -246,7 +252,8 @@ def _load_config(args: argparse.Namespace) -> CycleConfig:
 
 
 def _now(args: argparse.Namespace) -> datetime:
-    supplied = getattr(args, "now", None)
+    clock = getattr(args, "clock", None)
+    supplied = clock() if callable(clock) else getattr(args, "now", None)
     now = supplied if isinstance(supplied, datetime) else datetime.now().astimezone()
     if now.tzinfo is None:
         raise CommandError("repair-cycle requires host-local timezone-aware time", exit_code=2)
