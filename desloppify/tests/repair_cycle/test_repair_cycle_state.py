@@ -83,4 +83,3 @@ def test_new_day_restores_merge_permit_without_erasing_active_work() -> None:
     assert state.current_lease == lease
     assert state.merge_permit_available(next_day)
     assert state.begin(config, next_day) is None
-

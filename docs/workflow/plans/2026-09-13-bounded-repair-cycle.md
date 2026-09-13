@@ -27,8 +27,9 @@ systemd restrictions without exercising a live host.
 The final correction accounts for lifecycle enforcement required by the same
 frozen contracts: terminal receipts must permit a later-day lease, only an exact
 replayed receipt may reuse a consumed merge permit, disabled mode reconciles
-existing state, and the selected runtime bounds each external call. The 1,550
-net changed lines measured against `main` fall within this revised range.
+existing state, and the selected runtime bounds each external call. The
+approximately 1,550 net changed lines measured against `main` fall within this
+revised range.
 
 ## Task 1: Define cycle configuration and durable scheduler state
 
