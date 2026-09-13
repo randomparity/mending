@@ -156,6 +156,38 @@ def test_delayed_writer_cannot_create_after_another_writer_links() -> None:
     assert detail["github_repair"]["number"] == 7
 
 
+def test_uncertain_create_requires_attested_recovery_before_retry() -> None:
+    class FailingCreateClient(_Client):
+        def __init__(self) -> None:
+            super().__init__()
+            self.create_calls = 0
+
+        def create(self, repository: str, candidate) -> None:
+            self.create_calls += 1
+            raise RuntimeError("unavailable")
+
+    state = _state()
+    marker = marker_for_hashes(IDENTITY, EVIDENCE)
+    detail = state["work_items"]["concerns::item"]["detail"]
+    detail["github_repair_revalidated"] = {
+        "marker": marker,
+        "repository": REPOSITORY,
+        "attestation": "verified current evidence",
+    }
+    client = FailingCreateClient()
+
+    cmd_repair_queue(_args("sync", state, apply=True, client=client))
+    cmd_repair_queue(_args("sync", state, apply=True, client=client))
+
+    assert client.create_calls == 1
+    assert detail["github_repair_pending"] == {"marker": marker, "repository": REPOSITORY}
+
+    cmd_repair_queue(_args("recover", state, apply=True, client=client, marker=marker, attest="checked"))
+    cmd_repair_queue(_args("sync", state, apply=True, client=client))
+
+    assert client.create_calls == 2
+
+
 def test_recover_clears_only_matching_pending_marker() -> None:
     state = _state()
     marker = marker_for_hashes(IDENTITY, EVIDENCE)
