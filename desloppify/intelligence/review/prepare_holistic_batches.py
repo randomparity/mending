@@ -40,7 +40,7 @@ def _neighbor_paths(paths: list[str], lang: object) -> list[str]:
         for key in ("imports", "importers"):
             values = entry.get(key, ())
             if isinstance(values, (set, list, tuple)):
-                neighbors.extend(item for item in values if isinstance(item, str))
+                neighbors.extend(sorted(item for item in values if isinstance(item, str)))
     return neighbors
 
 
@@ -51,6 +51,7 @@ def _apply_bounded_reading_sets(
     lang: object,
     state: dict,
     all_files: list[str],
+    allowed_review_files: set[str],
     max_files_per_batch: int | None,
 ) -> None:
     """Attach a deterministic, bounded reading set to each investigation batch."""
@@ -64,10 +65,21 @@ def _apply_bounded_reading_sets(
             collector = _FILE_COLLECTORS.get(_DIMENSION_FILE_MAPPING.get(dimension, ""))
             if callable(collector):
                 seeds.extend(collector(context, max_files=cap))
-        selected = _unique_paths(seeds, cap)
-        selected.extend(_neighbor_paths(selected, lang))
+        selected = _unique_paths(
+            [path for path in seeds if file_in_allowed_scope(path, allowed_review_files)],
+            cap,
+        )
+        selected.extend(
+            path
+            for path in _neighbor_paths(selected, lang)
+            if file_in_allowed_scope(path, allowed_review_files)
+        )
         selected = _unique_paths(selected, cap)
-        remaining = [path for path in sorted(all_files) if path not in selected]
+        remaining = [
+            path
+            for path in sorted(all_files)
+            if path not in selected and file_in_allowed_scope(path, allowed_review_files)
+        ]
         if remaining:
             start = rotation % len(remaining)
             selected = _unique_paths(selected + remaining[start:] + remaining[:start], cap)
@@ -97,6 +109,7 @@ def _merge_batch_payload(
             continue
         existing["concern_signals"] = incoming_batch.get("concern_signals", [])
         existing["concern_signal_count"] = incoming_batch.get("concern_signal_count", 0)
+        existing["files_to_read"] = incoming_batch.get("files_to_read", [])
         judgment_counts = incoming_batch.get("judgment_finding_counts")
         if judgment_counts:
             existing["judgment_finding_counts"] = judgment_counts
@@ -176,6 +189,7 @@ def assemble_holistic_batches(
         lang=lang,
         state=state,
         all_files=all_files,
+        allowed_review_files=allowed_review_files,
         max_files_per_batch=max_files_per_batch,
     )
 

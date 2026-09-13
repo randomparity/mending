@@ -95,6 +95,7 @@ def test_bounded_reading_set_rotates_clean_files() -> None:
         lang=SimpleNamespace(),
         state={"scan_count": 1},
         all_files=["src/c.py", "src/a.py", "src/b.py"],
+        allowed_review_files={"src/a.py", "src/b.py", "src/c.py"},
         max_files_per_batch=2,
     )
 
@@ -104,7 +105,7 @@ def test_bounded_reading_set_rotates_clean_files() -> None:
 def test_bounded_reading_set_prioritizes_signal_and_direct_neighbor() -> None:
     batches = [{"dimensions": ["unknown"], "files_to_read": ["src/seed.py"]}]
     lang = SimpleNamespace(
-        dep_graph={"src/seed.py": {"imports": ["src/neighbor.py"]}}
+        dep_graph={"src/seed.py": {"imports": {"src/neighbor.py", "../secret.py"}}}
     )
 
     holistic_batches_mod._apply_bounded_reading_sets(
@@ -113,10 +114,12 @@ def test_bounded_reading_set_prioritizes_signal_and_direct_neighbor() -> None:
         lang=lang,
         state={"scan_count": 0},
         all_files=["src/extra.py", "src/neighbor.py", "src/seed.py"],
+        allowed_review_files={"src/extra.py", "src/neighbor.py", "src/seed.py"},
         max_files_per_batch=2,
     )
 
     assert batches[0]["files_to_read"] == ["src/seed.py", "src/neighbor.py"]
+    assert "../secret.py" not in batches[0]["files_to_read"]
 
 
 def test_holistic_cache_update_and_resolution_helpers(monkeypatch) -> None:

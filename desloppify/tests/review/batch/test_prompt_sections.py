@@ -27,6 +27,15 @@ def test_batch_prompt_renders_bounded_reading_set() -> None:
     )
 
     assert "Investigation reading set: src/seed.py, src/neighbor.py" in prompt
+    for field in (
+        "root_cause_cluster",
+        "maintenance_consequence",
+        "proposed_owner",
+        "protected_contracts",
+        "verification",
+    ):
+        assert f'"{field}"' in prompt
+    assert '"root_cause_cluster": "required for confirmed concerns"' in prompt
 
 
 class TestRenderMechanicalConcernSignals:

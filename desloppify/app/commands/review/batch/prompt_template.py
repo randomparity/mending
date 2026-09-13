@@ -113,7 +113,7 @@ def _render_output_schema(context: PromptBatchContext, batch_index: int) -> str:
         '    "confidence": "high|medium|low",\n'
         '    "impact_scope": "local|module|subsystem|codebase",\n'
         '    "fix_scope": "single_edit|multi_file_refactor|architectural_change",\n'
-        '    "root_cause_cluster": "optional_cluster_name_when_supported_by_history",\n'
+        '    "root_cause_cluster": "required for confirmed concerns",\n'
         '    "maintenance_consequence": "required for confirmed concerns",\n'
         '    "proposed_owner": "required for confirmed concerns",\n'
         '    "protected_contracts": ["required for confirmed concerns"],\n'

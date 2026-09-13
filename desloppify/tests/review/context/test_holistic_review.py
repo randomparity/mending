@@ -469,7 +469,7 @@ class TestPrepareHolisticReview:
         concern_batch = concern_batches[0]
         # Concern signals are merged into the design_coherence batch and its reading set is capped.
         assert concern_batch.get("concern_signal_count", 0) == 6
-        assert len(concern_batch["files_to_read"]) == 2
+        assert concern_batch["files_to_read"] == ["src/file_0.ts", "src/file_1.ts"]
 
     def test_prepare_holistic_review_concerns_filtered_when_dim_inactive(
         self, tmp_path, monkeypatch
