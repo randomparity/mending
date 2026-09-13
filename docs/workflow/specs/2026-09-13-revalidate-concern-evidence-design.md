@@ -23,12 +23,12 @@ shares both hashes. The move replaces the old ID in queue, skip, override,
 cluster, action-reference, and promoted-ID collections, then records the old
 entry as remapped to the successor.
 
-For same-identity changed evidence, retain ordinary supersession and write
-`revalidation_reason: concern_evidence_changed` with that successor in the old
-entry's candidate list. This durable plan-state handoff is consumed later by
-the excluded promotion and execution owners. Missing fields, failed analysis,
-and multiple candidates are unknown states: they do not move a reference or
-write a revalidation reason.
+For changed identity or evidence, supersede the plan reference and write
+`revalidation_reason: concern_evidence_changed`, whether the current concern
+keeps its ID or is a successor. The current issue remains open. This durable
+plan-state handoff is consumed later by the excluded promotion and execution
+owners. Missing fields, failed analysis, and multiple candidates are unknown
+states: they do not move a reference or write a revalidation reason.
 
 For a dismissal, retain the existing normalized signal fingerprint through the
 current import boundary. Resolve it against generated concerns and store a hash
@@ -61,9 +61,9 @@ of comparison, and plan reconciliation remains the owner of reference movement.
 
 - A supported path rename preserves a single concern's plan reference and
   recorded disposition when its canonical identity and governing evidence match.
-- A same-identity changed-evidence pair records
-  `revalidation_reason: concern_evidence_changed` on the old superseded entry
-  for downstream promotion and execution owners.
+- A same-ID or successor changed-evidence concern removes the stale plan
+  reference and records `revalidation_reason: concern_evidence_changed` for
+  downstream promotion and execution owners.
 - An ambiguous identity match, incomplete import, or failed analysis transfers
   neither approval nor a plan reference.
 - A recorded dismissal stays declined only for one matching identity/evidence

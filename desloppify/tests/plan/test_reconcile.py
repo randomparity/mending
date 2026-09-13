@@ -5,6 +5,7 @@ from __future__ import annotations
 from desloppify.engine._plan.operations.cluster import add_to_cluster, create_cluster
 from desloppify.engine._plan.scan_issue_reconcile import reconcile_plan_after_scan
 from desloppify.engine._plan.schema import empty_plan, ensure_plan_defaults
+from desloppify.engine._state.merge_issues import upsert_issues
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -235,6 +236,21 @@ def test_reconcile_marks_changed_concern_for_revalidation():
     entry = plan["superseded"]["old"]
     assert entry["revalidation_reason"] == "concern_evidence_changed"
     assert entry["candidates"] == ["new"]
+
+
+def test_reconcile_supersedes_same_id_concern_with_changed_evidence():
+    issue_id = "concerns::module.py::architecture"
+    plan = _plan_with_queue(issue_id)
+    state = {"issues": {issue_id: _concern(issue_id, "open")}}
+    current = _concern(issue_id, "open", "changed")
+
+    upsert_issues(state["issues"], [current], [], "2026-09-13T00:00:00+00:00", lang=None)
+    reconcile_plan_after_scan(plan, state)
+
+    assert plan["queue_order"] == []
+    assert plan["superseded"][issue_id]["revalidation_reason"] == "concern_evidence_changed"
+    assert state["issues"][issue_id]["status"] == "open"
+    assert state["issues"][issue_id]["detail"]["concern_evidence_digest"] == "changed"
 
 
 def test_reconcile_never_remaps_concern_to_another_detector():

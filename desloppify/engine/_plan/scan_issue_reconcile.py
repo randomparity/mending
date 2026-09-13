@@ -78,6 +78,8 @@ def _supersede_id(
     state: StateModel,
     issue_id: str,
     now: str,
+    *,
+    revalidation_reason: str | None = None,
 ) -> bool:
     """Move a disappeared issue to superseded. Returns True if changed."""
     issue = (state.get("work_items") or state.get("issues", {})).get(issue_id)
@@ -110,6 +112,9 @@ def _supersede_id(
     override_note = get_issue_note(plan, issue_id)
     if override_note:
         entry["note"] = override_note
+
+    if revalidation_reason:
+        entry["revalidation_reason"] = revalidation_reason
 
     if detector == "concerns" and detail and len(candidates) == 1:
         successor = (state.get("work_items") or state.get("issues", {}))[candidates[0]]
@@ -146,6 +151,47 @@ def _supersede_id(
         override["updated_at"] = now
 
     return True
+
+
+def _has_changed_concern_evidence(issue: dict) -> bool:
+    """Return whether a same-ID concern changed since the preceding scan."""
+    if issue.get("detector") != "concerns":
+        return False
+    detail = issue.get("detail")
+    if not isinstance(detail, dict):
+        return False
+    identity = detail.get("concern_identity")
+    evidence = detail.get("concern_evidence_digest")
+    previous_identity = detail.get("previous_concern_identity")
+    previous_evidence = detail.get("previous_concern_evidence_digest")
+    if not all((identity, evidence, previous_identity, previous_evidence)):
+        return False
+    return identity != previous_identity or evidence != previous_evidence
+
+
+def _supersede_changed_concern_references(
+    plan: PlanModel,
+    state: StateModel,
+    *,
+    referenced_ids: set[str],
+    now: str,
+    result: ReconcileResult,
+) -> None:
+    """Remove plan references whose same-ID concern evidence changed."""
+    issues = state.get("work_items") or state.get("issues", {})
+    for issue_id in sorted(referenced_ids):
+        issue = issues.get(issue_id)
+        if not isinstance(issue, dict) or not _has_changed_concern_evidence(issue):
+            continue
+        if _supersede_id(
+            plan,
+            state,
+            issue_id,
+            now,
+            revalidation_reason="concern_evidence_changed",
+        ):
+            result.superseded.append(issue_id)
+            result.changes += 1
 
 
 def _remap_id(plan: PlanModel, old_id: str, new_id: str) -> None:
@@ -451,6 +497,14 @@ def reconcile_plan_after_scan(
     # Sync state status for issues in plan.skipped that are still "open" in state.
     # This migrates existing data: temporary skips → deferred, triaged_out skips → triaged_out.
     _sync_skipped_issue_statuses(plan, state)
+
+    _supersede_changed_concern_references(
+        plan,
+        state,
+        referenced_ids=referenced_ids,
+        now=now,
+        result=result,
+    )
 
     _supersede_dead_references(
         plan,

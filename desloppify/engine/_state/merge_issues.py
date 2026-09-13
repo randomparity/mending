@@ -249,12 +249,31 @@ def upsert_issues(
             continue
 
         previous = existing[issue_id]
+        detail = dict(issue.get("detail", {}))
+        previous_detail = previous.get("detail")
+        if (
+            detector == "concerns"
+            and isinstance(previous_detail, dict)
+            and previous_detail.get("concern_identity")
+            and previous_detail.get("concern_evidence_digest")
+            and detail.get("concern_identity")
+            and detail.get("concern_evidence_digest")
+            and (
+                previous_detail["concern_identity"] != detail["concern_identity"]
+                or previous_detail["concern_evidence_digest"]
+                != detail["concern_evidence_digest"]
+            )
+        ):
+            detail["previous_concern_identity"] = previous_detail["concern_identity"]
+            detail["previous_concern_evidence_digest"] = previous_detail[
+                "concern_evidence_digest"
+            ]
         previous.update(
             last_seen=now,
             tier=issue["tier"],
             confidence=issue["confidence"],
             summary=issue["summary"],
-            detail=issue.get("detail", {}),
+            detail=detail,
         )
         if "zone" in issue:
             previous["zone"] = issue["zone"]
