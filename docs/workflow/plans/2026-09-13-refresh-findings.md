@@ -79,10 +79,11 @@ Interfaces: `merge_scan_results(runtime, issues, potentials, metrics) -> ScanMer
 continues to call `save_state` before `_reconcile_plan_post_scan`.
 
 Verification:
-- Contract: a failed state save performs no plan reconciliation.
+- Contract: a failed state save performs no plan reconciliation and leaves the prior state
+  file readable with its pre-scan content.
   Mode: focused-test. Add a mocked save failure in
-  `test_scan_workflow_integration_direct.py`; red observation is reconciliation called;
-  green command is `uv run --locked pytest -q
+  `test_scan_workflow_integration_direct.py`; red observations are reconciliation called or
+  changed prior durable state; green command is `uv run --locked pytest -q
   desloppify/tests/scan/test_scan_workflow_integration_direct.py`.
 - Contract: partial detector output leaves unexamined open findings unresolved.
   Mode: focused-test. Exercise `merge_scan` with an absent detector in

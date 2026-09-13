@@ -38,9 +38,8 @@ plan writes.
 
 - Focused preflight tests prove active queues no longer reject normal scans while invalid
   force-rescan attestations still reject.
-- Focused workflow tests prove save precedes reconciliation and a failing save performs no
-  reconciliation.
-- Focused plan tests prove active queues skip boundary reconciliation but preserve safe
-  post-scan metadata reconciliation.
+- Focused workflow tests prove save precedes reconciliation, a failing save performs no
+  reconciliation, and the prior state file remains readable.
+- Focused plan tests prove active queues perform no plan mutation or save.
 - State merge tests cover partial detector output and corrupt or unreadable state through
   existing load/degraded behavior.
