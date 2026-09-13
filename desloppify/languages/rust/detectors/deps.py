@@ -10,10 +10,12 @@ from desloppify.languages.rust.support import (
     build_production_file_index,
     build_workspace_package_index,
     find_rust_files,
+    iter_include_files,
     iter_mod_targets,
     iter_use_specs,
     read_text_or_none,
     resolve_mod_declaration,
+    resolve_include_file,
     resolve_use_spec,
 )
 
@@ -33,7 +35,7 @@ def build_dep_graph(
 
     file_set = set(graph.keys())
     production_index = build_production_file_index(file_set)
-    package_index = build_workspace_package_index()
+    package_index = build_workspace_package_index(path)
     for filepath in files:
         content = read_text_or_none(filepath)
         if content is None:
@@ -51,6 +53,17 @@ def build_dep_graph(
                 if resolved and resolved != filepath:
                     graph[filepath]["imports"].add(resolved)
                     graph[resolved]["importers"].add(filepath)
+
+        for include_path in iter_include_files(content):
+            resolved = resolve_include_file(
+                include_path,
+                filepath,
+                file_set,
+                production_index=production_index,
+            )
+            if resolved and resolved != filepath:
+                graph[filepath]["imports"].add(resolved)
+                graph[resolved]["importers"].add(filepath)
 
         for spec in iter_use_specs(content):
             resolved = resolve_use_spec(

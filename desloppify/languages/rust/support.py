@@ -11,13 +11,21 @@ from typing import Any
 
 from desloppify.base.discovery.file_paths import rel, resolve_path
 from desloppify.base.discovery.paths import get_project_root
-from desloppify.base.discovery.source import SourceDiscoveryOptions, find_source_files
+from desloppify.base.discovery.source import (
+    SourceDiscoveryOptions,
+    find_source_files,
+    get_exclusions,
+)
+
 RUST_FILE_EXCLUSIONS = ["target", ".git", "node_modules", "vendor"]
 USE_STATEMENT_RE = re.compile(r"(?m)^\s*(?:pub(?:\([^)]*\))?\s+)?use\s+([^;]+);")
 PUB_USE_STATEMENT_RE = re.compile(r"(?m)^\s*pub(?:\([^)]*\))?\s+use\s+([^;]+);")
 _MOD_LINE_RE = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z_]\w*)\s*;")
 _ATTR_RE = re.compile(r"#\[[^\]]+\]")
 _PATH_ATTR_RE = re.compile(r'#\s*\[\s*path\s*=\s*"([^"\n]+)"\s*\]')
+_INCLUDE_FILE_RE = re.compile(
+    r'(?m)^\s*include!\s*\(\s*"([^"\n]+\.rs)"\s*\)\s*;'
+)
 _PUBLIC_ITEM_RE = re.compile(r"(?m)^\s*pub\s+(?:struct|enum|trait|type|fn|mod)\s+")
 _RUST_LOG_RE = re.compile(r"^\s*(?:println!|eprintln!|dbg!|tracing::)", re.MULTILINE)
 
@@ -41,6 +49,7 @@ class RustProductionFileIndex:
 
     project_root: Path
     by_absolute: dict[str, str]
+    by_lexical_absolute: dict[str, str]
     by_relative: dict[str, str]
 
 
@@ -71,12 +80,15 @@ def build_production_file_index(
     """Build O(1) absolute/relative lookup maps for production files."""
     root = (project_root or get_project_root()).resolve()
     by_absolute: dict[str, str] = {}
+    by_lexical_absolute: dict[str, str] = {}
     by_relative: dict[str, str] = {}
     for production_file in production_files:
         prod_path = Path(production_file)
+        lexical = prod_path if prod_path.is_absolute() else root / prod_path
         resolved = (
             prod_path.resolve() if prod_path.is_absolute() else (root / prod_path).resolve()
         )
+        by_lexical_absolute.setdefault(str(lexical.absolute()), production_file)
         resolved_str = str(resolved)
         by_absolute.setdefault(resolved_str, production_file)
         try:
@@ -88,6 +100,7 @@ def build_production_file_index(
     return RustProductionFileIndex(
         project_root=root,
         by_absolute=by_absolute,
+        by_lexical_absolute=by_lexical_absolute,
         by_relative=by_relative,
     )
 
@@ -221,6 +234,11 @@ def iter_mod_targets(content: str) -> list[tuple[str, str | None]]:
 def iter_use_specs(content: str) -> list[str]:
     """Return normalized Rust `use` / `pub use` specs from a file."""
     return _iter_use_specs_with_pattern(content, USE_STATEMENT_RE)
+
+
+def iter_include_files(content: str) -> list[str]:
+    """Return literal Rust source files textually owned through ``include!``."""
+    return _INCLUDE_FILE_RE.findall(strip_rust_comments(content))
 
 
 def iter_pub_use_specs(content: str) -> list[str]:
@@ -376,16 +394,28 @@ def _read_manifest_data(manifest_dir: Path) -> dict[str, Any]:
 def build_workspace_package_index(scan_root: Path | None = None) -> dict[str, Path]:
     """Return local crate-name -> Cargo manifest dir for the active project root."""
     root = find_workspace_root(scan_root) if scan_root is not None else get_project_root()
-    return _build_workspace_package_index_cached(root)
+    exclusions = tuple(get_exclusions())
+    return _build_workspace_package_index_cached(root, exclusions)
 
 
 @functools.lru_cache(maxsize=8)
-def _build_workspace_package_index_cached(root: Path) -> dict[str, Path]:
+def _build_workspace_package_index_cached(
+    root: Path,
+    runtime_exclusions: tuple[str, ...],
+) -> dict[str, Path]:
     """Cached inner implementation of workspace package index building."""
-    _exclusions = set(RUST_FILE_EXCLUSIONS)
     packages: dict[str, Path] = {}
-    for manifest in root.rglob("Cargo.toml"):
-        if any(part in _exclusions for part in manifest.relative_to(root).parts[:-1]):
+    manifests = find_source_files(
+        root,
+        ["Cargo.toml"],
+        SourceDiscoveryOptions(
+            exclusions=tuple(RUST_FILE_EXCLUSIONS),
+            extra_exclusions=runtime_exclusions,
+        ),
+    )
+    for manifest_path in manifests:
+        manifest = Path(resolve_path(manifest_path))
+        if manifest.name != "Cargo.toml":
             continue
         manifest_dir = manifest.parent.resolve()
         for name in {
@@ -523,7 +553,7 @@ def _resolve_local_dependency_entry(
 
 
 def find_workspace_root(path: Path | str | None) -> Path:
-    """Return the outermost Cargo workspace root for a file/dir when present."""
+    """Return the nearest Cargo workspace root without escaping nested worktrees."""
     if path is None:
         return get_project_root()
 
@@ -541,14 +571,27 @@ def find_workspace_root(path: Path | str | None) -> Path:
             continue
         workspace = data.get("workspace")
         if isinstance(workspace, dict):
-            workspace_root = current
+            return current.resolve()
     return workspace_root.resolve()
 
 
 def describe_rust_file(source_file: str | Path) -> RustFileContext:
     """Build resolution context for a Rust source file."""
-    source = Path(resolve_path(str(source_file))).resolve()
-    manifest_dir = find_manifest_dir(source) or get_project_root()
+    return _describe_rust_file_cached(
+        str(source_file),
+        get_project_root().resolve(),
+    )
+
+
+@functools.lru_cache(maxsize=4096)
+def _describe_rust_file_cached(
+    source_file: str,
+    project_root: Path,
+) -> RustFileContext:
+    source = Path(
+        resolve_path(source_file, project_root=project_root)
+    ).resolve()
+    manifest_dir = find_manifest_dir(source) or project_root
     package_name = read_package_name(manifest_dir)
     library_crate_name = read_library_crate_name(manifest_dir)
     try:
@@ -661,6 +704,22 @@ def resolve_mod_declaration(
         if matched:
             return matched
     return None
+
+
+def resolve_include_file(
+    include_path: str,
+    source_file: str | Path,
+    production_files: set[str],
+    *,
+    production_index: RustProductionFileIndex | None = None,
+) -> str | None:
+    """Resolve a literal ``include!("path.rs")`` relative to its owner."""
+    source = Path(resolve_path(str(source_file))).resolve()
+    return _candidate_matches(
+        source.parent / include_path,
+        production_files,
+        production_index=production_index,
+    )
 
 
 def resolve_use_spec(
@@ -883,25 +942,28 @@ def _candidate_matches(
     production_index: RustProductionFileIndex | None = None,
 ) -> str | None:
     index = production_index or build_production_file_index(production_files)
-    resolved_candidate = candidate.resolve()
-    candidate_abs = str(resolved_candidate)
-    absolute_match = index.by_absolute.get(candidate_abs)
+    lexical_candidate = candidate if candidate.is_absolute() else index.project_root / candidate
+    candidate_abs = str(lexical_candidate.absolute())
+    absolute_match = index.by_lexical_absolute.get(candidate_abs)
+    if absolute_match is None:
+        absolute_match = index.by_absolute.get(candidate_abs)
     if absolute_match is not None:
         return absolute_match
-    try:
-        candidate_rel = rel(resolved_candidate, project_root=index.project_root)
-    except (TypeError, ValueError, OSError):
-        candidate_rel = None
-    if candidate_rel is not None:
-        relative_match = index.by_relative.get(candidate_rel)
-        if relative_match is not None:
-            return relative_match
     return None
 
 
-def match_production_candidate(candidate: Path, production_files: set[str]) -> str | None:
+def match_production_candidate(
+    candidate: Path,
+    production_files: set[str],
+    *,
+    production_index: RustProductionFileIndex | None = None,
+) -> str | None:
     """Public wrapper for matching a resolved candidate to the production-file set."""
-    return _candidate_matches(candidate, production_files)
+    return _candidate_matches(
+        candidate,
+        production_files,
+        production_index=production_index,
+    )
 
 
 def _split_top_level(text: str, delimiter: str = ",") -> list[str]:
@@ -1021,6 +1083,7 @@ __all__ = [
     "has_public_api_markers",
     "iter_mod_declarations",
     "iter_mod_targets",
+    "iter_include_files",
     "iter_pub_use_specs",
     "iter_use_specs",
     "match_production_candidate",
@@ -1031,6 +1094,7 @@ __all__ = [
     "read_package_name",
     "resolve_barrel_targets",
     "resolve_mod_declaration",
+    "resolve_include_file",
     "resolve_use_spec",
     "strip_rust_comments",
 ]

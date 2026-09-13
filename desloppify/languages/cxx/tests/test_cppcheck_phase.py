@@ -146,3 +146,34 @@ def test_phase_cppcheck_uses_unique_issue_ids_for_same_line(tmp_path, monkeypatc
     assert len(issues) == 2
     assert issues[0]["id"] != issues[1]["id"]
     assert signals == {"cppcheck_issue": 2}
+
+
+def test_phase_cppcheck_ignores_information_records(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        cxx_phases,
+        "find_cxx_files",
+        lambda _path: ["src/app.cpp"],
+        raising=False,
+    )
+    monkeypatch.setattr(
+        cxx_phases,
+        "run_tool_result",
+        lambda *_args, **_kwargs: ToolRunResult(
+            entries=[
+                {
+                    "file": "src/app.cpp",
+                    "line": 1,
+                    "message": "information: Include file: \"vendor.hpp\" not found.",
+                }
+            ],
+            status="ok",
+            returncode=0,
+        ),
+        raising=False,
+    )
+
+    lang = SimpleNamespace(detector_coverage={}, coverage_warnings=[])
+    issues, signals = cxx_phases.phase_cppcheck_issue(tmp_path, lang)
+
+    assert issues == []
+    assert signals == {}

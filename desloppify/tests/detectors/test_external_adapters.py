@@ -499,12 +499,13 @@ class TestBanditExcludeIntegration:
         config = PythonConfig()
         captured_kwargs = {}
 
-        def _fake_bandit(path, zone_map, **kwargs):
+        def _fake_bandit(discovered_files, zone_map, **kwargs):
             from desloppify.languages.python.detectors.bandit_adapter import (
                 BanditRunStatus,
                 BanditScanResult,
             )
 
+            captured_kwargs["files"] = discovered_files
             captured_kwargs.update(kwargs)
             return BanditScanResult(
                 entries=[], files_scanned=0, status=BanditRunStatus(state="ok")
@@ -513,7 +514,7 @@ class TestBanditExcludeIntegration:
         fake_exclude_dirs = ["/project/src/.venv", "/project/src/__pycache__", "/project/src/vendor"]
         files = ["/project/src/app.py", "/project/src/utils.py"]
         with patch(
-            "desloppify.languages.python._security.detect_with_bandit", _fake_bandit
+            "desloppify.languages.python._security.detect_with_bandit_files", _fake_bandit
         ), patch(
             "desloppify.languages.python._security.collect_exclude_dirs",
             return_value=fake_exclude_dirs,
@@ -523,6 +524,7 @@ class TestBanditExcludeIntegration:
         exclude_dirs = captured_kwargs.get("exclude_dirs", [])
         # Should pass through whatever collect_exclude_dirs returns.
         assert exclude_dirs == fake_exclude_dirs
+        assert captured_kwargs["files"] == files
 
 
 # ── jscpd adapter ────────────────────────────────────────────────────────────
@@ -765,6 +767,27 @@ class TestJscpdAdapter:
             mock_td.return_value.__enter__.return_value = str(tmp_path)
             mock_td.return_value.__exit__.return_value = None
             result = detect_with_jscpd(tmp_path)
+        assert result == []
+
+    def test_detect_command_disables_jscpd_threshold_failure(self, tmp_path):
+        report_file = tmp_path / "jscpd-report.json"
+        report_file.write_text(json.dumps({"duplicates": []}))
+
+        def _fake_run(cmd, **kwargs):
+            assert cmd[cmd.index("--threshold") + 1] == "100"
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch(
+            "desloppify.engine.detectors.jscpd_adapter._resolve_jscpd_command",
+            return_value=["/usr/bin/npx", "--yes", "jscpd"],
+        ), patch(
+            "desloppify.engine.detectors.jscpd_adapter._run_jscpd_command",
+            side_effect=_fake_run,
+        ), patch("tempfile.TemporaryDirectory") as mock_td:
+            mock_td.return_value.__enter__.return_value = str(tmp_path)
+            mock_td.return_value.__exit__.return_value = None
+            result = detect_with_jscpd(tmp_path)
+
         assert result == []
 
 
@@ -1010,3 +1033,20 @@ class TestCollectExcludeDirs:
             result = collect_exclude_dirs(tmp_path)
         node_entries = [p for p in result if p.endswith("/node_modules")]
         assert len(node_entries) == 1
+
+    def test_relative_scan_root_yields_absolute_paths(self):
+        """A relative scan_root must still yield absolute exclude dirs.
+
+        ``scan_root_from_files`` derives the root from ``os.path.commonpath``,
+        which is relative (often ``Path('.')``) when scanning with a relative
+        ``--path``. bandit matches ``--exclude`` against *absolute* walked paths,
+        so a relative entry like ``.worktrees`` silently excludes nothing — the
+        bug behind ~2000 phantom B101 findings from worktree copies.
+        """
+        with patch(
+            "desloppify.base.discovery.source.get_exclusions",
+            return_value=(".worktrees",),
+        ):
+            result = collect_exclude_dirs(Path("."))
+        assert all(Path(p).is_absolute() for p in result), result
+        assert any(p.endswith("/.worktrees") for p in result), result

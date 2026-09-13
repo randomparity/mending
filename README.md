@@ -64,6 +64,19 @@ desloppify --lang python scan --path ./backend
 
 Scanning the parent directory that contains both will mix state and path context across unrelated codebases, producing unreliable results. Each `--path` target should be a single coherent project. Desloppify maintains separate state per language, so you can scan a TypeScript frontend and a Python backend from the same workspace without conflict — just target them individually.
 
+## Development
+
+Set up the complete locked development environment, including optional runtime
+capabilities, with:
+
+```bash
+make setup
+```
+
+`make setup` uses a compatible `uv` already on your PATH or bootstraps a
+checksummed repository-local copy. Run project checks through their Makefile
+targets, for example `make tests`, `make lint`, or `make ci`.
+
 ## CI
 
 Desloppify works best in CI as a full-codebase health gate, not as a diff-only linter. Run the CI profile against the same coherent project path you scan locally:

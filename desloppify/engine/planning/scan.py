@@ -7,18 +7,22 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from desloppify.base.discovery.file_paths import rel
-from desloppify.base.output.terminal import colorize
 from desloppify.base.discovery.paths import get_project_root
+from desloppify.base.output.terminal import colorize
 from desloppify.engine.planning.helpers import is_subjective_phase
-from desloppify.engine.policy.zones import ZONE_POLICIES, FileZoneMap
+from desloppify.engine.policy.zones import (
+    ZONE_POLICIES,
+    FileZoneMap,
+    should_skip_issue,
+)
 from desloppify.languages.framework import (
-    clear_review_phase_prefetch,
     DetectorPhase,
     LangConfig,
     LangRun,
     auto_detect_lang,
     available_langs,
     capability_report,
+    clear_review_phase_prefetch,
     get_lang,
     make_lang_run,
     prewarm_review_phase_detectors,
@@ -54,7 +58,9 @@ def _resolve_lang(
     return get_lang(detected)
 
 
-def _build_zone_map(path: Path, lang: LangRun, zone_overrides: dict[str, str] | None) -> None:
+def _build_zone_map(
+    path: Path, lang: LangRun, zone_overrides: dict[str, str] | None
+) -> None:
     if not (lang.zone_rules and lang.file_finder):
         return
 
@@ -77,7 +83,9 @@ def _build_zone_map(path: Path, lang: LangRun, zone_overrides: dict[str, str] | 
             _stderr(f"  Not available: {', '.join(missing)}")
 
 
-def _select_phases(lang: LangRun, *, include_slow: bool, profile: str) -> list[DetectorPhase]:
+def _select_phases(
+    lang: LangRun, *, include_slow: bool, profile: str
+) -> list[DetectorPhase]:
     active_profile = profile if profile in {"objective", "full", "ci"} else "full"
     phases = lang.phases
     if not include_slow or active_profile == "ci":
@@ -87,7 +95,9 @@ def _select_phases(lang: LangRun, *, include_slow: bool, profile: str) -> list[D
     return phases
 
 
-def _run_phases(path: Path, lang: LangRun, phases: list[DetectorPhase]) -> tuple[list[Issue], dict[str, int]]:
+def _run_phases(
+    path: Path, lang: LangRun, phases: list[DetectorPhase]
+) -> tuple[list[Issue], dict[str, int]]:
     issues: list[Issue] = []
     all_potentials: dict[str, int] = {}
 
@@ -114,11 +124,40 @@ def _stamp_issue_context(issues: list[Issue], lang: LangRun) -> None:
         if lang.zone_map is None:
             continue
 
-        zone = lang.zone_map.get(issue.get("file", ""))
+        file_path = issue.get("file", "")
+        if issue.get("detector") == "flat_dirs":
+            zone = lang.zone_map.get_directory(file_path)
+        else:
+            zone = lang.zone_map.get(file_path)
         issue["zone"] = zone.value
         policy = zone_policies.get(zone) if zone_policies else None
         if policy and issue.get("detector") in policy.downgrade_detectors:
             issue["confidence"] = "low"
+
+
+def _filter_zone_skipped_issues(issues: list[Issue], lang: LangRun) -> list[Issue]:
+    """Apply zone policy once to every normalized phase result.
+
+    Individual phases often filter their raw entries, but raw entry shapes
+    differ (for example, smell findings group matches across files).  A final
+    normalized-issue gate prevents a phase omission from admitting generated,
+    vendor, or otherwise policy-skipped findings into persistent state.
+    """
+    if lang.zone_map is None:
+        return issues
+
+    filtered: list[Issue] = []
+    for issue in issues:
+        filepath = issue.get("file")
+        detector = issue.get("detector")
+        if (
+            isinstance(filepath, str)
+            and isinstance(detector, str)
+            and should_skip_issue(lang.zone_map, filepath, detector)
+        ):
+            continue
+        filtered.append(issue)
+    return filtered
 
 
 def _generate_issues_from_lang(
@@ -137,6 +176,7 @@ def _generate_issues_from_lang(
         issues, all_potentials = _run_phases(path, lang, phases)
     finally:
         clear_review_phase_prefetch(lang)
+    issues = _filter_zone_skipped_issues(issues, lang)
     _stamp_issue_context(issues, lang)
     _stderr(f"\n  Total: {len(issues)} issues")
     return issues, all_potentials

@@ -51,6 +51,11 @@ def _run_cppcheck_batch(scan_root: Path, files: list[str]):
     )
 
 
+def _is_information_record(entry: dict) -> bool:
+    """Return whether cppcheck emitted a non-actionable information record."""
+    return str(entry.get("message", "")).startswith("information: ")
+
+
 def phase_cppcheck_issue(
     path: Path,
     lang: LangRuntimeContract,
@@ -91,6 +96,7 @@ def phase_cppcheck_issue(
             result=failure_result,
         )
 
+    entries = [entry for entry in entries if not _is_information_record(entry)]
     if not entries:
         return [], {}
 
