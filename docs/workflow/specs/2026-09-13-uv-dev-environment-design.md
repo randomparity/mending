@@ -18,16 +18,19 @@ group. Keep scanner capabilities in the existing `full` extra. Commit the
 universal `uv.lock` generated for the complete resolution.
 
 One Makefile selector resolves `UV` from `PATH` or, if unavailable, to
-`.tools/uv/uv`; setup and every gate use that selector. If the selected local
-binary is absent, setup downloads a pinned uv 0.12.13 archive, verifies its
-embedded SHA-256 value, extracts it to `.tools/uv`, and invokes that exact
-binary. The supported fallback matrix is Linux x86_64/aarch64 with explicitly
-detected GNU or musl libc, and macOS x86_64/aarch64. It fails before extraction
-for an unsupported operating-system, architecture, or libc, unavailable
-downloader or archiver, download error, or checksum mismatch. It does not alter
-shell profiles or the global PATH. It then runs `uv sync --locked --extra full`,
-which creates an exact editable `.venv` using the locked full and default `dev`
-dependencies.
+`.tools/uv/uv`; setup and every gate use that selector. Setup requires the
+selected binary to report uv 0.12.1 or newer, the earliest version verified on
+this project to support the locked-sync and dependency-group flags. If the
+selected local binary is absent, setup downloads a pinned uv 0.12.13 archive,
+verifies its embedded SHA-256 value, extracts it to `.tools/uv`, and invokes
+that exact binary. The supported fallback matrix is Linux x86_64/aarch64 with
+explicitly detected GNU or musl libc, and macOS x86_64/aarch64. It fails before
+extraction for an unsupported operating-system, architecture, or libc,
+unavailable downloader or archiver, download error, or checksum mismatch; it
+fails with an actionable upgrade message for an incompatible PATH uv. It does
+not alter shell profiles or the global PATH. It then runs `uv sync --locked
+--extra full`, which creates an exact editable `.venv` using the locked full
+and default `dev` dependencies.
 
 All Makefile gate drivers depend on `setup` and execute their project tools with
 the selected `uv run --locked`. `package-smoke` creates its temporary venv with
@@ -46,14 +49,15 @@ stale; compatible constraint edits may retain the existing valid lock.
 
 ## Verification
 
-Hermetic setup tests supply an executable fake `uv` for the PATH branch, then a
-fake downloader that returns a checksummed archive for the absent-uv branch;
-both assert `sync --locked --extra full`. The fallback test then invokes a gate
-and verifies the same repository-local binary receives `run --locked`. Tests
-cover each supported target selector and an unsupported-libc rejection. A failing
-downloader proves the target exits without invoking a system Python. A
-package-smoke assertion proves its build driver and temporary-venv creation use
-the selected `uv run --locked`, while its wheel installation stays isolated. The
-locked environment is then used to run the focused test, `uv lock --check`, and
-the existing core checks. The optional full suite is exercised under Python 3.11
-when the resolved packages support the host.
+Hermetic setup tests supply a compatible and an incompatible executable fake
+`uv` for the PATH branch, then a fake downloader that returns a checksummed
+archive for the absent-uv branch; compatible branches assert `sync --locked
+--extra full` and the incompatible branch exits before sync. The fallback test
+then invokes a gate and verifies the same repository-local binary receives `run
+--locked`. Tests cover each supported target selector and an unsupported-libc
+rejection. A failing downloader proves the target exits without invoking a
+system Python. A package-smoke assertion proves its build driver and
+temporary-venv creation use the selected `uv run --locked`, while its wheel
+installation stays isolated. The locked environment is then used to run the
+focused test, `uv lock --check`, and the existing core checks. The optional full
+suite is exercised under Python 3.11 when the resolved packages support the host.

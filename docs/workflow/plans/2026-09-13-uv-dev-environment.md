@@ -13,6 +13,7 @@ Tech stack: Python 3.11+, uv, GNU Make, POSIX shell.
 
 - Preserve the existing `full` extra and Python 3.11 support.
 - Use one selector for PATH and repository-local uv binaries.
+- Fail setup when the selected uv is older than 0.12.1.
 - Support only pinned, checksummed Linux GNU/musl and macOS x86_64/aarch64 uv archives.
 - Do not modify a user's shell profile or global PATH.
 - Commit uv-managed lock output; never hand-edit it.
@@ -54,8 +55,8 @@ locked Makefile command execution.
 **Verification inventory:**
 
 - **Contract:** available and repository-local uv executables receive the exact
-  full locked sync invocation and later gate invocations; selector failures and
-  download failure do not invoke Python.
+  full locked sync invocation and later gate invocations; incompatible selector,
+  selector failure, and download failure do not invoke Python.
   **Mode:** focused-test. **Red:**
   `pytest desloppify/tests/workflows/test_make_setup.py -q` fails before the
   test and target exist. **Green:** the same command passes after a fake uv
@@ -63,9 +64,9 @@ locked Makefile command execution.
 
 Steps:
 
-1. Write the focused setup-target test using a temporary executable fake uv,
-   fake downloader, checksummed GNU/musl archive, target-selector overrides,
-   and command log outside the repository.
+1. Write the focused setup-target test using compatible and incompatible
+   temporary fake uv executables, a fake downloader, checksummed GNU/musl
+   archive, target-selector overrides, and command log outside the repository.
 2. Run the test to observe the missing-target failure.
 3. Add `setup`, pinned checksum variables, a repository-local unmanaged archive
    fallback, and a locked `uv sync --extra full` invocation.

@@ -15,20 +15,22 @@ developer environments and CI jobs can resolve different package versions.
 Use uv as the project environment manager. Declare development-only tools in a
 PEP 735 `dev` dependency group, commit `uv.lock`, and provide a `make setup`
 target that syncs the `full` extra and default `dev` group from that lockfile.
-When uv is absent, use one shared Makefile selector to download a pinned archive
-for a supported operating-system, architecture, and libc combination, verify its
-SHA-256, and install it as an unmanaged repository-local copy without changing
-the user's shell configuration.
+Require the selected uv executable to be 0.12.1 or newer. When uv is absent,
+use one shared Makefile selector to download a pinned archive for a supported
+operating-system, architecture, and libc combination, verify its SHA-256, and
+install it as an unmanaged repository-local copy without changing the user's
+shell configuration.
 
 ## Consequences
 
 Developers receive a reproducible `.venv`, and Makefile gate drivers use the
-same locked tools. Package smoke creates its temporary venv through the selected
-uv Python, then retains a separate pip wheel installation to test the built
-artifact outside the editable environment. A manifest change requires a lockfile
-refresh only when it makes the current resolution stale. The setup path requires
-a POSIX shell, a downloader, an archiver, and network access only when uv is
-unavailable or dependencies are not cached.
+same locked tools. A preinstalled older uv fails setup rather than silently
+bypassing the tool contract. Package smoke creates its temporary venv through
+the selected uv Python, then retains a separate pip wheel installation to test
+the built artifact outside the editable environment. A manifest change requires
+a lockfile refresh only when it makes the current resolution stale. The setup
+path requires a POSIX shell, a downloader, an archiver, and network access only
+when uv is unavailable or dependencies are not cached.
 
 ## Considered & rejected
 
