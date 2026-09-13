@@ -273,15 +273,15 @@ report_leftovers() {
     grep_status=0
     grep -qxF "$section" "$file" || grep_status=$?
     case $grep_status in
-    0) ;;
-    1)
-      leftover "$label: no '$section' section — write one; the migrator does not author content, and it does not move a metadata line into a section either"
-      continue
-      ;;
-    *)
-      report_failure "E-SECTION-SCAN: $file: could not scan for section '$section' (grep exit $grep_status)"
-      continue
-      ;;
+      0) ;;
+      1)
+        leftover "$label: no '$section' section — write one; the migrator does not author content, and it does not move a metadata line into a section either"
+        continue
+        ;;
+      *)
+        report_failure "E-SECTION-SCAN: $file: could not scan for section '$section' (grep exit $grep_status)"
+        continue
+        ;;
     esac
     # The read is lifted out and its status captured (ADR 0032 decision 1); the `tr` that
     # remains reads a shell variable. A faulting awk used to yield an empty body, which this
@@ -345,18 +345,18 @@ migrate_record() {
   marker_status=0
   marker_only_change "$path" "$tmp" || marker_status=$?
   case $marker_status in
-  0) ;;
-  1)
-    rm -f "$tmp"
-    report_failure "E-SELF-CHECK: $path: the transform changed a region the gate protects — refusing to write"
-    return 0
-    ;;
-  *)
-    rm -f "$tmp"
-    # shellcheck disable=SC2154 # assigned by marker_only_change in the sourced check-records.sh
-    report_failure "E-MIGRATE-SHAPE-SCAN: $path: could not canonicalise it or the transform's output, so the self-check did not run — refusing to write (awk exit $marker_only_status)"
-    return 0
-    ;;
+    0) ;;
+    1)
+      rm -f "$tmp"
+      report_failure "E-SELF-CHECK: $path: the transform changed a region the gate protects — refusing to write"
+      return 0
+      ;;
+    *)
+      rm -f "$tmp"
+      # shellcheck disable=SC2154 # assigned by marker_only_change in the sourced check-records.sh
+      report_failure "E-MIGRATE-SHAPE-SCAN: $path: could not canonicalise it or the transform's output, so the self-check did not run — refusing to write (awk exit $marker_only_status)"
+      return 0
+      ;;
   esac
 
   diff_status=0
@@ -450,12 +450,12 @@ parse_args() {
   local arg
   for arg in "$@"; do
     case "$arg" in
-    --write) WRITE=yes ;;
-    -h | --help)
-      usage
-      exit 0
-      ;;
-    *) abort "E-USAGE: unknown argument '$arg' — usage: migrate-records.sh [--write]" ;;
+      --write) WRITE=yes ;;
+      -h | --help)
+        usage
+        exit 0
+        ;;
+      *) abort "E-USAGE: unknown argument '$arg' — usage: migrate-records.sh [--write]" ;;
     esac
   done
 }

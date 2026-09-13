@@ -60,12 +60,12 @@ collect_verdict=0
 
 err() {
   case "$EMIT_MODE" in
-  collect) collect_verdict=1 ;;
-  downgrade) printf '::warning::W-LEGACY-SHAPE: %s (%s)\n' "${1#*: }" "${1%%:*}" >&2 ;;
-  *)
-    printf '::error::%s\n' "$1" >&2
-    failed=1
-    ;;
+    collect) collect_verdict=1 ;;
+    downgrade) printf '::warning::W-LEGACY-SHAPE: %s (%s)\n' "${1#*: }" "${1%%:*}" >&2 ;;
+    *)
+      printf '::error::%s\n' "$1" >&2
+      failed=1
+      ;;
   esac
 }
 
@@ -74,9 +74,9 @@ err() {
 # grandfathered as a side effect.
 warn() {
   case "$EMIT_MODE" in
-  collect) : ;;
-  downgrade) printf '::warning::W-LEGACY-SHAPE: %s (%s)\n' "${1#*: }" "${1%%:*}" >&2 ;;
-  *) printf '::warning::%s\n' "$1" >&2 ;;
+    collect) : ;;
+    downgrade) printf '::warning::W-LEGACY-SHAPE: %s (%s)\n' "${1#*: }" "${1%%:*}" >&2 ;;
+    *) printf '::warning::%s\n' "$1" >&2 ;;
   esac
 }
 
@@ -337,17 +337,17 @@ check_sections() {
     grep_status=0
     grep -qxF "$section" "$file" || grep_status=$?
     case $grep_status in
-    0) ;;
-    1)
-      err "E-SECTION-MISSING: $label: missing required section '$section'"
-      continue
-      ;;
-    *)
-      # err_full, not err: a scan fault describes the scan, not the record, so it must not be
-      # downgraded to W-LEGACY-SHAPE for a record already non-conforming at the base ref.
-      err_full "E-SECTION-SCAN: $label: could not scan $file for section '$section' (grep exit $grep_status)"
-      continue
-      ;;
+      0) ;;
+      1)
+        err "E-SECTION-MISSING: $label: missing required section '$section'"
+        continue
+        ;;
+      *)
+        # err_full, not err: a scan fault describes the scan, not the record, so it must not be
+        # downgraded to W-LEGACY-SHAPE for a record already non-conforming at the base ref.
+        err_full "E-SECTION-SCAN: $label: could not scan $file for section '$section' (grep exit $grep_status)"
+        continue
+        ;;
     esac
     # `section_body … | tr -d` folded an awk that could not open the file into an empty body,
     # reporting E-SECTION-EMPTY against a section it never read. The read is lifted out and its
@@ -483,8 +483,8 @@ tracked_in_index() {
   tracked_in_index_status=0
   git ls-files --error-unmatch -- "$path" >/dev/null 2>&1 || status=$?
   case $status in
-  0) return 0 ;;
-  1) return 1 ;;
+    0) return 0 ;;
+    1) return 1 ;;
   esac
   tracked_in_index_status=$status
   return 2
@@ -534,23 +534,23 @@ renumbered_elsewhere() {
   tmp=$(mktemp) || return 1
   read_base_blob "$base" "$path" "$tmp" || blob_status=$?
   case $blob_status in
-  0) ;;
-  1)
-    rm -f "$tmp"
-    return 1
-    ;;
-  # Whether the record moved is exactly what an unreadable base copy leaves undetermined, so
-  # returning 1 reported E-GONE off a search that never ran. The status travels in
-  # path_exists_status because that is the variable the caller's diagnostic reads; this fault,
-  # a candidate witness's, and a candidate index query's all reach the caller through it —
-  # which is why renumber_fault_path names what each one was reading, the way gate_witness_path
-  # does for the gate-existence witness.
-  *)
-    rm -f "$tmp"
-    path_exists_status=$base_blob_status
-    renumber_fault_path="the base-ref copy of $path"
-    return 2
-    ;;
+    0) ;;
+    1)
+      rm -f "$tmp"
+      return 1
+      ;;
+    # Whether the record moved is exactly what an unreadable base copy leaves undetermined, so
+    # returning 1 reported E-GONE off a search that never ran. The status travels in
+    # path_exists_status because that is the variable the caller's diagnostic reads; this fault,
+    # a candidate witness's, and a candidate index query's all reach the caller through it —
+    # which is why renumber_fault_path names what each one was reading, the way gate_witness_path
+    # does for the gate-existence witness.
+    *)
+      rm -f "$tmp"
+      path_exists_status=$base_blob_status
+      renumber_fault_path="the base-ref copy of $path"
+      return 2
+      ;;
   esac
   blob_canon=$(canonicalise "$tmp")
   rm -f "$tmp"
@@ -565,13 +565,13 @@ renumbered_elsewhere() {
     cand_status=0
     tracked_in_index "$candidate" || cand_status=$?
     case $cand_status in
-    0) ;;
-    1) continue ;;
-    *)
-      fault_status=$tracked_in_index_status
-      fault_path="the index entry for $candidate"
-      continue
-      ;;
+      0) ;;
+      1) continue ;;
+      *)
+        fault_status=$tracked_in_index_status
+        fault_path="the index entry for $candidate"
+        continue
+        ;;
     esac
     # A candidate that already existed at the base ref is not a renumber destination. The
     # witness can also fail to run, which used to read the same as "did not exist" and so
@@ -579,13 +579,13 @@ renumbered_elsewhere() {
     cand_status=0
     path_exists_at "$base" "$candidate" || cand_status=$?
     case $cand_status in
-    0) continue ;;
-    1) ;;
-    *)
-      fault_status=$path_exists_status
-      fault_path="$candidate at the base ref"
-      continue
-      ;;
+      0) continue ;;
+      1) ;;
+      *)
+        fault_status=$path_exists_status
+        fault_path="$candidate at the base ref"
+        continue
+        ;;
     esac
     if printf '%s\n' "$used_renumber_targets" | grep -qxF "$candidate"; then
       continue
@@ -657,12 +657,12 @@ check_headings_intact() {
   # the whole heading-intactness rule passed over content it never scanned.
   headings=$(grep -E '^#+ ' "$tmp") || list_status=$?
   case $list_status in
-  # 1 is "the base ref's version had no headings at all", which is a legitimate answer.
-  0 | 1) ;;
-  *)
-    err_full "E-HEADING-LIST-SCAN: $path: could not list the base ref's headings (grep exit $list_status)"
-    return 0
-    ;;
+    # 1 is "the base ref's version had no headings at all", which is a legitimate answer.
+    0 | 1) ;;
+    *)
+      err_full "E-HEADING-LIST-SCAN: $path: could not list the base ref's headings (grep exit $list_status)"
+      return 0
+      ;;
   esac
   # Fed by a herestring, so err_full runs in the current shell rather than a piped subshell,
   # where the assignment to `failed` would be discarded.
@@ -675,9 +675,9 @@ check_headings_intact() {
     grep_status=0
     grep -qxF "$heading" "$path" || grep_status=$?
     case $grep_status in
-    0) ;;
-    1) err_full "E-HEADING-REWRITTEN: $path: heading '$heading' is gone from the base ref's version — a heading is the record's claim, not prose" ;;
-    *) err_full "E-HEADING-SCAN: $path: could not scan for heading '$heading' (grep exit $grep_status)" ;;
+      0) ;;
+      1) err_full "E-HEADING-REWRITTEN: $path: heading '$heading' is gone from the base ref's version — a heading is the record's claim, not prose" ;;
+      *) err_full "E-HEADING-SCAN: $path: could not scan for heading '$heading' (grep exit $grep_status)" ;;
     esac
   done <<<"$headings"
 }
@@ -755,11 +755,11 @@ check_sections_append_only() {
     # was `## Status`.
     all_sections=$(grep -E '^## ' "$tmp") || list_status=$?
     case $list_status in
-    0 | 1) ;;
-    *)
-      err_full "E-SECTION-LIST-SCAN: $path: could not list the base ref's sections (grep exit $list_status)"
-      return 0
-      ;;
+      0 | 1) ;;
+      *)
+        err_full "E-SECTION-LIST-SCAN: $path: could not list the base ref's sections (grep exit $list_status)"
+        return 0
+        ;;
     esac
     sections=$(printf '%s\n' "$all_sections" | grep -vxF '## Status') || : # scan-fault: deliberate — in-memory input, ADR 0032 decision 4
   fi
@@ -819,23 +819,23 @@ check_not_rewritten() {
   fi
   read_base_blob "$base" "$path" "$tmp" || blob_status=$?
   case $blob_status in
-  0) ;;
-  # Absent at the base ref: there is nothing for the three rules below to compare against, and
-  # they are each defined against a base-ref copy. The sole caller iterates the base ref's own
-  # record listing, so this branch is not reached in practice — it is here because the answer
-  # belongs to the predicate, not because a base record can vanish between two git queries.
-  1)
-    rm -f "$tmp"
-    return 0
-    ;;
-  # Present but unreadable. Returning 0 here exempted the record from check_sections_append_only,
-  # check_headings_intact and check_preamble_intact — every anti-erasure rule off at once,
-  # granted by a read that never completed, on a run that then exited 0.
-  *)
-    rm -f "$tmp"
-    err_full "E-BASE-BLOB-SCAN: $path: could not read the base ref's copy at $base, so the append-only rules did not run (exit $base_blob_status)"
-    return 0
-    ;;
+    0) ;;
+    # Absent at the base ref: there is nothing for the three rules below to compare against, and
+    # they are each defined against a base-ref copy. The sole caller iterates the base ref's own
+    # record listing, so this branch is not reached in practice — it is here because the answer
+    # belongs to the predicate, not because a base record can vanish between two git queries.
+    1)
+      rm -f "$tmp"
+      return 0
+      ;;
+    # Present but unreadable. Returning 0 here exempted the record from check_sections_append_only,
+    # check_headings_intact and check_preamble_intact — every anti-erasure rule off at once,
+    # granted by a read that never completed, on a run that then exited 0.
+    *)
+      rm -f "$tmp"
+      err_full "E-BASE-BLOB-SCAN: $path: could not read the base ref's copy at $base, so the append-only rules did not run (exit $base_blob_status)"
+      return 0
+      ;;
   esac
 
   # The one permitted class of edit to a merged record's protected regions. Checked before
@@ -844,19 +844,19 @@ check_not_rewritten() {
   marker_status=0
   marker_only_change "$tmp" "$path" || marker_status=$?
   case $marker_status in
-  0)
-    rm -f "$tmp"
-    return 0
-    ;;
-  1) ;;
-  # Neither shape could be built, so "is this change marker-only" has no answer. Reporting is
-  # the whole point: the `if marker_only_change` this replaces read a faulted read as "yes,
-  # marker-only" and turned all three anti-erasure rules off at once, silently.
-  *)
-    rm -f "$tmp"
-    err_full "E-MARKER-SHAPE-SCAN: $path: could not canonicalise it or the base ref's copy, so the append-only rules did not run (awk exit $marker_only_status)"
-    return 0
-    ;;
+    0)
+      rm -f "$tmp"
+      return 0
+      ;;
+    1) ;;
+    # Neither shape could be built, so "is this change marker-only" has no answer. Reporting is
+    # the whole point: the `if marker_only_change` this replaces read a faulted read as "yes,
+    # marker-only" and turned all three anti-erasure rules off at once, silently.
+    *)
+      rm -f "$tmp"
+      err_full "E-MARKER-SHAPE-SCAN: $path: could not canonicalise it or the base ref's copy, so the append-only rules did not run (awk exit $marker_only_status)"
+      return 0
+      ;;
   esac
 
   check_sections_append_only "$tmp" "$path"
@@ -893,22 +893,22 @@ evaluate_base_conformance() {
   fi
   read_base_blob "$base" "$path" "$tmp" || blob_status=$?
   case $blob_status in
-  0) ;;
-  # Absent at the base ref, which is what `absent` means: the record is new, so it is neither
-  # grandfathered nor non-conforming and the tree pass judges it at full severity.
-  1)
-    rm -f "$tmp"
-    return 0
-    ;;
-  # Present but unreadable, which used to reach the same `absent` verdict — a record that could
-  # not be read at the base ref was reported as one that was not there. base_verdict stays
-  # `absent` here too, so the tree pass still runs at full severity: a read that never completed
-  # cannot establish the grandfathering a `nonconforming` verdict would grant.
-  *)
-    rm -f "$tmp"
-    err_full "E-BASE-SHAPE-SCAN: $path: could not read the base ref's copy at $base, so its base-ref shape is undetermined (exit $base_blob_status)"
-    return 0
-    ;;
+    0) ;;
+    # Absent at the base ref, which is what `absent` means: the record is new, so it is neither
+    # grandfathered nor non-conforming and the tree pass judges it at full severity.
+    1)
+      rm -f "$tmp"
+      return 0
+      ;;
+    # Present but unreadable, which used to reach the same `absent` verdict — a record that could
+    # not be read at the base ref was reported as one that was not there. base_verdict stays
+    # `absent` here too, so the tree pass still runs at full severity: a read that never completed
+    # cannot establish the grandfathering a `nonconforming` verdict would grant.
+    *)
+      rm -f "$tmp"
+      err_full "E-BASE-SHAPE-SCAN: $path: could not read the base ref's copy at $base, so its base-ref shape is undetermined (exit $base_blob_status)"
+      return 0
+      ;;
   esac
 
   saved_mode=$EMIT_MODE
@@ -949,31 +949,31 @@ check_no_disappearances() {
     still_status=0
     still_a_record "$record" || still_status=$?
     case $still_status in
-    0) check_not_rewritten "$base" "$record" ;;
-    1)
-      renumbered_to=""
-      renum_status=0
-      renumbered_elsewhere "$base" "$record" || renum_status=$?
-      case $renum_status in
-      0) info "note: $record was renumbered to $renumbered_to (content unchanged)" ;;
-      3)
-        warn_full "W-RENUMBER-SCAN: $record: found renumber destination $renumbered_to after an incomplete search (could not read $renumber_fault_path, exit $path_exists_status)"
-        info "note: $record was renumbered to $renumbered_to (content unchanged)"
+      0) check_not_rewritten "$base" "$record" ;;
+      1)
+        renumbered_to=""
+        renum_status=0
+        renumbered_elsewhere "$base" "$record" || renum_status=$?
+        case $renum_status in
+          0) info "note: $record was renumbered to $renumbered_to (content unchanged)" ;;
+          3)
+            warn_full "W-RENUMBER-SCAN: $record: found renumber destination $renumbered_to after an incomplete search (could not read $renumber_fault_path, exit $path_exists_status)"
+            info "note: $record was renumbered to $renumbered_to (content unchanged)"
+            ;;
+          1) err "E-GONE: $record is no longer a record at that path (deleted, moved, untracked, or renamed with its content changed) — resolve records in place with a '> **Resolved by ...**' banner" ;;
+          # Reported instead of E-GONE, never alongside it: whether the record moved is exactly what
+          # could not be established — by a candidate witness that did not run, by a candidate the
+          # index could not be read for, or by the record's own base-ref copy being unreadable,
+          # which aborts before any candidate is tried. The record stays the subject, because it is
+          # the record the verdict is about; renumber_fault_path names what could not be read, which
+          # is rarely that same file and is read by a different git command in each of the three.
+          *) err_full "E-RENUMBER-SCAN: $record: could not determine whether it was renumbered at $base (could not read $renumber_fault_path, exit $path_exists_status)" ;;
+        esac
         ;;
-      1) err "E-GONE: $record is no longer a record at that path (deleted, moved, untracked, or renamed with its content changed) — resolve records in place with a '> **Resolved by ...**' banner" ;;
-      # Reported instead of E-GONE, never alongside it: whether the record moved is exactly what
-      # could not be established — by a candidate witness that did not run, by a candidate the
-      # index could not be read for, or by the record's own base-ref copy being unreadable,
-      # which aborts before any candidate is tried. The record stays the subject, because it is
-      # the record the verdict is about; renumber_fault_path names what could not be read, which
-      # is rarely that same file and is read by a different git command in each of the three.
-      *) err_full "E-RENUMBER-SCAN: $record: could not determine whether it was renumbered at $base (could not read $renumber_fault_path, exit $path_exists_status)" ;;
-      esac
-      ;;
-    # Neither branch above is safe on a record whose index entry could not be read: the first
-    # would run the append-only rules over a record the gate cannot say is still in the
-    # repository, and the second reported E-GONE for one sitting untouched in the tree.
-    *) err_full "E-TRACKED-SCAN: $record: could not read the index entry for it, so the append-only rules did not run (git exit $tracked_in_index_status)" ;;
+      # Neither branch above is safe on a record whose index entry could not be read: the first
+      # would run the append-only rules over a record the gate cannot say is still in the
+      # repository, and the second reported E-GONE for one sitting untouched in the tree.
+      *) err_full "E-TRACKED-SCAN: $record: could not read the index entry for it, so the append-only rules did not run (git exit $tracked_in_index_status)" ;;
     esac
   done <<<"$tree"
 }
@@ -1018,8 +1018,8 @@ shared/skills/debt-tracking/assets/debt.yml	shared/skills/tome-of-lore/assets/re
 gate_predecessor_path() {
   local entry=$1
   case "$entry" in
-  */*) printf '%s' "$entry" ;;
-  *) repo_relative "$SELF_DIR/$entry" ;;
+    */*) printf '%s' "$entry" ;;
+    *) repo_relative "$SELF_DIR/$entry" ;;
   esac
 }
 
@@ -1029,8 +1029,8 @@ predecessor_successor() {
     [ -n "$line" ] || continue
     key=${line%%$'\t'*}
     case "$key" in
-    */*) [ "$key" = "$old" ] || continue ;;
-    *) [ "$key" = "${old##*/}" ] || continue ;;
+      */*) [ "$key" = "$old" ] || continue ;;
+      *) [ "$key" = "${old##*/}" ] || continue ;;
     esac
     printf '%s' "${line#*$'\t'}"
     return 0
@@ -1105,18 +1105,18 @@ gate_existed_at() {
       status=0
       path_exists_at "$base" "${rel}/${name}" || status=$?
       case $status in
-      0)
-        if [ "$fault_status" -ne 0 ]; then
-          path_exists_status=$fault_status
-          return 3
-        fi
-        return 0
-        ;;
-      1) ;;
-      *)
-        fault_status=$path_exists_status
-        gate_witness_path="${rel}/${name}"
-        ;;
+        0)
+          if [ "$fault_status" -ne 0 ]; then
+            path_exists_status=$fault_status
+            return 3
+          fi
+          return 0
+          ;;
+        1) ;;
+        *)
+          fault_status=$path_exists_status
+          gate_witness_path="${rel}/${name}"
+          ;;
       esac
     done < <(gate_known_basenames)
   fi
@@ -1128,18 +1128,18 @@ gate_existed_at() {
     status=0
     git grep --no-color -qF "$name" "$base" -- .github/workflows 2>/dev/null || status=$?
     case $status in
-    0)
-      if [ "$fault_status" -ne 0 ]; then
-        path_exists_status=$fault_status
-        return 3
-      fi
-      return 0
-      ;;
-    1) ;;
-    *)
-      fault_status=$status
-      gate_witness_path=".github/workflows (searching for $name)"
-      ;;
+      0)
+        if [ "$fault_status" -ne 0 ]; then
+          path_exists_status=$fault_status
+          return 3
+        fi
+        return 0
+        ;;
+      1) ;;
+      *)
+        fault_status=$status
+        gate_witness_path=".github/workflows (searching for $name)"
+        ;;
     esac
   done < <(gate_known_basenames)
 
@@ -1173,16 +1173,16 @@ check_gate_files() {
     self_status=0
     path_exists_at "$base" "$self" || self_status=$?
     case $self_status in
-    0) ;;
-    1) continue ;;
-    *)
-      # Counted but not examined. Skipping the body keeps E-GATE-GONE off a path whose
-      # base-ref presence is unknown; counting it keeps the empty-set branch below from
-      # reporting I-GATE-BOOTSTRAP — "no gate existed here" — off a witness that never ran.
-      err_full "E-GATE-SCAN: $self: could not check the gate file at $base (git exit $path_exists_status)"
-      gate_path_count=$((gate_path_count + 1))
-      continue
-      ;;
+      0) ;;
+      1) continue ;;
+      *)
+        # Counted but not examined. Skipping the body keeps E-GATE-GONE off a path whose
+        # base-ref presence is unknown; counting it keeps the empty-set branch below from
+        # reporting I-GATE-BOOTSTRAP — "no gate existed here" — off a witness that never ran.
+        err_full "E-GATE-SCAN: $self: could not check the gate file at $base (git exit $path_exists_status)"
+        gate_path_count=$((gate_path_count + 1))
+        continue
+        ;;
     esac
     gate_path_count=$((gate_path_count + 1))
     if [ -L "$self" ]; then
@@ -1192,14 +1192,14 @@ check_gate_files() {
     still_status=0
     still_a_record "$self" || still_status=$?
     case $still_status in
-    0) continue ;;
-    1) ;;
-    # E-GATE-GONE accuses the change of removing a gate file. An index the gate could not read
-    # cannot support that accusation about a file that is sitting right there.
-    *)
-      err_full "E-GATE-TRACKED-SCAN: $self: could not read the index entry for the gate file (git exit $tracked_in_index_status)"
-      continue
-      ;;
+      0) continue ;;
+      1) ;;
+      # E-GATE-GONE accuses the change of removing a gate file. An index the gate could not read
+      # cannot support that accusation about a file that is sitting right there.
+      *)
+        err_full "E-GATE-TRACKED-SCAN: $self: could not read the index entry for the gate file (git exit $tracked_in_index_status)"
+        continue
+        ;;
     esac
 
     successor=$(predecessor_successor "$self") || successor=""
@@ -1214,9 +1214,9 @@ check_gate_files() {
       tracked_in_index "$successor_path" || succ_status=$?
     fi
     case $succ_status in
-    0) info "note: $self was renamed to $successor_path" ;;
-    1) err "E-GATE-GONE: $self was deleted or untracked — the gate cannot be removed by the change it gates" ;;
-    *) err_full "E-GATE-SUCCESSOR-SCAN: $successor_path: could not read the index entry for $self's declared successor, so the rename is unverified (git exit $tracked_in_index_status)" ;;
+      0) info "note: $self was renamed to $successor_path" ;;
+      1) err "E-GATE-GONE: $self was deleted or untracked — the gate cannot be removed by the change it gates" ;;
+      *) err_full "E-GATE-SUCCESSOR-SCAN: $successor_path: could not read the index entry for $self's declared successor, so the rename is unverified (git exit $tracked_in_index_status)" ;;
     esac
   done < <(printf '%s\n' "$paths" | sort -u)
 
@@ -1227,13 +1227,13 @@ check_gate_files() {
     local existed_status=0
     gate_existed_at "$base" || existed_status=$?
     case $existed_status in
-    0) err "E-GATE-EMPTY-SET: no gate file from the base ref is protected — a rename must declare its predecessors in GATE_PREDECESSORS" ;;
-    3)
-      warn_full "W-GATE-WITNESS-SCAN: $gate_witness_path: a later witness established that a gate existed at $base after this read failed (git exit $path_exists_status)"
-      err "E-GATE-EMPTY-SET: no gate file from the base ref is protected — a rename must declare its predecessors in GATE_PREDECESSORS"
-      ;;
-    1) info "I-GATE-BOOTSTRAP: no gate existed at $base — this is the change installing it" ;;
-    *) err_full "E-GATE-WITNESS-SCAN: $gate_witness_path: could not determine whether a gate existed at $base (git exit $path_exists_status)" ;;
+      0) err "E-GATE-EMPTY-SET: no gate file from the base ref is protected — a rename must declare its predecessors in GATE_PREDECESSORS" ;;
+      3)
+        warn_full "W-GATE-WITNESS-SCAN: $gate_witness_path: a later witness established that a gate existed at $base after this read failed (git exit $path_exists_status)"
+        err "E-GATE-EMPTY-SET: no gate file from the base ref is protected — a rename must declare its predecessors in GATE_PREDECESSORS"
+        ;;
+      1) info "I-GATE-BOOTSTRAP: no gate existed at $base — this is the change installing it" ;;
+      *) err_full "E-GATE-WITNESS-SCAN: $gate_witness_path: could not determine whether a gate existed at $base (git exit $path_exists_status)" ;;
     esac
   fi
 }
@@ -1243,8 +1243,8 @@ check_gate_files() {
 repo_relative() {
   local abs=$1
   case "$abs" in
-  "$PWD"/*) printf '%s' "${abs#"$PWD"/}" ;;
-  *) : ;; # caller decides: for the gate's own files this is fatal, see gate_paths
+    "$PWD"/*) printf '%s' "${abs#"$PWD"/}" ;;
+    *) : ;; # caller decides: for the gate's own files this is fatal, see gate_paths
   esac
 }
 
@@ -1288,7 +1288,7 @@ gate_paths() {
     [ -n "$old" ] || continue
     key=${old%%$'\t'*}
     case "$key" in
-    .github/workflows/*) continue ;;
+      .github/workflows/*) continue ;;
     esac
     rel=$(gate_predecessor_path "$key")
     [ -n "$rel" ] && printf '%s\n' "$rel"
@@ -1350,7 +1350,7 @@ gate_paths() {
     key=${key##*/}
     new=${new##*/}
     case "$key" in
-    *.sh) [ "$key" = "$new" ] || needles="$needles
+      *.sh) [ "$key" = "$new" ] || needles="$needles
 $key" ;;
     esac
   done <<<"$GATE_PREDECESSORS"
@@ -1360,13 +1360,13 @@ $key" ;;
     matches=$(git grep --no-color -lF -e "$needle" "$base" -- .github/workflows 2>/dev/null) ||
       grep_status=$?
     case $grep_status in
-    0)
-      while IFS= read -r rel; do
-        printf '%s\n' "${rel#*:}"
-      done <<<"$matches"
-      ;;
-    1) ;;
-    *) return "$grep_status" ;;
+      0)
+        while IFS= read -r rel; do
+          printf '%s\n' "${rel#*:}"
+        done <<<"$matches"
+        ;;
+      1) ;;
+      *) return "$grep_status" ;;
     esac
   done <<<"$needles"
 }
@@ -1499,12 +1499,12 @@ read_base_blob() {
   base_blob_status=0
   path_exists_at "$base" "$path" || status=$?
   case $status in
-  0) ;;
-  1) return 1 ;;
-  *)
-    base_blob_status=$path_exists_status
-    return 2
-    ;;
+    0) ;;
+    1) return 1 ;;
+    *)
+      base_blob_status=$path_exists_status
+      return 2
+      ;;
   esac
 
   status=0
@@ -1554,18 +1554,18 @@ run_profile() {
   if [ ! -d "$RECORD_DIR" ]; then
     dir_in_ref "${BASE_SHA:-}" "$RECORD_DIR" || dir_status=$?
     case $dir_status in
-    0) ;;
-    1)
-      err "E-PROFILE-DIR-MISSING: profile '$name' is enabled but $RECORD_DIR exists at neither the base ref nor the tree"
-      return 1
-      ;;
-    *)
-      # Returning rather than continuing: E-COUNT-FLOOR below compares against a base record
-      # count that would be zero for the same unreadable-ref reason, so carrying on would
-      # disarm the one rule that catches a clean run over nothing.
-      err_full "E-DIR-SCAN: $RECORD_DIR: could not check the record directory at ${BASE_SHA:-} (git exit $path_exists_status)"
-      return 1
-      ;;
+      0) ;;
+      1)
+        err "E-PROFILE-DIR-MISSING: profile '$name' is enabled but $RECORD_DIR exists at neither the base ref nor the tree"
+        return 1
+        ;;
+      *)
+        # Returning rather than continuing: E-COUNT-FLOOR below compares against a base record
+        # count that would be zero for the same unreadable-ref reason, so carrying on would
+        # disarm the one rule that catches a clean run over nothing.
+        err_full "E-DIR-SCAN: $RECORD_DIR: could not check the record directory at ${BASE_SHA:-} (git exit $path_exists_status)"
+        return 1
+        ;;
     esac
   fi
 

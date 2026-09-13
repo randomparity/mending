@@ -70,7 +70,7 @@ profile_check_status() {
   # shellcheck disable=SC2154 # assigned by read_section in check-records.sh, which sources this
   body=$(printf '%s\n' "$read_section_out" | grep -v '^>' | grep . | head -1) || : # scan-fault: deliberate — in-memory input, ADR 0032 decision 4
   case "$body" in
-  Proposed | Deferred) return 0 ;;
+    Proposed | Deferred) return 0 ;;
   esac
   if printf '%s' "$body" |
     grep -qE '^(Accepted|Rejected|Superseded) \([0-9]{4}-[0-9]{2}-[0-9]{2}\)$'; then
@@ -99,11 +99,11 @@ check_title_number() {
   # base-ref blob is still unreported there; see ADR 0005's Consequences.
   title=$(grep -m1 '^# ' "$file") || title_status=$?
   case $title_status in
-  0 | 1) ;;
-  *)
-    err_full "E-TITLE-SCAN: $label: could not read the title line (grep exit $title_status)"
-    return 0
-    ;;
+    0 | 1) ;;
+    *)
+      err_full "E-TITLE-SCAN: $label: could not read the title line (grep exit $title_status)"
+      return 0
+      ;;
   esac
   if ! printf '%s' "$title" | grep -qE "^# ${num} "; then
     err "E-TITLE-MISMATCH: $label: title '$title' does not begin '# $num ' — the H1's number is the record's number"
@@ -171,8 +171,8 @@ profile_check_directory() {
   # actually completed. Branch on the captured status instead.
   grep -qE '^\|[[:space:]]*\[?[0-9]{4}' "$readme" || grep_status=$?
   case $grep_status in
-  0) warn_full "W-INDEX-TABLE: $readme: numbered record rows duplicate the directory index" ;;
-  1) ;;
-  *) err_full "E-INDEX-SCAN: $readme: could not scan for the directory index table (grep exit $grep_status)" ;;
+    0) warn_full "W-INDEX-TABLE: $readme: numbered record rows duplicate the directory index" ;;
+    1) ;;
+    *) err_full "E-INDEX-SCAN: $readme: could not scan for the directory index table (grep exit $grep_status)" ;;
   esac
 }

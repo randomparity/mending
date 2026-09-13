@@ -246,15 +246,15 @@ expect_unchanged() {
   fi
   cmp -s "$before" "$rec" || scan=$?
   case $scan in
-  0)
-    passed=$((passed + 1))
-    printf 'ok   %s\n' "$ok"
-    ;;
-  1)
-    failed=$((failed + 1))
-    printf 'FAIL %s\n' "$changed"
-    ;;
-  *) fail_scan "$before vs $rec" "$scan" cmp ;;
+    0)
+      passed=$((passed + 1))
+      printf 'ok   %s\n' "$ok"
+      ;;
+    1)
+      failed=$((failed + 1))
+      printf 'FAIL %s\n' "$changed"
+      ;;
+    *) fail_scan "$before vs $rec" "$scan" cmp ;;
   esac
 }
 
@@ -268,15 +268,15 @@ expect_match() {
   shift 3
   grep -q "$@" "$file" || scan=$?
   case $scan in
-  0)
-    passed=$((passed + 1))
-    printf 'ok   %s\n' "$ok"
-    ;;
-  1)
-    failed=$((failed + 1))
-    printf 'FAIL %s\n' "$missing"
-    ;;
-  *) fail_scan "$file" "$scan" ;;
+    0)
+      passed=$((passed + 1))
+      printf 'ok   %s\n' "$ok"
+      ;;
+    1)
+      failed=$((failed + 1))
+      printf 'FAIL %s\n' "$missing"
+      ;;
+    *) fail_scan "$file" "$scan" ;;
   esac
 }
 
@@ -285,15 +285,15 @@ expect_no_match() {
   shift 3
   grep -q "$@" "$file" || scan=$?
   case $scan in
-  0)
-    failed=$((failed + 1))
-    printf 'FAIL %s\n' "$present"
-    ;;
-  1)
-    passed=$((passed + 1))
-    printf 'ok   %s\n' "$ok"
-    ;;
-  *) fail_scan "$file" "$scan" ;;
+    0)
+      failed=$((failed + 1))
+      printf 'FAIL %s\n' "$present"
+      ;;
+    1)
+      passed=$((passed + 1))
+      printf 'ok   %s\n' "$ok"
+      ;;
+    *) fail_scan "$file" "$scan" ;;
   esac
 }
 
@@ -305,15 +305,15 @@ expect_error_code() {
   local err=$1 code=$2 pattern=${3:-"::error::$2: "} scan=0
   grep -q "$pattern" "$err" || scan=$?
   case $scan in
-  0)
-    passed=$((passed + 1))
-    printf 'ok   exit=1 %s\n' "$code"
-    ;;
-  1)
-    failed=$((failed + 1))
-    printf 'FAIL failed for another reason: %s\n' "$(sed -n 's/^::error:://p' "$err" | head -1)"
-    ;;
-  *) fail_scan "$err" "$scan" ;;
+    0)
+      passed=$((passed + 1))
+      printf 'ok   exit=1 %s\n' "$code"
+      ;;
+    1)
+      failed=$((failed + 1))
+      printf 'FAIL failed for another reason: %s\n' "$(sed -n 's/^::error:://p' "$err" | head -1)"
+      ;;
+    *) fail_scan "$err" "$scan" ;;
   esac
 }
 
@@ -326,9 +326,9 @@ scan_into_verdict() {
   shift 2
   grep -q "$@" "$file" || status=$?
   case $status in
-  0) ;;
-  1) verdict="$verdict $tag" ;;
-  *) verdict="$verdict scan-fault($file exit $status)" ;;
+    0) ;;
+    1) verdict="$verdict $tag" ;;
+    *) verdict="$verdict scan-fault($file exit $status)" ;;
   esac
 }
 
@@ -342,11 +342,11 @@ scan_count() {
   shift
   scan_hits=$(grep -c "$@" "$file") || status=$?
   case $status in
-  0 | 1) ;;
-  *)
-    scan_hits=""
-    verdict="$verdict scan-fault($file exit $status)"
-    ;;
+    0 | 1) ;;
+    *)
+      scan_hits=""
+      verdict="$verdict scan-fault($file exit $status)"
+      ;;
   esac
 }
 
@@ -366,17 +366,17 @@ case_why() {
   if [ "$code" != "-" ]; then
     grep -q "::[a-z]*::$code: " "$err" || status=$?
     case $status in
-    0) ;;
-    1) printf 'exit=%s but %s never fired' "$got" "$code" ;;
-    *) printf 'could not scan %s for %s (grep exit %s)' "$err" "$code" "$status" ;;
+      0) ;;
+      1) printf 'exit=%s but %s never fired' "$got" "$code" ;;
+      *) printf 'could not scan %s for %s (grep exit %s)' "$err" "$code" "$status" ;;
     esac
     return 0
   fi
   grep -q '::error::' "$err" || status=$?
   case $status in
-  0) printf 'unexpected error: %s' "$(sed -n 's/^::error:://p' "$err" | head -1)" ;;
-  1) ;;
-  *) printf 'could not scan %s for errors (grep exit %s)' "$err" "$status" ;;
+    0) printf 'unexpected error: %s' "$(sed -n 's/^::error:://p' "$err" | head -1)" ;;
+    1) ;;
+    *) printf 'could not scan %s for errors (grep exit %s)' "$err" "$status" ;;
   esac
 }
 
@@ -393,9 +393,9 @@ migrator_why() {
   if [ "$code" != "-" ]; then
     grep -q "^error: $code: " "$err" || status=$?
     case $status in
-    0) ;;
-    1) printf 'exit=%s but %s never fired' "$got" "$code" ;;
-    *) printf 'could not scan %s for %s (grep exit %s)' "$err" "$code" "$status" ;;
+      0) ;;
+      1) printf 'exit=%s but %s never fired' "$got" "$code" ;;
+      *) printf 'could not scan %s for %s (grep exit %s)' "$err" "$code" "$status" ;;
     esac
     return 0
   fi
@@ -821,17 +821,17 @@ target: docs/debt|' "$d/docs/debt/0001-valid.md" >"$d/.tmp" && mv "$d/.tmp" "$d/
     scan=0
     stale=$(grep 'REVIEWBY-STALE' "$d/.err") || scan=$?
     case $scan in
-    0 | 1)
-      if printf '%s\n' "$stale" | grep -q '0002-open\.md' &&
-        ! printf '%s\n' "$stale" | grep -q '0001-resolved\.md'; then
-        passed=$((passed + 1))
-        printf 'ok   exit=0 warned for the open record only\n'
-      else
-        failed=$((failed + 1))
-        printf 'FAIL staleness did not land on exactly the open record\n'
-      fi
-      ;;
-    *) fail_scan "$d/.err" "$scan" ;;
+      0 | 1)
+        if printf '%s\n' "$stale" | grep -q '0002-open\.md' &&
+          ! printf '%s\n' "$stale" | grep -q '0001-resolved\.md'; then
+          passed=$((passed + 1))
+          printf 'ok   exit=0 warned for the open record only\n'
+        else
+          failed=$((failed + 1))
+          printf 'FAIL staleness did not land on exactly the open record\n'
+        fi
+        ;;
+      *) fail_scan "$d/.err" "$scan" ;;
     esac
   else
     failed=$((failed + 1))
@@ -1065,17 +1065,17 @@ YAML
   grep -qF "$(printf 'ci/check-records.sh\tscripts/check-records.sh')" \
     "$d/scripts/check-records.sh" || scan=$?
   case $scan in
-  0) ;;
-  1)
-    printf 'fixture error: the declared-rename insertion was a no-op in %s\n' \
-      "$d/scripts/check-records.sh" >&2
-    exit 2
-    ;;
-  *)
-    printf 'fixture error: could not scan %s (grep exit %s)\n' \
-      "$d/scripts/check-records.sh" "$scan" >&2
-    exit 2
-    ;;
+    0) ;;
+    1)
+      printf 'fixture error: the declared-rename insertion was a no-op in %s\n' \
+        "$d/scripts/check-records.sh" >&2
+      exit 2
+      ;;
+    *)
+      printf 'fixture error: could not scan %s (grep exit %s)\n' \
+        "$d/scripts/check-records.sh" "$scan" >&2
+      exit 2
+      ;;
   esac
   git -C "$d" add -A
   printf '  %-4s %-44s ' "" "declared directory rename is exempt"
@@ -2220,9 +2220,9 @@ STUB
     scan=0
     grep -q '::error::E-GATE-GONE: ' "$d/.e" || scan=$?
     case $scan in
-    0) verdict="$verdict e-gate-gone-also-fired" ;;
-    1) ;;
-    *) verdict="$verdict scan-fault($d/.e exit $scan)" ;;
+      0) verdict="$verdict e-gate-gone-also-fired" ;;
+      1) ;;
+      *) verdict="$verdict scan-fault($d/.e exit $scan)" ;;
     esac
     if [ -z "$verdict" ]; then
       passed=$((passed + 1))
@@ -2316,9 +2316,9 @@ STUB
     # 1 is git's "no such key", the ordinary answer. Anything above it is a query that never
     # ran, which must not read as an empty list (ADR 0005).
     case $status in
-    0) printf '%s' "${entries//$'\n'/; }" ;;
-    1) printf 'none' ;;
-    *) printf 'unknown, git config exited %d' "$status" ;;
+      0) printf '%s' "${entries//$'\n'/; }" ;;
+      1) printf 'none' ;;
+      *) printf 'unknown, git config exited %d' "$status" ;;
     esac
   }
 
@@ -2493,16 +2493,16 @@ STUB
     scan=0
     grep -q '::error::E-BASE-TREE: ' "$d/.err" || scan=$?
     case $scan in
-    0) verdict="$verdict e-base-tree-also-fired" ;;
-    1) ;;
-    *) verdict="$verdict scan-fault($d/.err exit $scan)" ;;
+      0) verdict="$verdict e-base-tree-also-fired" ;;
+      1) ;;
+      *) verdict="$verdict scan-fault($d/.err exit $scan)" ;;
     esac
     scan=0
     grep -q '^fatal:' "$d/.err" || scan=$?
     case $scan in
-    0) verdict="$verdict raw-git-stderr-leaked" ;;
-    1) ;;
-    *) verdict="$verdict scan-fault($d/.err exit $scan)" ;;
+      0) verdict="$verdict raw-git-stderr-leaked" ;;
+      1) ;;
+      *) verdict="$verdict scan-fault($d/.err exit $scan)" ;;
     esac
     if [ -z "$verdict" ]; then
       passed=$((passed + 1))
@@ -2538,21 +2538,21 @@ STUB
     grep -q 'Checking 1 deferral record' "$d/.out" || scan=$?
   fi
   case $scan in
-  0)
-    passed=$((passed + 1))
-    printf 'exit=0 validated from docs/sub\n'
-    ;;
-  1)
-    failed=$((failed + 1))
-    printf '\n  FAIL run from a subdirectory did not validate records\n'
-    if [ -r "$d/.err" ]; then
-      head -3 "$d/.err" | sed 's/^/         /'
-    fi
-    ;;
-  *)
-    failed=$((failed + 1))
-    printf '\n  FAIL could not scan %s (grep exit %s)\n' "$d/.out" "$scan"
-    ;;
+    0)
+      passed=$((passed + 1))
+      printf 'exit=0 validated from docs/sub\n'
+      ;;
+    1)
+      failed=$((failed + 1))
+      printf '\n  FAIL run from a subdirectory did not validate records\n'
+      if [ -r "$d/.err" ]; then
+        head -3 "$d/.err" | sed 's/^/         /'
+      fi
+      ;;
+    *)
+      failed=$((failed + 1))
+      printf '\n  FAIL could not scan %s (grep exit %s)\n' "$d/.out" "$scan"
+      ;;
   esac
 
   d=$(case_dir no_records_no_base)
@@ -2648,18 +2648,18 @@ STUB
   scan=0
   grep -qF '(E-SECTION-SCAN)' "$d/.err" || scan=$?
   case $scan in
-  0)
-    failed=$((failed + 1))
-    printf 'FAIL E-SECTION-SCAN was relabelled W-LEGACY-SHAPE\n'
-    ;;
-  1)
-    passed=$((passed + 1))
-    printf 'ok   full-severity code retained\n'
-    ;;
-  *)
-    failed=$((failed + 1))
-    printf 'FAIL could not scan %s (grep exit %d)\n' "$d/.err" "$scan"
-    ;;
+    0)
+      failed=$((failed + 1))
+      printf 'FAIL E-SECTION-SCAN was relabelled W-LEGACY-SHAPE\n'
+      ;;
+    1)
+      passed=$((passed + 1))
+      printf 'ok   full-severity code retained\n'
+      ;;
+    *)
+      failed=$((failed + 1))
+      printf 'FAIL could not scan %s (grep exit %d)\n' "$d/.err" "$scan"
+      ;;
   esac
 
   # A banner-only edit to a legacy record: the one edit the convention permits, on a record
@@ -2719,9 +2719,9 @@ STUB
     scan=0
     grep -q '::warning::W-REVIEWBY-STALE' "$d/.err" || scan=$?
     case $scan in
-    0) verdict="$verdict reported-as-itself" ;;
-    1) ;;
-    *) verdict="$verdict scan-fault($d/.err exit $scan)" ;;
+      0) verdict="$verdict reported-as-itself" ;;
+      1) ;;
+      *) verdict="$verdict scan-fault($d/.err exit $scan)" ;;
     esac
     if [ -z "$verdict" ]; then
       passed=$((passed + 1))
@@ -3639,26 +3639,26 @@ STUB
   verdict=""
   why=$(case_why 1 1 - "$missing" 2>/dev/null)
   case $why in
-  'could not scan '*) ;;
-  '') verdict="$verdict no-code-scan-scored-a-pass" ;;
-  *) verdict="$verdict no-code-scan-wrong-reason" ;;
+    'could not scan '*) ;;
+    '') verdict="$verdict no-code-scan-scored-a-pass" ;;
+    *) verdict="$verdict no-code-scan-wrong-reason" ;;
   esac
   why=$(case_why 1 1 E-GONE "$missing" 2>/dev/null)
   case $why in
-  'could not scan '*) ;;
-  *) verdict="$verdict code-scan-not-a-fault" ;;
+    'could not scan '*) ;;
+    *) verdict="$verdict code-scan-not-a-fault" ;;
   esac
   why=$(migrator_why 1 1 E-DIRTY "$missing" 2>/dev/null)
   case $why in
-  'could not scan '*) ;;
-  *) verdict="$verdict migrator-scan-not-a-fault" ;;
+    'could not scan '*) ;;
+    *) verdict="$verdict migrator-scan-not-a-fault" ;;
   esac
   # migrator_why's no-code arm asks `[ -s ]`, which answers "absent" and "empty" the same
   # way — and empty is the passing answer. It asks `[ -e ]` first for that reason.
   why=$(migrator_why 1 1 - "$missing")
   case $why in
-  'could not read '*) ;;
-  *) verdict="$verdict migrator-no-code-scored-a-pass" ;;
+    'could not read '*) ;;
+    *) verdict="$verdict migrator-no-code-scored-a-pass" ;;
   esac
   if [ -z "$verdict" ]; then
     passed=$((passed + 1))
@@ -3675,20 +3675,20 @@ STUB
   notes=""
   why=$(case_why 1 1 E-GONE "$missing" 2>/dev/null)
   case $why in
-  *"$missing"*) ;;
-  *) notes="$notes file-not-named" ;;
+    *"$missing"*) ;;
+    *) notes="$notes file-not-named" ;;
   esac
   case $why in
-  *'grep exit '*) ;;
-  *) notes="$notes status-not-named" ;;
+    *'grep exit '*) ;;
+    *) notes="$notes status-not-named" ;;
   esac
   # The accumulator form has to fault distinctly too, or a scan that never ran would be
   # recorded as the ordinary "this line was not there" tag.
   verdict=""
   scan_into_verdict tag-that-cannot-match "$missing" 'anything at all' 2>/dev/null
   case $verdict in
-  " scan-fault($missing exit "*) ;;
-  *) notes="$notes accumulator-tag=[$verdict]" ;;
+    " scan-fault($missing exit "*) ;;
+    *) notes="$notes accumulator-tag=[$verdict]" ;;
   esac
   if [ -z "$notes" ]; then
     passed=$((passed + 1))
@@ -3716,20 +3716,20 @@ STUB
   fi
   reported=$(cat "$SCRATCH/fail-scan.out")
   case $reported in
-  *"$missing"*) ;;
-  *) notes="$notes fail-scan-file-not-named" ;;
+    *"$missing"*) ;;
+    *) notes="$notes fail-scan-file-not-named" ;;
   esac
   case $reported in
-  *' 7'*) ;;
-  *) notes="$notes fail-scan-status-not-named" ;;
+    *' 7'*) ;;
+    *) notes="$notes fail-scan-status-not-named" ;;
   esac
   verdict=""
   scan_hits="a count that should be cleared"
   scan_count "$missing" 'anything at all' 2>/dev/null
   [ -z "$scan_hits" ] || notes="$notes scan-count-kept-a-count"
   case $verdict in
-  " scan-fault($missing exit "*) ;;
-  *) notes="$notes scan-count-tag=[$verdict]" ;;
+    " scan-fault($missing exit "*) ;;
+    *) notes="$notes scan-count-tag=[$verdict]" ;;
   esac
   # The two polarity helpers carry most of the converted sites between them. Their 0) and
   # 1) arms are exercised by every case in the suite; their `*)` arm is exercised by
@@ -3759,25 +3759,25 @@ STUB
     >"$SCRATCH/expect-helpers.out" 2>/dev/null
   reported=$(cat "$SCRATCH/expect-helpers.out")
   case $reported in
-  *"removed $missing"*) ;;
-  *) notes="$notes deletion-arm=[$reported]" ;;
+    *"removed $missing"*) ;;
+    *) notes="$notes deletion-arm=[$reported]" ;;
   esac
   expect_unchanged "$missing" "$SCRATCH" 'unreachable' 'unreachable' \
     >"$SCRATCH/expect-helpers.out" 2>/dev/null
   reported=$(cat "$SCRATCH/expect-helpers.out")
   case $reported in
-  *"$missing vs $SCRATCH"*) ;;
-  *) notes="$notes compare-arm-paths=[$reported]" ;;
+    *"$missing vs $SCRATCH"*) ;;
+    *) notes="$notes compare-arm-paths=[$reported]" ;;
   esac
   case $reported in
-  *'cmp exit '*) ;;
-  *) notes="$notes compare-arm-tool=[$reported]" ;;
+    *'cmp exit '*) ;;
+    *) notes="$notes compare-arm-tool=[$reported]" ;;
   esac
   expect_error_code "$missing" E-UNREACHABLE >"$SCRATCH/expect-helpers.out" 2>/dev/null
   reported=$(cat "$SCRATCH/expect-helpers.out")
   case $reported in
-  *"could not scan $missing"*) ;;
-  *) notes="$notes error-code-arm=[$reported]" ;;
+    *"could not scan $missing"*) ;;
+    *) notes="$notes error-code-arm=[$reported]" ;;
   esac
   [ "$passed" -eq "$was_passed" ] || notes="$notes late-helper-scored-a-pass"
   if [ "$failed" -eq $((before + 3)) ]; then
