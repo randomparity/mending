@@ -3,9 +3,13 @@ from __future__ import annotations
 import argparse
 from contextlib import contextmanager
 
-from desloppify.app.commands.repair_queue import cmd_repair_queue
+from desloppify.app.commands.repair_queue import _create_once, cmd_repair_queue
 from desloppify.cli import create_parser
-from desloppify.engine.repair_queue import GitHubIssue, marker_for_hashes
+from desloppify.engine.repair_queue import (
+    GitHubIssue,
+    candidate_from_issue,
+    marker_for_hashes,
+)
 
 
 IDENTITY = "a" * 64
@@ -120,6 +124,36 @@ def test_sync_adopts_closed_match_with_last_read_state() -> None:
         "url": "https://example.test/7",
         "state": "closed",
     }
+
+
+def test_delayed_writer_cannot_create_after_another_writer_links() -> None:
+    class CreatingClient(_Client):
+        def __init__(self) -> None:
+            super().__init__()
+            self.create_calls = 0
+
+        def create(self, repository: str, candidate) -> None:
+            self.create_calls += 1
+
+        def search(self, repository: str, marker: str):
+            return [GitHubIssue(7, "https://example.test/7", "open")]
+
+    state = _state()
+    detail = state["work_items"]["concerns::item"]["detail"]
+    detail["github_repair_revalidated"] = {
+        "marker": marker_for_hashes(IDENTITY, EVIDENCE),
+        "repository": REPOSITORY,
+        "attestation": "verified current evidence",
+    }
+    candidate = candidate_from_issue(state["work_items"]["concerns::item"], REPOSITORY)
+    assert candidate is not None
+    client = CreatingClient()
+
+    _create_once(_args("sync", state, apply=True, client=client), client, candidate)
+    _create_once(_args("sync", state, apply=True, client=client), client, candidate)
+
+    assert client.create_calls == 1
+    assert detail["github_repair"]["number"] == 7
 
 
 def test_recover_clears_only_matching_pending_marker() -> None:

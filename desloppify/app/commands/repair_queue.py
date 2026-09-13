@@ -133,10 +133,15 @@ def _adopt_if_unique(args: argparse.Namespace, candidate: PromotionCandidate, ma
 def _create_once(args: argparse.Namespace, client: Any, candidate: PromotionCandidate) -> None:
     with _locked_state(args) as state:
         fresh = _candidate_by_id(state, candidate.issue_id, candidate.repository)
-        if fresh != candidate or matching_record(_issues(state)[candidate.issue_id]["detail"], "github_repair_pending", candidate):
+        detail = _issues(state)[candidate.issue_id]["detail"]
+        if (
+            fresh != candidate
+            or matching_record(detail, "github_repair", candidate)
+            or matching_record(detail, "github_repair_pending", candidate)
+        ):
             print(f"Skipped {candidate.issue_id}: concern changed while preparing create.")
             return
-        _issues(state)[candidate.issue_id]["detail"]["github_repair_pending"] = {
+        detail["github_repair_pending"] = {
             "marker": candidate.marker,
             "repository": candidate.repository,
         }
