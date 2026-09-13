@@ -951,6 +951,10 @@ check_no_disappearances() {
     case $still_status in
       0) check_not_rewritten "$base" "$record" ;;
       1)
+        if [ "${RECORD_ALLOW_RENUMBER:-no}" != yes ]; then
+          err "E-GONE: $record is no longer a record at that path (deleted, moved, untracked, or renamed)"
+          continue
+        fi
         renumbered_to=""
         renum_status=0
         renumbered_elsewhere "$base" "$record" || renum_status=$?

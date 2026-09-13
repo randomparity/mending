@@ -14,6 +14,8 @@
 # read_section_out and read_section_status are assigned by read_section in check-records.sh,
 # which sources this file, so a standalone lint sees only the reads.
 # shellcheck disable=SC2034
+RECORD_ALLOW_RENUMBER=no
+# shellcheck disable=SC2034
 
 RECORD_DIR="docs/adr"
 
