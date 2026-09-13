@@ -14,7 +14,7 @@ locked `uv` toolchain apply.
 - Missing authority, disabled configuration, stale/unknown external state, failed proof, or budget exhaustion parks before new work; disabled mode still reconciles a recorded lease.
 - Adept remains the owner of claims, reviews, execution, and merge gates.
 
-Expected implementation size: 1,250–1,400 changed lines (M) — command/configuration,
+Expected implementation size: 1,500–1,650 changed lines (M) — command/configuration,
 durable scheduler state, injected Adept adapter, systemd recipe, and focused fixtures.
 
 The earlier estimate omitted the separate, machine-checkable serialization and
@@ -23,6 +23,12 @@ restart outcomes. Those contracts are required by the frozen scope; they do not
 add a scheduler abstraction or Adept-owned behavior. The second correction also
 accounts for the operator-install recipe and structural fixture that prove the
 systemd restrictions without exercising a live host.
+
+The final correction accounts for lifecycle enforcement required by the same
+frozen contracts: terminal receipts must permit a later-day lease, only an exact
+replayed receipt may reuse a consumed merge permit, disabled mode reconciles
+existing state, and the selected runtime bounds each external call. The 1,550
+net changed lines measured against `main` fall within this revised range.
 
 ## Task 1: Define cycle configuration and durable scheduler state
 
