@@ -12,7 +12,7 @@ execution scheduler. Python 3.11+ and the locked `uv` toolchain apply.
 - Reuse the existing state and plan reconciliation boundaries.
 - Touch only ADR 0004, concern identity/state/reconciliation modules, and fixtures.
 
-Expected implementation size: 430–500 changed lines (M) — canonical comparison,
+Expected implementation size: 480–550 changed lines (M) — canonical comparison,
 state propagation, conservative cleanup and reconciliation, and focused fixtures.
 
 ## Task 1: Persist canonical concern comparison evidence
@@ -67,11 +67,12 @@ Interfaces: reconciliation accepts one old/new concern pair only when the
 canonical identity and evidence digest match and both items use the `concerns`
 detector. It replaces the old ID in
 `queue_order`, `skipped`, `overrides`, cluster `issue_ids`, action `issue_refs`,
-and `promoted_ids`, then writes `status: remapped` and `remapped_to`. A changed
-identity or digest supersedes the plan reference with
-`revalidation_reason: concern_evidence_changed`, whether the concern keeps its
-ID or has a successor; the live issue stays open. Missing evidence, failed
-analysis, or multiple candidates records no transfer and no revalidation reason.
+and `promoted_ids`, then writes `status: remapped` and `remapped_to`. A same-ID
+changed identity or digest supersedes the plan reference with
+`revalidation_reason: concern_evidence_changed`; the live issue stays open. A
+renamed successor must first have the same identity before its evidence can be
+compared. Missing evidence, failed analysis, or multiple candidates records no
+transfer and no revalidation reason.
 For a same-ID recheck, state upsert carries the prior complete hashes into the
 current detail so reconciliation can make that comparison before the next scan.
 
@@ -79,8 +80,9 @@ Verification:
 
 - Mode: focused-test. Contract: one supported rename remaps each named plan
   collection; ambiguity and missing evidence retain ordinary supersession;
-  changed evidence, including a same-ID recheck, supersedes the stale plan
-  reference and persists the revalidation reason; a non-concern candidate with
+  a same-ID identity or evidence change supersedes the stale plan reference and
+  persists the revalidation reason across queue, skip, override, cluster,
+  action-reference, and promoted-ID collections; a non-concern candidate with
   matching hashes is not a successor.
   Red observation: current reconciliation selects candidates by detector and
   file only. Green command:
