@@ -4,7 +4,7 @@ import argparse
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from desloppify.app.commands.repair_cycle import (
@@ -194,6 +194,51 @@ def test_malformed_adapter_results_park_before_attribute_access() -> None:
     cmd_repair_cycle(_args(malformed_receipt_state, _MalformedReceiptClient()))
 
     assert malformed_receipt_state["repair_cycle"]["parked_reason"] == "invalid-receipt"
+
+
+def test_malformed_receipt_fields_and_transport_failures_park() -> None:
+    class _MalformedFieldClient(_Client):
+        def select(self, config, lease, authority):
+            return AdeptReceipt(
+                attempt_id=lease.attempt_id,
+                state="terminal",
+                reference="pr:7",
+                merge_consumed=False,
+                calls=1,
+                cost_usd="bad",  # type: ignore[arg-type]
+                currency="USD",
+            )
+
+    malformed_state = _state()
+    cmd_repair_cycle(_args(malformed_state, _MalformedFieldClient()))
+    assert malformed_state["repair_cycle"]["parked_reason"] == "invalid-receipt"
+
+    class _OfflineClient(_Client):
+        def select(self, config, lease, authority):
+            raise ConnectionError("adapter offline")
+
+    offline_state = _state()
+    cmd_repair_cycle(_args(offline_state, _OfflineClient()))
+    assert offline_state["repair_cycle"]["parked_reason"] == "selection-unavailable"
+
+
+def test_overdue_adapter_result_parks_before_receipt_is_accepted() -> None:
+    class _OverdueClient(_Client):
+        def select(self, config, lease, authority) -> AdeptReceipt:
+            return self._receipt(lease, state="terminal")
+
+    times = iter((NOW, NOW + timedelta(minutes=2)))
+    state = _state()
+    cmd_repair_cycle(
+        _args(
+            state,
+            _OverdueClient(),
+            config_data=_config(runtime_minutes=1),
+            clock=lambda: next(times),
+        )
+    )
+
+    assert state["repair_cycle"]["parked_reason"] == "runtime-exhausted"
 
 
 def test_unknown_reconciliation_parks_without_new_selection() -> None:
