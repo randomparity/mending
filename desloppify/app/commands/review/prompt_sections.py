@@ -568,7 +568,8 @@ def render_task_requirements(*, issues_cap: int, dim_set: set[str]) -> str:
         "3. Review the existing characteristics list — which are settled? Which are positive? What needs updating?",
         "4. Explore the codebase freely. Use scan evidence, historical issues, and mechanical findings as navigation aids.",
         "5. Adjudicate mechanical concern signals (confirm/dismiss with fingerprint).",
-        "5a. Confirmed concerns require a root-cause cluster, consequence, owner, contracts, and bounded verification.",
+        "5a. Confirmed concerns require a root-cause cluster, consequence, owner, "
+        "contracts, and bounded verification.",
         "6. Augment the characteristics list via context_updates: positive patterns (positive: true), neutral characteristics, design insights.",
         "7. Collect defects for issues[].",
         "8. Respect scope controls: exclude files/directories marked by `exclude`, `suppress`, or non-production zone overrides.",

@@ -39,7 +39,7 @@ def _neighbor_paths(paths: list[str], lang: object) -> list[str]:
             continue
         for key in ("imports", "importers"):
             values = entry.get(key, ())
-            if isinstance(values, set | list | tuple):
+            if isinstance(values, (set, list, tuple)):
                 neighbors.extend(item for item in values if isinstance(item, str))
     return neighbors
 
@@ -56,7 +56,8 @@ def _apply_bounded_reading_sets(
     """Attach a deterministic, bounded reading set to each investigation batch."""
     cap = max_files_per_batch or _DEFAULT_REVIEW_BATCH_MAX_FILES
     context = _ensure_holistic_context(holistic_ctx)
-    rotation = int(state.get("scan_count", 0)) if isinstance(state.get("scan_count", 0), int) else 0
+    scan_count = state.get("scan_count", 0)
+    rotation = scan_count if isinstance(scan_count, int) else 0
     for batch in batches:
         seeds = list(batch.get("files_to_read", []))
         for dimension in batch.get("dimensions", []):
