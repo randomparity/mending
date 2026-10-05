@@ -54,7 +54,8 @@ issue is created for the same concern.
   one distinct number are read by number and adopted; two distinct numbers
   park. With no peer record, search GitHub for
   the key and for the identity digest (legacy bodies print it) and union the
-  results by issue number; then the existing pending/adopt/ambiguous/create
+  results by issue number — the key term still finds an issue whose identity
+  line a human removed; then the existing pending/adopt/ambiguous/create
   rules apply. Every link write stores the new shape with the current evidence
   digest and the GitHub state, so a closed (dismissed) issue stays linked and
   closed; nothing reopens or recreates it.
@@ -79,14 +80,16 @@ issue is created for the same concern.
   lock; GitHub via the installed `gh`.
 - Invariants and assets: at most one GitHub issue per key per repository among
   writers sharing a state file; links, pending attempts, and closed-issue state
-  are never discarded while identity is unchanged; public text holds only
-  digests and static labels.
+  are never discarded by scan merge while both scans carry the same identity
+  digest; public text holds only digests and static labels.
 - Accepted failure classes:
   - Rename *and* a human deleting both marker lines with no surviving local
     link or pending record anywhere in the state file can still create a
     second issue — no durable evidence of the first remains.
   - An identity change (owner, cluster, dimension, identifier) is a new
     concern and gets a new issue, by definition of the key.
+  - A scan that carries no concern hashes (e.g. re-imported unconfirmed) drops
+    the records, as before this change: there is no identity to bind them to.
   - Parked items need operator action and no new command repairs them:
     ambiguous GitHub matches (e.g. duplicates the pre-#23 bug already made) →
     remove the marker and identity lines from the duplicate's body; ambiguous

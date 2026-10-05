@@ -260,8 +260,9 @@ is true when `_candidates` yields more than one candidate with the key or
      `RuntimeError`/`ValueError` → `None`.
    - `_create_once`: inside the lock, also treat `_key_claimed_elsewhere(state,
      candidate)` as "changed".
-3. Focused loop → green; then `make lint typecheck arch ci-contracts tests`
-   → exit 0. Commit `feat: reconcile renamed and legacy repair issues by key`.
+3. Focused loop → green; then `make lint typecheck arch ci-contracts tests
+   tests-full package-smoke` and `RECORD_PROFILES=adr BASE_SHA=$(git merge-base
+   origin/main HEAD) .github/scripts/check-records.sh` → exit 0. Commit `feat: reconcile renamed and legacy repair issues by key`.
 
 ## Rollback
 
