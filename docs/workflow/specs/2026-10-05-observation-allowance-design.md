@@ -100,8 +100,9 @@ config/overrun wording in `docs/systemd/repair-cycle.md`.
   selection follows.
 - An over-budget receipt is recorded with `budget-exhausted`.
 - After the allowance is spent, runs park `observation-exhausted` with no call.
-- A failed attempt blocks new work (`disposition-required`) until
-  `--dispose-attempt` names it; afterwards a later-day run selects once.
+- A failed attempt blocks new work until `--dispose-attempt` names it: a terminal
+  one parks `disposition-required`, a non-terminal one keeps parking with its
+  observation reason. Afterwards a later-day run selects once.
 - Legacy state without the new fields decodes and an expired legacy lease is
   observed.
 

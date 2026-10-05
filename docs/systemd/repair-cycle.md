@@ -48,10 +48,12 @@ the deadline, or over the call or cost limit, is recorded with its usage and
 the attempt is marked failed (`runtime-exhausted` or `budget-exhausted`).
 Because receipts carry no completion time, any interrupted attempt first
 observed after its deadline is marked failed this way. When the allowance is
-spent the attempt is marked `observation-exhausted` and no further reads occur.
+spent, runs park as `observation-exhausted` and no further reads occur.
 
-A failed attempt parks every later run as `disposition-required` until the
-operator reviews it and records a disposition:
+The state file's `attempt_failure` keeps the attempt's first failure. While it
+is set, no new work starts: a terminal attempt parks later runs as
+`disposition-required`, and a still-active one keeps parking with its
+observation reason. Review the attempt, then record a disposition:
 
 ```sh
 desloppify repair-cycle --config /etc/mending/repair-cycle.json \
