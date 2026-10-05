@@ -2,6 +2,10 @@
 
 This is the only supported scheduler recipe. It runs one `desloppify
 repair-cycle` command from a systemd timer; it is not a resident service.
+The timer invokes the same bounded one-shot path as a manual run
+([ADR 0007](../adr/0007-host-driven-maintenance.md)). Do not activate it until
+the manual pilot (#7) succeeds and the operator approves the recurring scope,
+window, and limits.
 
 ## Install
 
@@ -38,7 +42,7 @@ overrun parks the recorded attempt; it never starts another selection.
 
 Set `enabled` to `false` to park new work while retaining enough local state to
 reconcile an already-recorded attempt. A missing model or positive USD cap also
-parks before model work. Only USD Adept receipts are accepted; another currency
+parks before model work. Only USD-measured usage is accepted; another currency
 parks instead of being converted.
 
 ## Window and activation
@@ -48,7 +52,8 @@ window. With no timezone suffix, systemd interprets it in the host system
 timezone. Do not add a second window check to configuration. `Persistent=false`
 deliberately skips missed windows rather than catching them up.
 
-After copying the units and creating the restricted files, activate the timer:
+After the pilot and that approval, copy the units, create the restricted
+files, and activate the timer:
 
 ```sh
 systemctl daemon-reload
@@ -68,9 +73,10 @@ the scheduler finds an unresolved recorded attempt, it reconciles that attempt
 before any new selection. An already-recorded terminal receipt needs no second
 external reconciliation.
 
-## Adept boundary and pilot
+## Host adapter and pilot
 
-This repository intentionally ships no live Adept implementation. Until the
-Adept-owned verifier, lease, and receipt adapter is installed, the command parks
-before selection. The live authority installation and pilot remain #7
-responsibilities.
+Repairs run through a Mending-owned adapter for one concrete coding host, which
+runs the installed Adept skills; Adept is not a service. That adapter is not
+implemented yet (#19). Until it is, the command parks before selection. Target
+opt-in, the manual pilot, and timer activation remain #7 responsibilities, and
+merge is outside the pilot.

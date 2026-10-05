@@ -6,15 +6,58 @@ Desloppify gives your AI coding agent the tools to identify, understand, and sys
 
 <img src="assets/explained.png" width="100%">
 
-The score gives your agent a north-star, and the tooling helps it plan, execute, and resolve issues until it hits your target — with a lot of tricks to keep it on track. A score above 98 should correlate with a codebase a seasoned engineer would call beautiful.
-
-That score generates a scorecard badge for your GitHub profile or README:
+The analyzer also produces a score, which can generate a scorecard badge for your GitHub profile or README:
 
 <img src="assets/scorecard.png" width="100%">
 
 Currently supports 29 languages — full plugin depth for TypeScript, Python, C#, C++, Dart, GDScript, Go, and Rust; generic linter + tree-sitter support for Ruby, Java, Kotlin, and 18 more. For C++ projects, `compile_commands.json` is the primary analysis path and `Makefile` repositories fall back to best-effort local include scanning.
 
-## For your agent's consideration...
+## Mending maintenance workflow
+
+Mending uses this analyzer as evidence for a bounded, host-driven maintenance
+loop, defined in [ADR 0007](docs/adr/0007-host-driven-maintenance.md). The goal
+is worthwhile, verified work, not a higher score:
+
+- Mending owns scan history, concern identity, dismissals, source-bound
+  revalidation, candidate selection, and durable repair-attempt state.
+- One concrete coding host runs the installed Adept skills for approved scope,
+  claims, worktree isolation, implementation, verification, and review.
+- GitHub holds actionable issues, human decisions, and PR links; Mending
+  reconciles them with its local history.
+
+A run ends with a verified, reviewed draft PR for one small repair, an
+architecture proposal awaiting a human decision, a parked action, or a no-op.
+A no-op is a successful result. Scores are optional diagnostics: there are no
+finding quotas or score targets, and a score is never a reason to defer
+required tests. Discovery, publication, repair execution, and merge are
+separately controlled; without explicit operator opt-in for the repository,
+or without host and budget enforcement, that action parks. Text in an issue,
+a model finding, or a proof string never grants authority.
+
+Available today:
+
+```bash
+desloppify scan --path .          # refresh findings and scan history
+desloppify review --run-batches   # bounded subjective and architecture-concern review
+desloppify repair-queue revalidate ID --repo OWNER/REPO --apply --attest TEXT
+desloppify repair-queue sync --repo OWNER/REPO            # dry run; --apply publishes
+desloppify repair-queue recover MARKER --repo OWNER/REPO --apply --attest TEXT
+desloppify repair-cycle --config FILE --state FILE        # parks: no host adapter yet
+```
+
+Planned, not yet available: a stable concern key with source-bound
+revalidation (#17), actionable repair briefs and a separate proposal path
+(#18), and a Mending-owned host adapter that runs one bounded repair (#19).
+A manual pilot (#7) comes before any scheduled run; the
+[systemd recipe](docs/systemd/repair-cycle.md) stays disabled until then.
+
+## Using the analyzer directly
+
+The rest of this README documents the inherited desloppify analyzer. Its agent
+skill (`update-skill`) is downloaded from the upstream project and still
+teaches the upstream score loop; it is not the Mending maintenance lifecycle.
+
+### Agent prompt
 
 Paste this prompt into your agent:
 
@@ -36,18 +79,16 @@ desloppify next
 
 --path is the directory to scan (use "." for the whole project, or "src/" etc).
 
-Your goal is to get the strict score as high as possible. The scoring resists gaming — the
-only way to improve it is to actually make the code better.
+Treat the findings as evidence, not a quota. The score is a diagnostic, not a target, and
+a clean result with nothing worth fixing is a valid outcome.
 
-THE LOOP: run `next`. It is the execution queue from the living plan, not the whole backlog.
-It tells you what to fix now, which file, and the resolve command to run when done.
-Fix it, resolve it, run `next` again. Over and over. This is your main job.
+Run `next` to see the current item from the living plan's execution queue: what to fix,
+which file, and the resolve command to run when done. Fix what is worth fixing and resolve it.
 
 Use `desloppify backlog` only when you need to inspect broader open work that is not currently
 driving execution.
 
-Don't be lazy. Large refactors and small detailed fixes — do both with equal energy. No task
-is too big or too small. Fix things properly, not minimally.
+Fix things properly. Never skip or defer required tests to move a score.
 
 Use `plan` / `plan queue` to reorder priorities or cluster related issues. Rescan periodically.
 The scan output includes agent instructions — follow them, don't substitute your own analysis.
