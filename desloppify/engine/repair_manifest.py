@@ -101,6 +101,9 @@ def build_manifest(
     problem = _spec_problem(dependencies)
     if problem:
         return AnalysisUnknown(problem)
+    top = _git(root, "rev-parse", "--show-toplevel")
+    if top is None or Path(top.strip()).resolve() != Path(root).resolve():
+        return AnalysisUnknown("root is not a repository top level")
     resolved = _git(root, "rev-parse", "--verify", "--end-of-options", f"{revision}^{{commit}}")
     if resolved is None:
         return AnalysisUnknown("revision could not be resolved")
@@ -167,6 +170,8 @@ def _spec_problem(dependencies: Sequence[DependencySpec]) -> str | None:
         return f"more than {MAX_DEPENDENCIES} dependencies"
     if any(not (isinstance(s.path, str) and isinstance(s.role, str)) for s in dependencies):
         return "invalid dependency spec"
+    if any(_oversize(spec.path) for spec in dependencies):
+        return f"dependency path longer than {MAX_PATH_BYTES} bytes"
     if any(spec.role not in ROLES for spec in dependencies):
         return "unknown dependency role"
     if len({spec.path for spec in dependencies}) != len(dependencies):
@@ -174,12 +179,15 @@ def _spec_problem(dependencies: Sequence[DependencySpec]) -> str | None:
     return None
 
 
+def _oversize(path: str) -> bool:
+    return len(path.encode("utf-8", "surrogatepass")) > MAX_PATH_BYTES
+
+
 def _valid_path(path: object) -> bool:
     if not isinstance(path, str) or not path or "\0" in path:
         return False
     try:
-        if len(path.encode("utf-8")) > MAX_PATH_BYTES:
-            return False
+        path.encode("utf-8")
     except UnicodeEncodeError:
         return False
     return all(segment not in {"", ".", ".."} for segment in path.split("/"))
@@ -271,6 +279,8 @@ def _parse_dependency(entry: object) -> Dependency:
     path, role, status, object_id = (entry[k] for k in ("path", "role", "status", "object_id"))
     if not isinstance(path, str) or role not in ROLES or status not in STATUSES:
         raise ValueError("invalid dependency field")
+    if _oversize(path):
+        raise ValueError("dependency path is too long")
     if not (_is_object_id(object_id) if status == "present" else object_id is None):
         raise ValueError("object id does not match status")
     if status != "unsupported" and not _valid_path(path):

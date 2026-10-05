@@ -167,7 +167,6 @@ def test_unbound_approval_is_removed(repo: Path, record: object) -> None:
         ("./src/impl.py", None),
         ("", None),
         ("\ud800.py", None),
-        ("a" * (MAX_PATH_BYTES + 1), None),
     ],
 )
 def test_unusable_dependencies_are_recorded_and_partial(
@@ -230,6 +229,8 @@ def test_undeclared_coverage_is_partial(repo: Path) -> None:
         "non-str-path",
         "duplicate-path",
         "too-many",
+        "oversize-path",
+        "subdirectory-root",
     ],
 )
 def test_unbindable_analysis_is_unknown(repo: Path, tmp_path: Path, case: str) -> None:
@@ -240,6 +241,10 @@ def test_unbindable_analysis_is_unknown(repo: Path, tmp_path: Path, case: str) -
         revision = "HEAD\0x"
     elif case == "non-str-path":
         specs = (*SPECS, DependencySpec(5, "sibling"))  # type: ignore[arg-type]
+    elif case == "oversize-path":
+        specs = (*SPECS, DependencySpec("a" * (MAX_PATH_BYTES + 1), "sibling"))
+    elif case == "subdirectory-root":
+        root = repo / "src"
     elif case == "not-a-repo":
         root = tmp_path / "empty"
         root.mkdir()
@@ -308,6 +313,9 @@ def _mutated(manifest: SourceManifest, change) -> dict:
         lambda r: r.pop("coverage"),
         lambda r: r["dependencies"][0].update(path="../../etc/passwd"),
         lambda r: r["dependencies"][0].update(path="/" + "a" * MAX_PATH_BYTES),
+        lambda r: (r.update(coverage="partial"), r["dependencies"][0].update(
+            path="/" + "a" * MAX_PATH_BYTES, status="unsupported", object_id=None
+        )),
     ],
 )
 def test_malformed_record_is_unknown(repo: Path, change) -> None:

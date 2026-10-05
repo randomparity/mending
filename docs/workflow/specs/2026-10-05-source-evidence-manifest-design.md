@@ -33,14 +33,16 @@ changes.
   mode 100644/100755, with its git blob ID as content digest), `missing` (no
   entry at that exact path), or `unsupported` (symlink, gitlink, directory,
   or an invalid path). A valid path is a non-empty relative POSIX path of at
-  most 1024 UTF-8 bytes with no NUL, no leading `/`, no trailing `/`, and no
+  valid UTF-8 with no NUL, no leading `/`, no trailing `/`, and no
   empty, `.` or `..` segment. Coverage is `complete` only when the caller
   declared it complete, at least one `implementation` dependency exists, and
   every dependency is `present`; otherwise `partial`.
 - **Unknown.** `AnalysisUnknown(reason)` is returned, never raised, when the
-  analysis cannot be bound: git unavailable, timed out (30 s) or failing; the
-  revision unresolvable; an unknown role; a duplicate
-  path; or more than 64 dependencies. An unknown is never current.
+  analysis cannot be bound: git unavailable, timed out (30 s) or failing;
+  `root` not the top level of a repository; the revision unresolvable; a
+  non-string path or role, an unknown role, a duplicate path, a path over
+  1024 UTF-8 bytes, or more than 64 dependencies. A stored record with a path
+  over 1024 bytes is malformed. An unknown is never current.
 - **Digest.** `SourceManifest.digest` is SHA-256 of canonical JSON
   (`schema: desloppify-source-manifest:v1`, revision, coverage, dependencies
   sorted by path) — the same record `as_record()` returns for persistence.
@@ -128,7 +130,8 @@ changes.
    with their status and make coverage `partial`; an undeclared-complete list
    is `partial`; each partial comparison is `coverage-incomplete`, and a
    dependency deleted after a complete manifest appears in `changed_paths`.
-6. Bad revision, failing git, unknown role, duplicate path, too many
+6. Bad revision, failing git, a subdirectory root, unknown role, oversize
+   or duplicate path, too many
    dependencies, and malformed stored records yield `AnalysisUnknown`, and
    any comparison involving one is not current.
 7. Pathspec magic and inherited `GIT_DIR` do not redirect what is read.
