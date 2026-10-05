@@ -61,7 +61,11 @@ desloppify repair-cycle --config /etc/mending/repair-cycle.json \
 ```
 
 The attempt ID is `current_lease.attempt_id` in the state file. Disposing makes
-no external call; the next timer window on a later day may start new work.
+no external call and cancels nothing: it asserts the attempt has stopped or is
+abandoned. If the recorded receipt (`authoritative_receipt.state`) is `active`
+or absent, first confirm on the host that the attempt's worker and pull request
+are finished, or a second repair can run beside it. The next timer window on a
+later day may start new work.
 
 Set `enabled` to `false` to park new work while retaining enough local state to
 reconcile an already-recorded attempt. A missing model or positive USD cap also
