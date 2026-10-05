@@ -48,8 +48,9 @@ content block is its own event and blocks of one response share a `message.id`.
 So distinct IDs count one per model response; an assistant event without a
 `message.id` counts as one call. Mending makes no
 retries; review and revalidation run inside the host session, so they are
-covered by the same session limits. Every dispatch under one lease draws from
-that lease's remaining budget.
+covered by the same session limits. A lease admits one host session: the
+session ID derives from the lease's attempt ID and is single-use (ADR 0010), so
+a rerun needs a new attempt (#30, #31).
 
 ### Capability check (adapter preflight)
 
