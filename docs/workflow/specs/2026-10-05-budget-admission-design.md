@@ -82,10 +82,12 @@ model call; a probe that fails, exits nonzero, or times out parks the same way.
 Under the caller's held state lock, with the current lease:
 1. A request whose `attempt_id` differs from the lease's, or whose `deadline`
    is later than the lease's, raises `ValueError` (caller defect).
-2. At or past the lease deadline, record attempt failure `runtime-exhausted`
-   (as `_limit_failure` does) and return without admitting.
-3. `admit`; on `None`, record attempt failure `unsettled-reservation` when a
-   reservation is outstanding, else `budget-exhausted`, and return.
+2. With a reservation outstanding (an earlier dispatch was interrupted),
+   record attempt failure `unsettled-reservation` and return, whatever the
+   time, so the operator learns a host may still be spending.
+3. At or past the lease deadline, record attempt failure `runtime-exhausted`
+   (as `_limit_failure` does) and return without admitting. Otherwise `admit`;
+   on `None`, record attempt failure `budget-exhausted` and return.
 4. Store and persist the reservation (`_persist_before_external_call`), then
    run the adapter with the admission.
 5. Settle: `parked` at zero cost and observed calls; `stopped` or `unknown`
@@ -134,6 +136,12 @@ Each adapter test request uses a fresh `uuid4` attempt ID, so the derived
      definition of `call_limit` the host's cost cap alone bounds them; background
      subagents are disabled, so they make no uncounted calls; checking the
      stream shape against a captured real transcript is the live pilot's (#7);
+   - known gap, owned by #32's enforcement report: a model process that a host
+     tool launches (for example `claude -p` through the Bash tool) streams to
+     that tool, not to Mending, and is not charged to the parent's
+     `--max-budget-usd`; only the worker-tree stop at the deadline bounds it,
+     and its calls and cost are not measured; the packaged Adept skills launch
+     none;
    - if Mending is killed uncatchably (SIGKILL), the host keeps running with
      only its own cost cap until it exits; under the systemd unit the control
      group kill ends it, and a local operator stops it before disposition;
