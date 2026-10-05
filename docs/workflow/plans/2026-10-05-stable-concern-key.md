@@ -270,4 +270,8 @@ Each task is one commit; revert in reverse order. The previous release reads
 new-shape records as absent, searches only legacy markers, and its scan merge
 drops every new-shape record. Before running it against a state file this
 change has written, back up the state file and pause scans and `--apply`
-syncs; restore the backup before re-upgrading.
+syncs; restore the backup before re-upgrading. Do not run the previous
+release's `sync --apply` against a state file this change has written: issues
+created under the key carry no legacy marker, so it creates duplicates. To
+resume syncing on the previous release, restore a state backup taken before the
+upgrade and reconcile issues created since then by hand.
