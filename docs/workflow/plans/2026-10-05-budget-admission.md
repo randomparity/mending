@@ -33,7 +33,8 @@ lines, ~25 seam lines, ~120 test lines.
   takes a `BudgetAdmission`, passes the budget flags, measures calls and cost from
   the event stream, stops on the call limit, parks `unenforceable-limit`.
 - `desloppify/app/commands/repair_cycle.py` — gains `_dispatch_host`, the
-  admit-persist-run-settle seam #31 composes.
+  admit-persist-run-settle seam #31 composes; #31 builds the request from the
+  current lease (attempt ID, deadline).
 - `desloppify/tests/commands/test_repair_cycle.py`,
   `desloppify/tests/commands/test_repair_cycle_host.py` — focused tests.
 
@@ -82,33 +83,45 @@ Interfaces: consumes `BudgetAdmission`. Produces
 Verification:
 - Contract: argv carries `--output-format stream-json --verbose
   --forward-subagent-text --max-budget-usd <admission cost>`. Mode: focused-test.
-  Update `test_completed_run_reports_identity` — red: argv lacks the flags.
-- Contract: measured cost and distinct-message call count reach the outcome;
-  an `error_during_execution` result yields `cost_usd is None`. Mode:
-  focused-test. `test_stream_usage_is_measured`.
+  Update `test_completed_run_reports_identity` — red: `TypeError` for the new
+  `admission` argument, then argv lacks the flags.
+- Contract: measured cost and distinct-message call count reach the outcome,
+  counting subagent events (`parent_tool_use_id` set) and collapsing events
+  that share a `message.id`; an `error_during_execution` result yields
+  `cost_usd is None`. Mode: focused-test. `test_stream_usage_is_measured`.
 - Contract: a host exceeding admitted calls is stopped (`stopped`/`call-limit`,
   tree gone). Mode: focused-test. `test_call_limit_stops_whole_tree` — red:
-  outcome is `stopped`/`timeout` after the deadline.
-- Contract: missing help option, failing help, or no `/proc` parks
-  `unenforceable-limit` with no launch. Mode: focused-test.
-  `test_unenforceable_limit_parks_without_launch` (parametrized).
+  outcome is `stopped`/`timeout` once the signature accepts an admission.
+- Contract: missing help option, failing help, a version below 2.1.275, or no
+  `/proc` parks `unenforceable-limit` with no launch. Mode: focused-test.
+  `test_unenforceable_limit_parks_without_launch` (parametrized; `/proc`
+  absence injected by monkeypatching a module-level `_PROC_ROOT`).
 - Contract: each test request uses a fresh attempt ID. Mode:
   task-test-not-applicable — the change is to test fixtures themselves; the
   concurrent-run collision it removes is not reproducible inside one pytest run.
 - Green: `uv run --locked pytest -q desloppify/tests/commands/test_repair_cycle_host.py`.
 
 Steps:
-1. Stand-in host: answer `--help` with the three options unless
-   `FAKE_HOST_HELP=bare` (omit `--max-budget-usd`) or `fail` (exit 1); emit
-   stream-json lines (`assistant` events with `message.id`, then a `result`
-   event with `is_error`, `subtype`, `total_cost_usd`); mode `chatty` emits
-   assistant events with fresh IDs every 50 ms until killed. `_request` uses
+1. Stand-in host: answer `--version` with `FAKE_HOST_VERSION` (default
+   `2.1.289 (Claude Code)`) and `--help` with the three options unless
+   `FAKE_HOST_HELP=bare` (omit `--max-budget-usd`) or `fail` (exit 1). Rewrite
+   every existing mode's output as stream-json lines: two `assistant` events
+   sharing one `message.id`, one subagent `assistant` event with
+   `parent_tool_use_id`, then a `result` event (`is_error`, `subtype`,
+   `total_cost_usd`); `fail` emits an error result, `garbage` stays non-JSON.
+   Mode `chatty` emits assistant events with fresh IDs every 50 ms until killed;
+   mode `crash` emits an `error_during_execution` result. `_request` uses
    `uuid.uuid4().hex`; session assertions derive from `request.attempt_id`.
+   Every existing `.run(_request(...))` call passes a `BudgetAdmission`;
+   `test_missing_proc_is_unknown` keeps patching `_marked_pids` (post-launch).
 2. Write the tests above; run and confirm red.
-3. `_preflight` gains the capability check after the skills checks: `/proc`
-   missing, or `subprocess.run([exe, "--help"], capture_output=True, text=True,
-   timeout=10)` raising `OSError`/`TimeoutExpired`, exiting nonzero, or missing
-   any required option → `HostOutcome("parked", "unenforceable-limit")`.
+3. `_preflight` gains the capability check after the skills checks:
+   `_PROC_ROOT` (also used by `_marked_pids`) not a directory; or
+   `subprocess.run([exe, flag], capture_output=True, text=True, timeout=10)`
+   for `--version` and `--help` raising `OSError`/`TimeoutExpired` or exiting
+   nonzero; the leading `N.N.N` of `--version` below `(2, 1, 275)` or absent; or
+   `--help` missing a required option → `HostOutcome("parked",
+   "unenforceable-limit")`.
 4. Add a `_StreamUsage` reader: buffers partial lines, counts distinct
    assistant `message.id` values (plus one per assistant event without an ID),
    keeps the last `result` event; `cost_usd` property per the spec.
@@ -130,14 +143,22 @@ Interfaces: consumes Tasks 1 and 2. Produces
 in `desloppify/app/commands/repair_cycle.py`.
 
 Verification:
-- Contract: the reservation is persisted before the adapter runs and settled
-  after. Mode: focused-test. `test_dispatch_persists_reservation_before_launch`
-  (a fake adapter records `state["repair_cycle"]` at call time) — red: `AttributeError`.
-- Contract: an exhausted lease fails `budget-exhausted` without running; an
-  over-budget outcome fails `budget-exhausted`; a parked outcome settles at zero
-  and parks with its reason. Mode: focused-test. `test_dispatch_budget_outcomes`.
-- Contract: an interrupted dispatch keeps its reservation, and the next admission
-  is refused. Mode: focused-test. `test_interrupted_dispatch_keeps_reservation`.
+- Contract: the reservation is on disk before the adapter runs and settled
+  after. Mode: focused-test. `test_dispatch_persists_reservation_before_launch`:
+  run under `state_lock` on a `tmp_path` state file with `state_data=None`
+  (pattern of `test_lease_is_persisted_before_authority_verification`); the fake
+  adapter reads `json.loads(state_path.read_text())` — red: `AttributeError`.
+  Bite check: remove the persist call and observe red.
+- Contract: past the deadline fails `runtime-exhausted` without admitting; an
+  exhausted lease fails `budget-exhausted` without running; an over-budget
+  outcome fails `budget-exhausted`; a parked outcome settles at zero and parks
+  with its reason; `stopped`/`unknown` settle the whole admission; a mismatched
+  attempt ID or later deadline raises `ValueError`. Mode: focused-test.
+  `test_dispatch_budget_outcomes` (parametrized).
+- Contract: an interrupted dispatch keeps its reservation on disk, and the next
+  admission fails `unsettled-reservation`. Mode: focused-test.
+  `test_interrupted_dispatch_keeps_reservation`: the fake adapter raises
+  `KeyboardInterrupt`; a fresh `CycleState` decoded from the file is used next.
 - Green: `uv run --locked pytest -q desloppify/tests/commands/test_repair_cycle.py`.
 
 Steps:

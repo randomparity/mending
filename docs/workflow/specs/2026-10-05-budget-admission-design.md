@@ -32,9 +32,13 @@ them with the `AdeptCycleClient`.
 | Runtime | lease deadline (existing) | Mending stops the worker tree at the deadline (existing) | wall clock |
 
 The host runs with `--output-format stream-json --verbose
---forward-subagent-text`, so subagent assistant messages appear in the stream
-with `parent_tool_use_id` (documented in the Claude Code CLI reference). An
-assistant event without a `message.id` counts as one call. Mending makes no
+--forward-subagent-text`. Per the Claude Code headless docs ("Follow subagent
+messages"), a foreground subagent's `tool_use` blocks are streamed by default and
+the flag adds its text and thinking blocks, as `assistant` events carrying
+`parent_tool_use_id`, at every nesting depth from v2.1.275; each completed
+content block is its own event and blocks of one response share a `message.id`.
+So distinct IDs count one per model response; an assistant event without a
+`message.id` counts as one call. Mending makes no
 retries; review and revalidation run inside the host session, so they are
 covered by the same session limits. Every dispatch under one lease draws from
 that lease's remaining budget.
@@ -43,9 +47,11 @@ that lease's remaining budget.
 
 After the existing skills checks and before launch, the adapter parks with
 reason `unenforceable-limit` when `/proc` is absent (the tree stop cannot be
-verified, so runtime and call stops cannot be enforced) or when
-`<host> --help` (10-second bound, no model call) fails, times out, or lacks any
-of `--max-budget-usd`, `stream-json`, `--forward-subagent-text`.
+verified, so runtime and call stops cannot be enforced), when
+`<host> --version` reports a version below 2.1.275 or cannot be parsed, or when
+`<host> --help` lacks any of `--max-budget-usd`, `stream-json`,
+`--forward-subagent-text`. Each probe is bounded to 10 seconds and makes no
+model call; a probe that fails, exits nonzero, or times out parks the same way.
 
 ### State (`CycleState`, all absent in legacy state)
 
@@ -60,15 +66,28 @@ of `--max-budget-usd`, `stream-json`, `--forward-subagent-text`.
   adds the measured calls and cost; `cost_usd=None` (unmeasured) charges the
   whole admitted cost.
 - `budget_exceeded` is true when consumed cost or calls exceed the lease.
+- `admit` returning `None` while a reservation is outstanding means an earlier
+  dispatch was interrupted; the seam reports that as `unsettled-reservation`.
 
 ### Dispatch seam (`_dispatch_host`)
 
-Under the caller's held state lock: `admit`; on `None`, record attempt failure
-`budget-exhausted` and return without launching. Otherwise store and persist the
-reservation (`_persist_before_external_call`), run the adapter with the
-admission, then settle. A `parked` outcome settles at zero cost and parks with
-its reason; otherwise `budget_exceeded` records `budget-exhausted`. Other
-outcomes return to the caller (#31) after the settled state is stored.
+Under the caller's held state lock, with the current lease:
+1. A request whose `attempt_id` differs from the lease's, or whose `deadline`
+   is later than the lease's, raises `ValueError` (caller defect).
+2. At or past the lease deadline, record attempt failure `runtime-exhausted`
+   (as `_limit_failure` does) and return without admitting.
+3. `admit`; on `None`, record attempt failure `unsettled-reservation` when a
+   reservation is outstanding, else `budget-exhausted`, and return.
+4. Store and persist the reservation (`_persist_before_external_call`), then
+   run the adapter with the admission.
+5. Settle: `parked` at zero cost and observed calls; `stopped` or `unknown`
+   (Mending stopped the tree or could not verify it empty, so in-flight or
+   surviving work may have spent) at unmeasured cost and
+   `max(observed calls, admitted calls)`; any other outcome at its measured
+   usage.
+6. `parked` parks with its reason; otherwise `budget_exceeded` records
+   `budget-exhausted`. Other outcomes return to the caller (#31) after the
+   settled state is stored.
 
 ### Adapter outcome
 
@@ -100,7 +119,15 @@ Each adapter test request uses a fresh `uuid4` attempt ID, so the derived
    - the host stops on cost only after the call that crosses the cap, and
      Mending sees a call only after it returns, so each may exceed its limit by
      the calls already in flight (bounded by host concurrency; recorded as
-     consumed, then failed `budget-exhausted`);
+     consumed, then failed `budget-exhausted`); a stop by Mending charges the
+     whole admission instead of guessing the in-flight count;
+   - model calls the host makes that never appear as `assistant` events
+     (host-internal auxiliary or compaction calls, background subagents) are
+     not counted; the host's cost cap still binds them; checking the stream
+     shape against a captured real transcript is #32's;
+   - if Mending is killed uncatchably (SIGKILL), the host keeps running with
+     only its own cost cap until it exits; under the systemd unit the control
+     group kill ends it, and a local operator stops it before disposition;
    - an interrupted dispatch leaves its whole admission reserved, so that lease
      admits nothing further and the attempt needs observation and disposition
      (#28 path); no settlement is guessed;
@@ -119,7 +146,8 @@ Each adapter test request uses a fresh `uuid4` attempt ID, so the derived
   attempt fails `budget-exhausted`.
 - A host whose `--help` lacks a required option, or a host without `/proc`,
   parks `unenforceable-limit` with no launch.
-- After an interrupted dispatch, the next admission under that lease is refused.
+- After an interrupted dispatch, the next admission under that lease is refused
+  with `unsettled-reservation`.
 - Legacy state without the four fields decodes with zeros.
 
 ## Validation
