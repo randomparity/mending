@@ -7,6 +7,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
+import pytest
+
 from desloppify.app.commands import repair_cycle
 from desloppify.app.commands.repair_cycle import (
     AdeptReceipt,
@@ -428,3 +430,24 @@ def test_deadline_timer_interrupts_before_adapter_selection(monkeypatch) -> None
     assert client.verifications == 0
     assert client.selections == 0
     assert state["repair_cycle"]["parked_reason"] == "timeout"
+
+
+def test_config_host_keys_default_and_decode() -> None:
+    defaults = CycleConfig.from_mapping(_config())
+    assert (defaults.host_executable, defaults.adept_skills_dir, defaults.adept_skills_version) == (
+        "claude",
+        None,
+        None,
+    )
+    configured = CycleConfig.from_mapping(
+        _config(
+            host_executable=" /usr/local/bin/claude ",
+            adept_skills_dir="/opt/adept",
+            adept_skills_version="7.2.0",
+        )
+    )
+    assert configured.host_executable == "/usr/local/bin/claude"
+    assert configured.adept_skills_dir == "/opt/adept"
+    assert configured.adept_skills_version == "7.2.0"
+    with pytest.raises(ValueError, match="host_executable"):
+        CycleConfig.from_mapping(_config(host_executable=""))

@@ -22,6 +22,9 @@ class CycleConfig:
     call_limit: int
     model: str | None
     cost_cap_usd: Decimal | None
+    host_executable: str = "claude"
+    adept_skills_dir: str | None = None
+    adept_skills_version: str | None = None
 
     @classmethod
     def from_mapping(cls, mapping: Mapping[str, object]) -> CycleConfig:
@@ -37,6 +40,9 @@ class CycleConfig:
             call_limit=call_limit,
             model=_optional_text(mapping, "model"),
             cost_cap_usd=_optional_cost_cap(mapping),
+            host_executable=_optional_text(mapping, "host_executable") or "claude",
+            adept_skills_dir=_optional_text(mapping, "adept_skills_dir"),
+            adept_skills_version=_optional_text(mapping, "adept_skills_version"),
         )
 
     @property
