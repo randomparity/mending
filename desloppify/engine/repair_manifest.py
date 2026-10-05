@@ -21,6 +21,7 @@ ROLES = frozenset({"implementation", "sibling", "test", "decision"})
 STATUSES = frozenset({"present", "missing", "unsupported"})
 MAX_DEPENDENCIES = 64
 MAX_PATH_BYTES = 1024
+APPROVAL_KINDS = ("github_repair_revalidated",)
 _GIT_TIMEOUT_SECONDS = 30
 _REGULAR_MODES = frozenset({"100644", "100755"})
 
@@ -77,6 +78,18 @@ class SourceManifest:
         return sha256(canonical.encode()).hexdigest()
 
 
+@dataclass(frozen=True)
+class ManifestComparison:
+    """Whether evidence recorded earlier is still current, and why."""
+
+    current: bool
+    reason: str
+    changed_paths: tuple[str, ...]
+    base_changed: bool
+    previous_digest: str | None
+    current_digest: str | None
+
+
 def build_manifest(
     root: Path,
     revision: str,
@@ -108,6 +121,45 @@ def manifest_from_record(record: object) -> SourceManifest | AnalysisUnknown:
         return _parse_record(record)
     except (TypeError, ValueError, KeyError):
         return AnalysisUnknown("malformed manifest record")
+
+
+def compare_manifests(
+    previous: SourceManifest | AnalysisUnknown, current: SourceManifest | AnalysisUnknown
+) -> ManifestComparison:
+    """Report whether ``previous`` evidence is still current against ``current``."""
+    old_digest = previous.digest if isinstance(previous, SourceManifest) else None
+    new_digest = current.digest if isinstance(current, SourceManifest) else None
+    if not isinstance(previous, SourceManifest) or not isinstance(current, SourceManifest):
+        return ManifestComparison(False, "unknown", (), False, old_digest, new_digest)
+    base_changed = previous.revision != current.revision
+    changed = _changed_paths(previous, current)
+    if "partial" in (previous.coverage, current.coverage):
+        return ManifestComparison(
+            False, "coverage-incomplete", changed, base_changed, old_digest, new_digest
+        )
+    if changed:
+        return ManifestComparison(
+            False, "dependencies-changed", changed, base_changed, old_digest, new_digest
+        )
+    return ManifestComparison(True, "unchanged", (), base_changed, old_digest, new_digest)
+
+
+def retain_bound_approvals(
+    detail: Mapping[str, Any], comparison: ManifestComparison
+) -> dict[str, Any]:
+    """Return ``detail`` keeping approvals only while their manifest stays current."""
+    retained = dict(detail)
+    for kind in APPROVAL_KINDS:
+        if kind not in retained:
+            continue
+        record = retained.pop(kind)
+        if (
+            comparison.current
+            and isinstance(record, Mapping)
+            and record.get("manifest_digest") == comparison.previous_digest
+        ):
+            retained[kind] = {**record, "manifest_digest": comparison.current_digest}
+    return retained
 
 
 def _spec_problem(dependencies: Sequence[DependencySpec]) -> str | None:
@@ -155,6 +207,12 @@ def _coverage(dependencies: Sequence[Dependency], declared_complete: bool) -> st
         and all(d.status == "present" for d in dependencies)
     )
     return "complete" if complete else "partial"
+
+
+def _changed_paths(previous: SourceManifest, current: SourceManifest) -> tuple[str, ...]:
+    before = {d.path: (d.role, d.status, d.object_id) for d in previous.dependencies}
+    after = {d.path: (d.role, d.status, d.object_id) for d in current.dependencies}
+    return tuple(sorted(p for p in before.keys() | after.keys() if before.get(p) != after.get(p)))
 
 
 def _git(root: Path, *args: str) -> str | None:
@@ -216,14 +274,18 @@ def _parse_dependency(entry: object) -> Dependency:
 
 
 __all__ = [
+    "APPROVAL_KINDS",
     "AnalysisUnknown",
     "Dependency",
     "DependencySpec",
     "MANIFEST_SCHEMA",
     "MAX_DEPENDENCIES",
     "MAX_PATH_BYTES",
+    "ManifestComparison",
     "ROLES",
     "SourceManifest",
     "build_manifest",
+    "compare_manifests",
     "manifest_from_record",
+    "retain_bound_approvals",
 ]

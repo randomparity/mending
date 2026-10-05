@@ -13,7 +13,9 @@ from desloppify.engine.repair_manifest import (
     DependencySpec,
     SourceManifest,
     build_manifest,
+    compare_manifests,
     manifest_from_record,
+    retain_bound_approvals,
 )
 
 FILES = {
@@ -85,6 +87,73 @@ def test_build_records_present_dependencies(repo: Path) -> None:
     assert impl.object_id == _git(repo, "rev-parse", "HEAD:src/impl.py")
 
 
+def test_unchanged_evidence_is_current(repo: Path) -> None:
+    first, second = _build(repo), _build(repo)
+    assert first.digest == second.digest
+    comparison = compare_manifests(first, second)
+    assert (comparison.current, comparison.reason, comparison.base_changed) == (
+        True,
+        "unchanged",
+        False,
+    )
+
+
+@pytest.mark.parametrize("spec", SPECS, ids=lambda spec: spec.role)
+def test_single_dependency_edit_invalidates(repo: Path, spec: DependencySpec) -> None:
+    before = _build(repo)
+    commit(repo, spec.path, "changed\n")
+    comparison = compare_manifests(before, _build(repo))
+    assert (comparison.current, comparison.reason) == (False, "dependencies-changed")
+    assert comparison.changed_paths == (spec.path,)
+
+
+def test_unrelated_edit_with_complete_coverage_is_current(repo: Path) -> None:
+    before = _build(repo)
+    commit(repo, "README.md", "unrelated\n")
+    comparison = compare_manifests(before, _build(repo))
+    assert (comparison.current, comparison.reason, comparison.base_changed) == (
+        True,
+        "unchanged",
+        True,
+    )
+
+
+def _approved_detail(manifest: SourceManifest) -> dict:
+    return {
+        "concern_identity": "a" * 64,
+        "concern_evidence_digest": "b" * 64,
+        "maintenance_consequence": "unchanged prose",
+        "github_repair_revalidated": {"attestation": "ok", "manifest_digest": manifest.digest},
+    }
+
+
+def test_source_edit_clears_approval_with_unchanged_prose(repo: Path) -> None:
+    before = _build(repo)
+    detail = _approved_detail(before)
+    commit(repo, "src/impl.py", "def impl():\n    return 3\n")
+    retained = retain_bound_approvals(detail, compare_manifests(before, _build(repo)))
+    assert "github_repair_revalidated" not in retained
+    assert retained == {k: v for k, v in detail.items() if k != "github_repair_revalidated"}
+
+
+def test_current_comparison_rebinds_approval(repo: Path) -> None:
+    before = _build(repo)
+    commit(repo, "README.md", "unrelated\n")
+    after = _build(repo)
+    retained = retain_bound_approvals(_approved_detail(before), compare_manifests(before, after))
+    assert retained["github_repair_revalidated"] == {
+        "attestation": "ok",
+        "manifest_digest": after.digest,
+    }
+
+
+@pytest.mark.parametrize("record", [{"attestation": "ok"}, {"manifest_digest": "c" * 64}, "x"])
+def test_unbound_approval_is_removed(repo: Path, record: object) -> None:
+    manifest = _build(repo)
+    detail = {"github_repair_revalidated": record}
+    assert retain_bound_approvals(detail, compare_manifests(manifest, manifest)) == {}
+
+
 @pytest.mark.parametrize(
     ("path", "setup"),
     [
@@ -113,6 +182,17 @@ def test_unusable_dependencies_are_recorded_and_partial(
     recorded = next(d for d in manifest.dependencies if d.path == path)
     assert (recorded.status, recorded.object_id) == (expected, None)
     assert manifest.coverage == "partial"
+    comparison = compare_manifests(manifest, manifest)
+    assert (comparison.current, comparison.reason) == (False, "coverage-incomplete")
+
+
+def test_deleted_dependency_is_reported_by_path(repo: Path) -> None:
+    before = _build(repo)
+    (repo / "src/impl.py").unlink()
+    _git(repo, "commit", "-q", "-a", "-m", "delete")
+    comparison = compare_manifests(before, _build(repo))
+    assert (comparison.current, comparison.reason) == (False, "coverage-incomplete")
+    assert comparison.changed_paths == ("src/impl.py",)
 
 
 def test_symlinked_parent_is_not_followed(repo: Path) -> None:
@@ -158,6 +238,10 @@ def test_unbindable_analysis_is_unknown(repo: Path, tmp_path: Path, case: str) -
         specs = tuple(DependencySpec(f"f{n}.py", "sibling") for n in range(MAX_DEPENDENCIES + 1))
     result = build_manifest(root, revision, specs, coverage_declared_complete=True)
     assert isinstance(result, AnalysisUnknown)
+    good = _build(repo)
+    for pair in ((result, good), (good, result)):
+        comparison = compare_manifests(*pair)
+        assert (comparison.current, comparison.reason) == (False, "unknown")
 
 
 def test_option_like_revision_is_not_an_option(repo: Path) -> None:
