@@ -15,6 +15,11 @@ from pathlib import Path
 from typing import Any, Callable, Protocol, TypeVar, cast
 
 from desloppify.app.commands.helpers.state import state_path
+from desloppify.app.commands.repair_cycle_host import (
+    ClaudeHostAdapter,
+    HostOutcome,
+    HostRequest,
+)
 from desloppify.base.exception_sets import CommandError
 from desloppify.engine._state.persistence import save_state, state_lock
 from desloppify.engine._state.schema_types import StateModel
@@ -233,6 +238,47 @@ def _accept_receipt(
         return False
     _store_cycle_state(state, cycle_state)
     return True
+
+
+def _dispatch_host(
+    args: argparse.Namespace,
+    state: dict[str, Any],
+    cycle_state: CycleState,
+    adapter: ClaudeHostAdapter,
+    request: HostRequest,
+) -> HostOutcome | None:
+    """Admit, persist, run, and settle one host dispatch under the held state lock.
+
+    Returns None when nothing was dispatched. #31 composes this into the cycle.
+    """
+    lease = cycle_state.current_lease
+    if lease is None or request.attempt_id != lease.attempt_id or request.deadline > lease.deadline:
+        raise ValueError("host request does not match the current lease")
+    if _now(args) >= lease.deadline:
+        _fail(state, cycle_state, "runtime-exhausted")
+        return None
+    admission = cycle_state.admit()
+    if admission is None:
+        unsettled = cycle_state.reserved_calls or cycle_state.reserved_cost_usd
+        _fail(state, cycle_state, "unsettled-reservation" if unsettled else "budget-exhausted")
+        return None
+    _store_cycle_state(state, cycle_state)
+    _persist_before_external_call(args, state)
+    outcome = adapter.run(request, admission)
+    if outcome.state == "parked":
+        cycle_state.settle(admission, Decimal(0), outcome.calls)
+        _park(state, cycle_state, outcome.reason or "host-parked")
+        return outcome
+    if outcome.state in {"stopped", "unknown"}:
+        # Work in flight or still running when Mending stopped it may have spent anything.
+        cycle_state.settle(admission, None, max(outcome.calls, admission.calls))
+    else:
+        cycle_state.settle(admission, outcome.cost_usd, outcome.calls)
+    if cycle_state.budget_exceeded:
+        _fail(state, cycle_state, "budget-exhausted")
+    else:
+        _store_cycle_state(state, cycle_state)
+    return outcome
 
 
 def _receipt_reason(

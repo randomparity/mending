@@ -4,8 +4,10 @@ import argparse
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
@@ -13,8 +15,10 @@ from desloppify.app.commands import repair_cycle
 from desloppify.app.commands.repair_cycle import (
     AdeptReceipt,
     AuthorityProof,
+    _dispatch_host,
     cmd_repair_cycle,
 )
+from desloppify.app.commands.repair_cycle_host import HostOutcome, HostRequest
 from desloppify.base.exception_sets import CommandError
 from desloppify.cli import create_parser
 from desloppify.engine.repair_cycle import BudgetAdmission, CycleConfig, CycleState
@@ -684,3 +688,135 @@ def test_unmeasured_cost_charges_whole_admission() -> None:
     assert (cycle_state.consumed_cost_usd, cycle_state.consumed_calls) == (Decimal("2.00"), 11)
     assert cycle_state.budget_exceeded
     assert cycle_state.admit() is None
+
+
+class _FakeHost:
+    def __init__(self, outcome: HostOutcome | None = None, *, error: BaseException | None = None,
+                 on_run=None) -> None:
+        self.outcome = outcome or HostOutcome("completed", cost_usd=Decimal("0.5"), calls=3)
+        self.error = error
+        self.on_run = on_run
+        self.admissions: list[BudgetAdmission] = []
+
+    def run(self, request: HostRequest, admission: BudgetAdmission) -> HostOutcome:
+        self.admissions.append(admission)
+        if self.on_run is not None:
+            self.on_run()
+        if self.error is not None:
+            raise self.error
+        return self.outcome
+
+
+def _leased(state: dict) -> tuple[CycleState, HostRequest]:
+    cycle_state = _budget_state()
+    lease = cycle_state.current_lease
+    assert lease is not None
+    state["repair_cycle"] = cycle_state.to_mapping()
+    request = HostRequest(
+        attempt_id=lease.attempt_id,
+        brief="Fix the flaky parser.",
+        source_revision="0" * 40,
+        authorized_scope="desloppify/parser.py",
+        repo_root=Path("."),
+        deadline=lease.deadline,
+    )
+    return cycle_state, request
+
+
+@pytest.mark.parametrize(
+    ("outcome", "consumed", "failure", "parked"),
+    [
+        (HostOutcome("completed", cost_usd=Decimal("0.5"), calls=3), ("0.5", 3), None, None),
+        (
+            HostOutcome("failed", "host-error", cost_usd=Decimal("2.5"), calls=4),
+            ("2.5", 4),
+            "budget-exhausted",
+            "budget-exhausted",
+        ),
+        (HostOutcome("parked", "unenforceable-limit"), ("0", 0), None, "unenforceable-limit"),
+        (
+            HostOutcome("stopped", "call-limit", calls=11),
+            ("2.00", 11),
+            "budget-exhausted",
+            "budget-exhausted",
+        ),
+        (HostOutcome("unknown", "timeout-survivors", calls=2), ("2.00", 10), None, None),
+    ],
+)
+def test_dispatch_budget_outcomes(outcome, consumed, failure, parked) -> None:
+    state = _state()
+    cycle_state, request = _leased(state)
+    host = _FakeHost(outcome)
+
+    assert _dispatch_host(_args(state, _Client()), state, cycle_state, host, request) == outcome
+
+    assert host.admissions == [BudgetAdmission(Decimal("2.00"), 10)]
+    recorded = state["repair_cycle"]
+    assert (Decimal(recorded["consumed_cost_usd"]), recorded["consumed_calls"]) == (
+        Decimal(consumed[0]),
+        consumed[1],
+    )
+    assert (Decimal(recorded["reserved_cost_usd"]), recorded["reserved_calls"]) == (0, 0)
+    assert (recorded["attempt_failure"], recorded["parked_reason"]) == (failure, parked)
+
+
+def test_dispatch_refuses_without_admission() -> None:
+    state = _state()
+    cycle_state, request = _leased(state)
+    host = _FakeHost()
+    late = _args(state, _Client(), now=request.deadline)
+    assert _dispatch_host(late, state, cycle_state, host, request) is None
+    assert state["repair_cycle"]["attempt_failure"] == "runtime-exhausted"
+    assert cycle_state.reserved_calls == 0
+
+    state = _state()
+    cycle_state, request = _leased(state)
+    cycle_state.consumed_calls = 10
+    assert _dispatch_host(_args(state, _Client()), state, cycle_state, host, request) is None
+    assert state["repair_cycle"]["attempt_failure"] == "budget-exhausted"
+    assert host.admissions == []
+
+    for mismatched in (
+        replace(request, attempt_id="other"),
+        replace(request, deadline=request.deadline + timedelta(seconds=1)),
+    ):
+        with pytest.raises(ValueError, match="current lease"):
+            _dispatch_host(_args(state, _Client()), state, cycle_state, host, mismatched)
+
+
+def test_dispatch_persists_reservation_before_launch(tmp_path) -> None:
+    state_path = tmp_path / "state.json"
+    args = _args(None, _Client(), state=str(state_path))
+    seen: list[dict] = []
+
+    def read_disk() -> None:
+        seen.append(json.loads(state_path.read_text())["repair_cycle"])
+
+    with repair_cycle._locked_state(args) as state:
+        cycle_state, request = _leased(state)
+        _dispatch_host(args, state, cycle_state, _FakeHost(on_run=read_disk), request)
+
+    assert (seen[0]["reserved_cost_usd"], seen[0]["reserved_calls"]) == ("2.00", 10)
+    settled = json.loads(state_path.read_text())["repair_cycle"]
+    assert (settled["reserved_calls"], settled["consumed_calls"]) == (0, 3)
+    assert settled["consumed_cost_usd"] == "0.5"
+
+
+def test_interrupted_dispatch_keeps_reservation(tmp_path) -> None:
+    state_path = tmp_path / "state.json"
+    args = _args(None, _Client(), state=str(state_path))
+
+    with pytest.raises(KeyboardInterrupt), repair_cycle._locked_state(args) as state:
+        cycle_state, request = _leased(state)
+        _dispatch_host(args, state, cycle_state, _FakeHost(error=KeyboardInterrupt()), request)
+
+    host = _FakeHost()
+    with repair_cycle._locked_state(args) as state:
+        restarted = repair_cycle._cycle_state(state)
+        assert (restarted.reserved_cost_usd, restarted.reserved_calls) == (Decimal("2.00"), 10)
+        assert _dispatch_host(args, state, restarted, host, request) is None
+
+    assert host.admissions == []
+    recorded = json.loads(state_path.read_text())["repair_cycle"]
+    assert recorded["attempt_failure"] == "unsettled-reservation"
+    assert recorded["reserved_calls"] == 10
