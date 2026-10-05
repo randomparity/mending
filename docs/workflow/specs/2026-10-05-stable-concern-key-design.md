@@ -73,9 +73,10 @@ issue is created for the same concern.
 
 ## Failure model
 
-- Actors and deployments: one local authenticated operator (or the #6 timer
-  unit) running `repair-queue` against one repository and one shared state file;
-  GitHub via the installed `gh`.
+- Actors and deployments: one local authenticated operator running
+  `repair-queue` against one repository and one shared state file, which other
+  local writers (scans, the #6 repair-cycle unit) also update under the state
+  lock; GitHub via the installed `gh`.
 - Invariants and assets: at most one GitHub issue per key per repository among
   writers sharing a state file; links, pending attempts, and closed-issue state
   are never discarded while identity is unchanged; public text holds only
