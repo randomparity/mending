@@ -165,6 +165,8 @@ def retain_bound_approvals(
 def _spec_problem(dependencies: Sequence[DependencySpec]) -> str | None:
     if len(dependencies) > MAX_DEPENDENCIES:
         return f"more than {MAX_DEPENDENCIES} dependencies"
+    if any(not (isinstance(s.path, str) and isinstance(s.role, str)) for s in dependencies):
+        return "invalid dependency spec"
     if any(spec.role not in ROLES for spec in dependencies):
         return "unknown dependency role"
     if len({spec.path for spec in dependencies}) != len(dependencies):
@@ -175,7 +177,10 @@ def _spec_problem(dependencies: Sequence[DependencySpec]) -> str | None:
 def _valid_path(path: object) -> bool:
     if not isinstance(path, str) or not path or "\0" in path:
         return False
-    if len(path.encode("utf-8", "surrogatepass")) > MAX_PATH_BYTES:
+    try:
+        if len(path.encode("utf-8")) > MAX_PATH_BYTES:
+            return False
+    except UnicodeEncodeError:
         return False
     return all(segment not in {"", ".", ".."} for segment in path.split("/"))
 
@@ -229,8 +234,8 @@ def _git(root: Path, *args: str) -> str | None:
             check=False,
             env=env,
         )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None  # ValueError: NUL in an argument, or undecodable output.
     return process.stdout if process.returncode == 0 else None
 
 

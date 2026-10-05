@@ -166,6 +166,7 @@ def test_unbound_approval_is_removed(repo: Path, record: object) -> None:
         ("src/", None),
         ("./src/impl.py", None),
         ("", None),
+        ("\ud800.py", None),
         ("a" * (MAX_PATH_BYTES + 1), None),
     ],
 )
@@ -221,12 +222,24 @@ def test_undeclared_coverage_is_partial(repo: Path) -> None:
 
 @pytest.mark.parametrize(
     "case",
-    ["bad-revision", "not-a-repo", "unknown-role", "duplicate-path", "too-many"],
+    [
+        "bad-revision",
+        "nul-revision",
+        "not-a-repo",
+        "unknown-role",
+        "non-str-path",
+        "duplicate-path",
+        "too-many",
+    ],
 )
 def test_unbindable_analysis_is_unknown(repo: Path, tmp_path: Path, case: str) -> None:
     root, revision, specs = repo, "HEAD", SPECS
     if case == "bad-revision":
         revision = "no-such-branch"
+    elif case == "nul-revision":
+        revision = "HEAD\0x"
+    elif case == "non-str-path":
+        specs = (*SPECS, DependencySpec(5, "sibling"))  # type: ignore[arg-type]
     elif case == "not-a-repo":
         root = tmp_path / "empty"
         root.mkdir()
