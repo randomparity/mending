@@ -12,9 +12,12 @@ consume only that normalizer; neither compares markers itself any more.
 
 **Tech stack:** Python 3.11+, pytest, existing `uv`/`make` guardrails.
 
-Expected implementation size: 350–450 changed lines (M) — ~170 production lines
-across three modules plus ~230 test lines for the seven Success items; tests
-dominate.
+Expected implementation size: 800–900 changed lines (M) — measured after the
+build: ~360 production lines (insertions + deletions) across three modules and
+~500 test lines for the seven Success items and the design-review additions
+(peer records, locked refusal, round-trip). The authored estimate of 350–450
+counted insertions only and predated the peer-record and round-trip tests the
+design review added; scope is unchanged.
 
 ## Global Constraints
 
