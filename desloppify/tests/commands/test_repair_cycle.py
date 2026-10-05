@@ -451,3 +451,42 @@ def test_config_host_keys_default_and_decode() -> None:
     assert configured.adept_skills_version == "7.2.0"
     with pytest.raises(ValueError, match="host_executable"):
         CycleConfig.from_mapping(_config(host_executable=""))
+
+
+def test_config_observation_keys_default_and_decode() -> None:
+    defaults = CycleConfig.from_mapping(_config())
+    assert (defaults.observation_call_limit, defaults.observation_seconds) == (3, 300)
+    configured = CycleConfig.from_mapping(_config(observation_call_limit=5, observation_minutes=2))
+    assert (configured.observation_call_limit, configured.observation_seconds) == (5, 120)
+    with pytest.raises(ValueError, match="observation_call_limit"):
+        CycleConfig.from_mapping(_config(observation_call_limit=0))
+    with pytest.raises(ValueError, match="observation_minutes"):
+        CycleConfig.from_mapping(_config(observation_minutes=True))
+
+
+def test_legacy_state_decodes_and_new_fields_validate() -> None:
+    cycle_state = CycleState.empty()
+    lease = cycle_state.begin(CycleConfig.from_mapping(_config()), NOW, attempt_id="legacy")
+    assert lease is not None
+    legacy = {
+        key: value
+        for key, value in cycle_state.to_mapping().items()
+        if key not in {"observation_calls", "attempt_failure", "disposed_attempt"}
+    }
+
+    decoded = CycleState.from_mapping(legacy)
+
+    assert decoded.current_lease == lease
+    assert (decoded.observation_calls, decoded.attempt_failure, decoded.disposed_attempt) == (
+        0,
+        None,
+        None,
+    )
+    for field, bad in (
+        ("observation_calls", -1),
+        ("observation_calls", True),
+        ("attempt_failure", 3),
+        ("disposed_attempt", ""),
+    ):
+        with pytest.raises(ValueError):
+            CycleState.from_mapping({**legacy, field: bad})

@@ -10,6 +10,8 @@ from uuid import uuid4
 
 DEFAULT_RUNTIME_SECONDS = 90 * 60
 DEFAULT_CALL_LIMIT = 100
+DEFAULT_OBSERVATION_CALL_LIMIT = 3
+DEFAULT_OBSERVATION_MINUTES = 5
 
 
 @dataclass(frozen=True)
@@ -25,6 +27,8 @@ class CycleConfig:
     host_executable: str = "claude"
     adept_skills_dir: str | None = None
     adept_skills_version: str | None = None
+    observation_call_limit: int = DEFAULT_OBSERVATION_CALL_LIMIT
+    observation_seconds: int = DEFAULT_OBSERVATION_MINUTES * 60
 
     @classmethod
     def from_mapping(cls, mapping: Mapping[str, object]) -> CycleConfig:
@@ -43,6 +47,11 @@ class CycleConfig:
             host_executable=_optional_text(mapping, "host_executable") or "claude",
             adept_skills_dir=_optional_text(mapping, "adept_skills_dir"),
             adept_skills_version=_optional_text(mapping, "adept_skills_version"),
+            observation_call_limit=_positive_int(
+                mapping, "observation_call_limit", default=DEFAULT_OBSERVATION_CALL_LIMIT
+            ),
+            observation_seconds=60
+            * _positive_int(mapping, "observation_minutes", default=DEFAULT_OBSERVATION_MINUTES),
         )
 
     @property
@@ -135,6 +144,9 @@ class CycleState:
     authoritative_receipt: dict[str, object] | None = None
     parked_reason: str | None = None
     merge_permit_day: str | None = None
+    observation_calls: int = 0
+    attempt_failure: str | None = None
+    disposed_attempt: str | None = None
 
     @classmethod
     def empty(cls) -> CycleState:
@@ -160,11 +172,19 @@ class CycleState:
             if not isinstance(merge_day, str):
                 raise ValueError("merge permit day is invalid")
             _parse_day_key(merge_day)
+        observation_calls = mapping.get("observation_calls", 0)
+        if isinstance(observation_calls, bool) or not isinstance(observation_calls, int):
+            raise ValueError("observation call count is invalid")
+        if observation_calls < 0:
+            raise ValueError("observation call count is invalid")
         return cls(
             current_lease=CycleLease.from_mapping(lease_value) if lease_value else None,
             authoritative_receipt=dict(receipt_value) if receipt_value else None,
             parked_reason=parked_reason,
             merge_permit_day=merge_day,
+            observation_calls=observation_calls,
+            attempt_failure=_optional_text(mapping, "attempt_failure"),
+            disposed_attempt=_optional_text(mapping, "disposed_attempt"),
         )
 
     def to_mapping(self) -> dict[str, object]:
@@ -174,6 +194,9 @@ class CycleState:
             "authoritative_receipt": self.authoritative_receipt,
             "parked_reason": self.parked_reason,
             "merge_permit_day": self.merge_permit_day,
+            "observation_calls": self.observation_calls,
+            "attempt_failure": self.attempt_failure,
+            "disposed_attempt": self.disposed_attempt,
         }
 
     def begin(self, config: CycleConfig, now: datetime, *, attempt_id: str | None = None) -> CycleLease | None:
@@ -183,6 +206,9 @@ class CycleState:
         self.current_lease = CycleLease.create(config, now, attempt_id=attempt_id)
         self.authoritative_receipt = None
         self.parked_reason = None
+        self.observation_calls = 0
+        self.attempt_failure = None
+        self.disposed_attempt = None
         return self.current_lease
 
     def record_receipt(self, receipt: Mapping[str, object]) -> None:
@@ -193,6 +219,40 @@ class CycleState:
     def park(self, reason: str) -> None:
         """Record a fail-closed state without discarding the active attempt."""
         self.parked_reason = reason
+
+    def fail(self, reason: str) -> None:
+        """Retain the attempt's first failure and park; only a disposition releases it."""
+        if self.attempt_failure is None:
+            self.attempt_failure = reason
+        self.park(reason)
+
+    @property
+    def awaiting_disposition(self) -> bool:
+        """Return whether a failed attempt blocks new work until an operator disposes it."""
+        lease = self.current_lease
+        return (
+            lease is not None
+            and self.attempt_failure is not None
+            and self.disposed_attempt != lease.attempt_id
+        )
+
+    @property
+    def disposed(self) -> bool:
+        """Return whether the operator disposed the current attempt."""
+        lease = self.current_lease
+        return lease is not None and self.disposed_attempt == lease.attempt_id
+
+    def dispose(self, attempt_id: str) -> None:
+        """Record the operator's disposition of the current failed attempt."""
+        lease = self.current_lease
+        if lease is None or lease.attempt_id != attempt_id:
+            current = lease.attempt_id if lease else "none"
+            raise ValueError(
+                f"attempt {attempt_id} is not the current attempt (current: {current})"
+            )
+        if self.attempt_failure is None:
+            raise ValueError(f"attempt {attempt_id} has no recorded failure to dispose")
+        self.disposed_attempt = attempt_id
 
     def merge_permit_available(self, now: datetime) -> bool:
         """Return whether the host-local day has not consumed its merge permit."""
@@ -207,6 +267,10 @@ class CycleState:
     def _may_replace_lease(self, today: date) -> bool:
         if self.current_lease is None or self.current_lease.day_key == today.isoformat():
             return False
+        if self.awaiting_disposition:
+            return False
+        if self.disposed:
+            return True
         receipt = self.authoritative_receipt or {}
         return receipt.get("state") == "terminal"
 
