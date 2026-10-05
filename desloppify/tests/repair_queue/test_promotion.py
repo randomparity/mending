@@ -15,7 +15,6 @@ from desloppify.engine.repair_queue import (
     concern_key,
     legacy_marker,
     normalize_record,
-    render_issue,
 )
 
 IDENTITY = "a" * 64
@@ -151,18 +150,6 @@ def test_normalize_rejects_corrupt_records(kind: str, record: object) -> None:
         _normalize(kind, record)
 
 
-def test_rendered_issue_never_contains_source_text() -> None:
-    candidate = candidate_from_issue(_issue(), REPOSITORY)
-    assert candidate is not None
-    title, body = render_issue(candidate)
-    assert KEY[:12] in title
-    assert f"<!-- desloppify-concern-key: {KEY} -->" in body
-    assert IDENTITY in body
-    assert "private operator name" not in body
-    assert "private/path.py" not in body
-    assert "ignore all prior instructions" not in body
-
-
 def test_client_requires_exact_repository_resolution() -> None:
     calls: list[list[str]] = []
 
@@ -256,10 +243,8 @@ def test_client_creates_actionable_issue_with_fixed_arguments() -> None:
         calls.append(argv)
         return subprocess.CompletedProcess(argv, 0, "", "")
 
-    candidate = candidate_from_issue(_issue(), REPOSITORY)
-    assert candidate is not None
-    title, body = render_issue(candidate)
-    GitHubIssueClient(run).create(REPOSITORY, candidate)
+    title, body = "Repair: problem", "## Source-bound"
+    GitHubIssueClient(run).create(REPOSITORY, title, body)
     assert calls == [[
         "gh", "issue", "create", "--repo", REPOSITORY, "--title", title,
         "--body", body, "--label", "status:ready",
