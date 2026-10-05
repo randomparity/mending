@@ -32,16 +32,17 @@ _REJECTIONS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "secret",
         re.compile(
-            r"-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"
-            r"|\bgh[pousr]_[A-Za-z0-9]{30,}|\bgithub_pat_\w{20,}|\bxox[abprs]-[\w-]{10,}"
-            r"|\bAIza[\w-]{35}|\bsk-[\w-]{20,}|\beyJ[\w-]{10,}\.[\w-]{10,}\."
-            r"|(?i:\b(?:password|passwd|secret|token|api[_-]?key)\w*\s*[:=]\s*['\"][^'\"\s]{8,}['\"])"
+            r"-----BEGIN [A-Z ]*PRIVATE KEY-----|(?:AKIA|ASIA)[0-9A-Z]{16}(?![0-9A-Z])"
+            r"|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_\w{20,}|xox[abprs]-[\w-]{10,}"
+            r"|AIza[\w-]{35}|sk-[\w-]{32,}|eyJ[\w-]{10,}\.[\w-]{10,}\."
+            r"|(?i:(?:password|passwd|secret|token|api[_-]?key)\w*\s*[:=]\s*['\"][^'\"\s]{8,}['\"])"
         ),
     ),
     (
         "private-identifier",
         re.compile(
-            r"[\w.+-]+@[\w-]+\.[\w.-]+|\b\d{1,3}(?:\.\d{1,3}){3}\b|/home/|/Users/|/root/"
+            r"[\w.+-]+@[\w-]+\.[\w.-]+|(?<![\d.])\d{1,3}(?:\.\d{1,3}){3}(?![\d.])"
+            r"|/home/|/Users/|/root/"
             r"|(?i:\b[a-z]:\\users\\)|(?<![\w.])~/"
             r"|(?i:\b(?:[a-z0-9-]+\.)+(?:internal|corp|lan|intranet)\b)"
         ),

@@ -27,7 +27,10 @@ MANIFEST = {
     "revision": "c" * 40,
     "coverage": "complete",
     "dependencies": [
-        {"path": "src/impl.py", "role": "implementation", "status": "present", "object_id": "d" * 40},
+        {
+            "path": "src/impl.py", "role": "implementation", "status": "present",
+            "object_id": "d" * 40,
+        },
         {"path": "src/sibling.py", "role": "sibling", "status": "present", "object_id": "e" * 40},
     ],
 }
@@ -143,6 +146,13 @@ def test_absent_or_blank_fix_is_omitted(blank: str | None) -> None:
         ("evidence", "evidence", "token AKIAABCDEFGHIJKLMNOP", "secret"),
         ("evidence", "evidence", "ghp_" + "Z" * 36, "secret"),
         ("verification", "verification", 'set api_key = "abcd1234efgh"', "secret"),
+        ("evidence", "evidence", 'client_secret = "abcd1234efgh"', "secret"),
+        ("evidence", "evidence", 'DB_PASSWORD="hunter2hunter2"', "secret"),
+        ("evidence", "evidence", 'GITHUB_TOKEN: "abcd1234efgh"', "secret"),
+        ("evidence", "evidence", "log\\nAKIAABCDEFGHIJKLMNOP", "secret"),
+        ("evidence", "evidence", "log\\tghp_" + "Z" * 36, "secret"),
+        ("evidence", "evidence", "key sk-ant-" + "a1" * 20, "secret"),
+        ("evidence", "evidence", "log\\n10.20.30.40", "private-identifier"),
         ("owner", "proposed_owner", "dev@corp.example.com", "private-identifier"),
         ("evidence", "evidence", "listens on 10.20.30.40", "private-identifier"),
         ("evidence", "evidence", "server 2001:db8::7334", "private-identifier"),
