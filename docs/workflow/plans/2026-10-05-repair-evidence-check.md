@@ -115,8 +115,9 @@ def read_blob(root: Path, object_id: str, timeout: float) -> str | None:
    `MAX_TOTAL_BYTES` → input-derived unknown) and `read_blob` (`None` →
    transient). Line count = `text.count("\n") + (not text.endswith("\n"))`
    for non-empty text, else 0. Then `fail` with reason `cited line is outside
-   the file` or `quoted identifier is absent from the cited files` (whole word,
-   `re.search(rf"\b{re.escape(name)}\b", text)`), else `pass` with reason
+   the file` or `quoted identifier is absent from the cited files` (whole word:
+   membership in the set of `\w+` words collected once per blob; the deadline
+   is checked again after the reads), else `pass` with reason
    `evidence anchors hold`. `as_record()` = `{"schema", "outcome", "reason",
    "transient", "claims": [{"citations": [{"path","start","end"}],
    "identifiers": [...]}], "bounds"}`; `digest` = SHA-256 of `json.dumps({k:

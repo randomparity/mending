@@ -61,7 +61,8 @@ Outcomes:
   over 1 MiB or more than 8 MiB in total.
 - `unknown`, transient (`transient: true`): a cited blob unreadable or not
   UTF-8, or the 10 s wall bound reached. Every `git` call gets the remaining
-  time as its timeout, so the check never runs past the bound.
+  time as its timeout, and the bound is checked again after the reads;
+  claim evaluation is set lookups over words collected once per blob.
 - `fail`: a citation with `start < 1`, `end < start`, or `end` past the last
   line; or a quoted identifier absent from the item's cited files.
 - `pass`: otherwise.

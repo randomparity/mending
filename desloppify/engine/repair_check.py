@@ -36,6 +36,7 @@ _CITATION = re.compile(
 )
 _QUOTE = re.compile(r"`([^`\n]{1,200})`")
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,}")
+_WORD = re.compile(r"\w+")
 _DIGESTED = ("schema", "outcome", "claims")
 _T = TypeVar("_T")
 
@@ -55,6 +56,14 @@ class Claim:
 
     citations: tuple[Citation, ...]
     identifiers: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _CitedBlob:
+    """What the check needs from one cited blob: its line count and its words."""
+
+    lines: int
+    words: frozenset[str]
 
 
 @dataclass(frozen=True)
@@ -96,11 +105,11 @@ def check_concern(root: Path, manifest: SourceManifest, issue: Mapping[str, Any]
     claims = _claims(issue, manifest)
     if isinstance(claims, str):
         return CheckResult("unknown", claims, ())
-    texts = _read_cited(root, manifest, claims)
-    if isinstance(texts, CheckResult):
-        return texts
+    sources = _read_cited(root, manifest, claims)
+    if isinstance(sources, CheckResult):
+        return sources
     for claim in claims:
-        failure = _claim_failure(claim, texts)
+        failure = _claim_failure(claim, sources)
         if failure:
             return CheckResult("fail", failure, claims)
     return CheckResult("pass", "evidence anchors hold", claims)
@@ -181,10 +190,10 @@ def _resolve(token: str, present: set[str]) -> str | None:
 
 def _read_cited(
     root: Path, manifest: SourceManifest, claims: tuple[Claim, ...]
-) -> dict[str, str] | CheckResult:
+) -> dict[str, _CitedBlob] | CheckResult:
     deadline = time.monotonic() + MAX_SECONDS
     objects = {d.path: d.object_id for d in manifest.dependencies}
-    texts: dict[str, str] = {}
+    sources: dict[str, _CitedBlob] = {}
     total = 0
     for path in sorted({c.path for claim in claims for c in claim.citations}):
         object_id = objects[path] or ""
@@ -197,8 +206,10 @@ def _read_cited(
         text = _bounded(root, object_id, deadline, read_blob)
         if isinstance(text, CheckResult):
             return text
-        texts[path] = text
-    return texts
+        sources[path] = _CitedBlob(_line_count(text), frozenset(_WORD.findall(text)))
+    if time.monotonic() > deadline:
+        return CheckResult("unknown", "time bound exceeded", (), transient=True)
+    return sources
 
 
 def _bounded(
@@ -213,15 +224,13 @@ def _bounded(
     return value
 
 
-def _claim_failure(claim: Claim, texts: Mapping[str, str]) -> str | None:
+def _claim_failure(claim: Claim, sources: Mapping[str, _CitedBlob]) -> str | None:
     for citation in claim.citations:
-        if not 1 <= citation.start <= citation.end <= _line_count(texts[citation.path]):
+        if not 1 <= citation.start <= citation.end <= sources[citation.path].lines:
             return "cited line is outside the file"
-    cited = [texts[c.path] for c in claim.citations]
-    for name in claim.identifiers:
-        pattern = re.compile(rf"\b{re.escape(name)}\b")
-        if not any(pattern.search(text) for text in cited):
-            return "quoted identifier is absent from the cited files"
+    cited = [sources[c.path].words for c in claim.citations]
+    if any(all(name not in words for words in cited) for name in claim.identifiers):
+        return "quoted identifier is absent from the cited files"
     return None
 
 

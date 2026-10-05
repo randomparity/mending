@@ -122,6 +122,16 @@ def test_too_many_items_is_unknown(repo: Path) -> None:
     assert _check(repo, _issue(*items)).outcome == "unknown"
 
 
+def test_too_many_evidence_bytes_is_unknown(repo: Path) -> None:
+    item = "impl.py:1 " + "x" * repair_check.MAX_EVIDENCE_BYTES
+    result = _check(repo, _issue(item))
+    assert (result.outcome, result.reason) == ("unknown", "evidence exceeds its bound")
+
+
+def test_identifier_must_be_a_whole_word(repo: Path) -> None:
+    assert _check(repo, _issue("impl.py:1 calls `load`")).outcome == "fail"
+
+
 def test_too_many_citations_is_unknown(repo: Path) -> None:
     item = " ".join(["impl.py:1"] * (repair_check.MAX_CITATIONS + 1))
     assert _check(repo, _issue(item)).outcome == "unknown"
