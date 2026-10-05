@@ -811,10 +811,11 @@ def test_interrupted_dispatch_keeps_reservation(tmp_path) -> None:
         _dispatch_host(args, state, cycle_state, _FakeHost(error=KeyboardInterrupt()), request)
 
     host = _FakeHost()
-    with repair_cycle._locked_state(args) as state:
+    after_deadline = _args(None, _Client(), state=str(state_path), now=request.deadline)
+    with repair_cycle._locked_state(after_deadline) as state:
         restarted = repair_cycle._cycle_state(state)
         assert (restarted.reserved_cost_usd, restarted.reserved_calls) == (Decimal("2.00"), 10)
-        assert _dispatch_host(args, state, restarted, host, request) is None
+        assert _dispatch_host(after_deadline, state, restarted, host, request) is None
 
     assert host.admissions == []
     recorded = json.loads(state_path.read_text())["repair_cycle"]

@@ -254,13 +254,16 @@ def _dispatch_host(
     lease = cycle_state.current_lease
     if lease is None or request.attempt_id != lease.attempt_id or request.deadline > lease.deadline:
         raise ValueError("host request does not match the current lease")
+    if cycle_state.reserved_calls or cycle_state.reserved_cost_usd:
+        # An interrupted dispatch may still be spending; that outranks every other refusal.
+        _fail(state, cycle_state, "unsettled-reservation")
+        return None
     if _now(args) >= lease.deadline:
         _fail(state, cycle_state, "runtime-exhausted")
         return None
     admission = cycle_state.admit()
     if admission is None:
-        unsettled = cycle_state.reserved_calls or cycle_state.reserved_cost_usd
-        _fail(state, cycle_state, "unsettled-reservation" if unsettled else "budget-exhausted")
+        _fail(state, cycle_state, "budget-exhausted")
         return None
     _store_cycle_state(state, cycle_state)
     _persist_before_external_call(args, state)
