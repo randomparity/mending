@@ -40,25 +40,39 @@ contract holds) are fixed renderer text over validated fields, not source.
 Each text value must be a string; runs of whitespace collapse to one space;
 the result must be non-empty and at most 1000 characters; `evidence` and
 `contracts` hold at most 20 items (`affected` is bounded by the manifest's
-64 dependencies and the body cap). A value is rejected when it contains, after collapsing:
-a control or format character (Unicode `Cc`/`Cf`, including bidi overrides);
-a secret shape (private-key header, AWS/GitHub/Slack/Google/`sk-` tokens,
-JWT, quoted `password|secret|token|api_key = "…"`); a private identifier
-(email, IPv4/IPv6 address, `/home/`, `/Users/`, `/root/`, `C:\Users\`,
-`~/`, a dotted `*.internal|corp|lan|intranet` host); a link or destination
-(`scheme://`, `www.`, `mailto:`, `javascript:`, `data:`); or a hostile
-instruction (ignore/disregard previous instructions, system prompt, "you are
-now", new instructions). The manifest must parse and be `complete`, else the
-brief is unbound. Any missing, invalid, or rejected field — optional `fix`
-included — yields `ParkedBrief(field, reason)`, whose reason is a fixed
-category and never the value. A rendered body over 60000 UTF-8 bytes parks
-as `too-large` (below GitHub's body limit and Linux's per-argument limit).
+64 dependencies and the body cap). A value is rejected when it contains,
+after collapsing: a Unicode `Cc`/`Cf`/`Cs`/`Co` character (controls, bidi
+overrides, lone surrogates); a secret shape (private-key header,
+AWS/GitHub/Slack/Google/`sk-` tokens, JWT, quoted `password|secret|token|
+api_key = "…"`); a private identifier (email, IPv4 address, a token that
+`ipaddress.ip_address` parses as IPv6 and that holds a digit, `/home/`,
+`/Users/`, `/root/`, `C:\Users\`, `~/`, a dotted
+`*.internal|corp|lan|intranet` host); a link (`scheme://`, `www.`,
+`mailto:`, `javascript:`, `data:<type>/`); or a hostile instruction
+(ignore/disregard previous instructions, system prompt, "you are now", new
+instructions). The manifest must parse and be `complete`, else the brief is
+unbound. A missing required field, any present value of the wrong type
+(`confidence` included), or any rejected value — optional `fix` included —
+yields `ParkedBrief(field, reason)`, whose reason is a fixed category and
+never the value; only an absent or blank `fix` is omitted. A rendered body
+over 60000 UTF-8 bytes parks as `too-large` (below GitHub's body limit and
+Linux's per-argument limit).
+
+**Unsupported claims.** A claim is unsupported when review prose is presented
+as source-verified. Only `revision`, `affected`, and the digests are
+source-bound; `evidence-digest` covers consequence, contracts, and
+verification only, and nothing re-verifies `problem`, `evidence`, or `fix`
+after a re-import. Control: source-bound values come only from the manifest
+and candidate, never from prose, and render under `Source-bound`; every
+model-authored field renders under `Reviewer assertions (not verified
+against source)`.
 
 **Rendering** (`render_brief(brief) -> (title, body)`): title `Repair: <problem>`
-cut to 120 characters. Body sections Problem, Evidence (reviewed at
-revision), Affected area and scope, Proposed change, Protected contracts,
-Required verification, Risk and uncertainty, Completion criterion,
-Provenance. Every source value is rendered inside a code span whose backtick
+cut to 120 characters (plain sanitized text). Body sections: Source-bound
+(revision; affected files as allowed scope; excluded scope), Reviewer
+assertions (problem, consequence, evidence, proposed owner and fix,
+protected contracts, required verification), Risk and uncertainty,
+Completion criterion, Provenance. Every body source value is rendered inside a code span whose backtick
 fence is longer than any backtick run in the value, so it renders as inert
 text (no HTML, link, mention, or reference). Provenance carries #23's
 `KEY_LINE` on its own line, then a `text` fence with `schema`,
@@ -93,9 +107,13 @@ adoption check are unchanged.
   - False positives (e.g. code quoting `token = "…"`) park a usable brief;
     the operator hands it off privately.
   - Long values park instead of being truncated.
+  - Scheme-less destinations (bare `host/path`, `//host`) are not rejected;
+    they render as inert code-span text.
   - The title is plain sanitized text, not code-span inert, so a `#N` or
     `@name` in the problem may render as a reference there.
-- Covered elsewhere: classification and proposal briefs (#21); selection and
+- Covered elsewhere: under the #6 timer a park is a log line only and
+  `sync` still exits 0; durable park state and surfacing belong to selection
+  (#22) and dispatch (#19). Classification and proposal briefs (#21); selection and
   brief-version invalidation (#22); dispatch (#19); live publication (#7);
   contract docs (#16).
 
@@ -116,17 +134,21 @@ adoption check are unchanged.
    verification, and affected-path value, the seven provenance fields, and
    a body `carries_concern_marker` accepts.
 2. Missing `verification` (and each other required field) parks with that
-   field and `missing`.
-3. Each rejection class parks with its category; neither the rendered output
+   field and `missing`; a non-string `fix` or list `confidence` parks as
+   `invalid`; an absent or blank `fix` is omitted.
+3. Each named rejection class parks with its category; neither the rendered output
    nor command stdout contains the payload; sync writes no pending record and
    calls `create` zero times.
 4. A backtick-bearing or HTML/mention-bearing value renders inside a longer
    fence.
 5. `brief.version` is stable for equal input and changes when any field
    changes; the key does not.
+6. Problem, evidence, and fix render only under the reviewer-assertions
+   heading; affected paths come from the manifest even when
+   `detail.related_files` names other files.
 
 ## Validation
 
-`desloppify/tests/repair_queue/test_brief.py` (1–5), migrated
+`desloppify/tests/repair_queue/test_brief.py` (1, 2, 4–6), migrated
 `test_promotion.py` and fake clients in `test_sync_matrix.py` and
 `desloppify/tests/commands/test_repair_queue.py` (3, sync path).

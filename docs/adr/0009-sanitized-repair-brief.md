@@ -24,14 +24,19 @@ untrusted.
   fixed renderer text over those fields.
 - **Sanitize field by field, park on any rejection.** Every value is
   type-, length-, and character-checked and rejected on recognized secret,
-  private-identifier, link, or hostile-instruction shapes. A missing or
-  rejected field — optional ones included — parks the brief: nothing is
+  private-identifier, link, or hostile-instruction shapes. A missing
+  required field, or a wrong-typed or rejected value — optional ones
+  included — parks the brief (an absent optional field is omitted): nothing is
   published, no pending record is written, and the operator is told to hand
   the concern off privately. The output names the field and a fixed
   category, never the value.
-- **Inert rendering.** Source values render only inside code spans whose
-  fence outruns any backtick run in the value; affected area and revision
-  come only from the manifest, never from review prose.
+- **Inert rendering, honest provenance.** Body source values render only
+  inside code spans whose fence outruns any backtick run in the value; the
+  title is plain sanitized text. Revision and affected area come only from
+  the manifest and render as source-bound; every model-authored field
+  renders under a "reviewer assertions (not verified against source)"
+  label, because the evidence digest covers only consequence, contracts,
+  and verification.
 - **Provenance.** The body keeps ADR 0008's key line and adds a fenced block
   with schema, key, identity, evidence and manifest digests, revision, and a
   brief-version digest over the brief record. Wording changes move the
@@ -46,8 +51,10 @@ replaces only its public-body paragraph.
 
 Published issues now carry reviewer text, so sanitizer misses are public:
 pattern checks cannot recognize every secret or paraphrased instruction, and
-a worker host must treat the issue as untrusted input. False positives park
-usable briefs. Issues created before this change keep their digest-only
+a worker host must treat the issue as untrusted input. A `#N` or `@name` in
+the problem renders as a reference in the title. False positives park
+usable briefs, and under the timer a park is only a log line until #22/#19
+add durable state. Issues created before this change keep their digest-only
 bodies and are still adopted by key. The brief version is published but not
 yet persisted or compared; #22 owns invalidation.
 

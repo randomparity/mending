@@ -12,10 +12,11 @@ inside the locked create transaction and parks before any pending write.
 
 Tech stack: Python 3.11+, stdlib `re`/`unicodedata`/`json`/`hashlib`, pytest.
 
-Expected implementation size: 330–420 changed lines (M) — about 150
-production lines (new module ~130, client and command ~25, removed renderer
-~20) and about 220 test lines (new `test_brief.py`, fixture brief fields and
-fake `create` signatures in three existing test files).
+Expected implementation size: 420–490 changed lines (M) — about 210
+production lines (new module ~185 including `render_brief`, client and
+command ~25, removed renderer ~20) and about 240 test lines (new
+`test_brief.py`, fixture brief fields, seven fake `create` signatures in
+two test files, the `render_issue` test in `test_promotion.py`).
 
 ## Global Constraints
 
@@ -74,7 +75,13 @@ Verification:
   never appears in `repr(result)`. Mode: focused-test —
   `test_unsafe_value_parks_without_leaking` parametrized over secret,
   private-identifier, link, hostile-instruction, control-character,
-  too-long, plus unsafe optional `suggestion`; same red/green.
+  too-long, compressed IPv6 (`2001:db8::7334`), lone surrogate
+  (`"\ud800"`), plus unsafe and non-string optional `suggestion` and list
+  `confidence` (→ `invalid`); same red/green.
+- Contract: unsupported-claim labelling. Mode: focused-test —
+  `test_prose_renders_as_reviewer_assertion` (problem/evidence/fix appear
+  only after the reviewer-assertions heading; `detail.related_files` naming
+  `other.py` does not put `other.py` in the body); same red/green.
 - Contract: inert rendering. Mode: focused-test —
   `test_values_render_inside_longer_fence` (value ``a `` b `` with `@x` and
   `<b>`); same red/green.
@@ -95,168 +102,48 @@ Steps:
    (sibling). `_candidate()` is `candidate_from_issue(_issue(), REPOSITORY)`.
    Leak assertion: `payload not in repr(result)`.
 2. Run the focused command; expect collection failure on the import.
-3. Write the module:
-
-```python
-"""Versioned, sanitized repair brief and its public-safe rendering (ADR 0009)."""
-
-from __future__ import annotations
-
-import json
-import re
-import unicodedata
-from collections.abc import Mapping
-from dataclasses import asdict, dataclass
-from hashlib import sha256
-from typing import Any
-
-from desloppify.engine.repair_manifest import SourceManifest, manifest_from_record
-from desloppify.engine.repair_queue import KEY_LINE, PromotionCandidate
-
-BRIEF_SCHEMA = "desloppify-repair-brief:v1"
-MAX_TEXT, MAX_ITEMS, MAX_BODY_BYTES, MAX_TITLE = 1000, 20, 60000, 120
-CONFIDENCE = frozenset({"high", "medium", "low"})
-_REJECTIONS = (
-    ("secret", re.compile(
-        r"-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"
-        r"|\bgh[pousr]_[A-Za-z0-9]{30,}|\bgithub_pat_\w{20,}|\bxox[abprs]-[\w-]{10,}"
-        r"|\bAIza[\w-]{35}|\bsk-[\w-]{20,}|\beyJ[\w-]{10,}\.[\w-]{10,}\."
-        r"|(?i:\b(?:password|passwd|secret|token|api[_-]?key)\w*\s*[:=]\s*['\"][^'\"\s]{8,}['\"])"
-    )),
-    ("private-identifier", re.compile(
-        r"[\w.+-]+@[\w-]+\.[\w.-]+|\b\d{1,3}(?:\.\d{1,3}){3}\b"
-        r"|(?i:\b(?:[0-9a-f]{1,4}:){3,7}[0-9a-f]{1,4}\b)|/home/|/Users/|/root/"
-        r"|(?i:\b[a-z]:\\users\\)|(?<![\w.])~/|(?i:\b(?:[a-z0-9-]+\.)+(?:internal|corp|lan|intranet)\b)"
-    )),
-    ("link", re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://|\bwww\.|\b(?:mailto|javascript):|\bdata:\w+/")),
-    ("hostile-instruction", re.compile(
-        r"(?i)\b(?:ignore|disregard|forget)\b[^.]{0,40}\b(?:previous|prior|above|earlier|all)\b"
-        r"[^.]{0,20}\binstructions?\b|\bsystem prompt\b|\byou are now\b|\bnew instructions?\b"
-    )),
-)
-
-
-class _Rejected(Exception):
-    def __init__(self, field: str, reason: str) -> None:
-        super().__init__(field, reason)
-        self.field, self.reason = field, reason
-
-
-@dataclass(frozen=True)
-class ParkedBrief:
-    """A brief that must not be published; carries a field and fixed category only."""
-
-    field: str
-    reason: str
-
-
-@dataclass(frozen=True)
-class RepairBrief:
-    """Sanitized, source-bound repair brief (schema ``BRIEF_SCHEMA``)."""
-
-    key: str
-    identity: str
-    evidence_digest: str
-    manifest_digest: str
-    revision: str
-    problem: str
-    consequence: str
-    evidence: tuple[str, ...]
-    affected: tuple[tuple[str, str], ...]
-    owner: str
-    fix: str | None
-    contracts: tuple[str, ...]
-    verification: str
-    confidence: str
-
-    @property
-    def version(self) -> str:
-        """SHA-256 of the canonical brief record; #22 compares it."""
-        record = json.dumps({"schema": BRIEF_SCHEMA, **asdict(self)}, sort_keys=True, separators=(",", ":"))
-        return sha256(record.encode()).hexdigest()
-
-
-def build_brief(issue: Mapping[str, Any], candidate: PromotionCandidate) -> RepairBrief | ParkedBrief:
-    """Validate and sanitize every field; any missing or unsafe value parks the brief."""
-    detail = issue.get("detail") if isinstance(issue.get("detail"), Mapping) else {}
-    try:
-        manifest = _manifest(detail)
-        suggestion = detail.get("suggestion")
-        brief = RepairBrief(
-            key=candidate.key, identity=candidate.identity, evidence_digest=candidate.evidence_digest,
-            manifest_digest=manifest.digest, revision=manifest.revision,
-            problem=_text("problem", issue.get("summary")),
-            consequence=_text("consequence", detail.get("maintenance_consequence")),
-            evidence=_items("evidence", detail.get("evidence")),
-            affected=tuple((_text("affected", d.path), d.role) for d in manifest.dependencies),
-            owner=_text("owner", detail.get("proposed_owner")),
-            fix=_text("fix", suggestion) if isinstance(suggestion, str) and suggestion.strip() else None,
-            contracts=_items("contracts", detail.get("protected_contracts")),
-            verification=_text("verification", detail.get("verification")),
-            confidence=_confidence(issue.get("confidence")),
-        )
-    except _Rejected as exc:
-        return ParkedBrief(exc.field, exc.reason)
-    if len(render_brief(brief)[1].encode()) > MAX_BODY_BYTES:
-        return ParkedBrief("body", "too-large")
-    return brief
-```
-
-   Followed by `render_brief` (title `Repair: <problem>` cut to 117 chars +
-   `...` past 120; body sections in the spec order, each source value via
-   `_code`; provenance = `KEY_LINE.format(key)`, blank line, a `text` fence
-   with the seven `name: value` lines), and the helpers:
-
-```python
-def _manifest(detail: Mapping[str, Any]) -> SourceManifest:
-    record = detail.get("github_repair_revalidated")
-    manifest = manifest_from_record(record.get("manifest") if isinstance(record, Mapping) else None)
-    if not isinstance(manifest, SourceManifest) or manifest.coverage != "complete":
-        raise _Rejected("revision", "unbound")
-    return manifest
-
-
-def _text(field: str, value: object) -> str:
-    if value is None:
-        raise _Rejected(field, "missing")
-    if not isinstance(value, str):
-        raise _Rejected(field, "invalid")
-    text = " ".join(value.split())
-    if not text:
-        raise _Rejected(field, "missing")
-    if len(text) > MAX_TEXT:
-        raise _Rejected(field, "too-long")
-    if any(unicodedata.category(char) in {"Cc", "Cf"} for char in text):
-        raise _Rejected(field, "control-character")
-    for reason, pattern in _REJECTIONS:
-        if pattern.search(text):
-            raise _Rejected(field, reason)
-    return text
-
-
-def _items(field: str, value: object) -> tuple[str, ...]:
-    if not value:
-        raise _Rejected(field, "missing")
-    if not isinstance(value, list):
-        raise _Rejected(field, "invalid")
-    if len(value) > MAX_ITEMS:
-        raise _Rejected(field, "too-long")
-    return tuple(_text(field, item) for item in value)
-
-
-def _confidence(value: object) -> str:
-    if value is None:
-        raise _Rejected("confidence", "missing")
-    if value not in CONFIDENCE:
-        raise _Rejected("confidence", "invalid")
-    return str(value)
-
-
-def _code(text: str) -> str:
-    fence = "`" * (max((len(run) for run in re.findall(r"`+", text)), default=0) + 1)
-    return f"{fence} {text} {fence}"
-```
-
+3. Write the module. Contents, in order:
+   - constants `BRIEF_SCHEMA`, `MAX_TEXT = 1000`, `MAX_ITEMS = 20`,
+     `MAX_BODY_BYTES = 60000`, `MAX_TITLE = 120`, `CONFIDENCE`;
+   - `_REJECTIONS: tuple[tuple[str, re.Pattern[str]], ...]` — one compiled
+     pattern per category (`secret`, `private-identifier`, `link`,
+     `hostile-instruction`) holding exactly the shapes the spec's
+     *Validation and sanitization* paragraph lists, plus
+     `_has_ipv6(text) -> bool` (`re.findall(r"[0-9A-Fa-f:]{2,}", text)`
+     tokens holding `::` or three colons and a digit that
+     `ipaddress.ip_address` accepts);
+   - `class _Rejected(Exception)` with `field`, `reason`;
+   - `ParkedBrief`, `RepairBrief` (fields `key, identity, evidence_digest,
+     manifest_digest, revision, problem, consequence, evidence: tuple[str,
+     ...], affected: tuple[tuple[str, str], ...], owner, fix: str | None,
+     contracts: tuple[str, ...], verification, confidence`; `version` =
+     `sha256(json.dumps({"schema": BRIEF_SCHEMA, **asdict(self)},
+     sort_keys=True, separators=(",", ":")).encode()).hexdigest()`);
+   - `build_brief`: read `detail` (non-mapping → `{}`); inside `try`, bind
+     the manifest (`_manifest`: `manifest_from_record` of
+     `github_repair_revalidated.manifest`, must be a complete
+     `SourceManifest`, else `_Rejected("revision", "unbound")`), then build
+     each field in table order with `_text(field, value)` / `_items(field,
+     value)`; `fix` is `None` when the suggestion is `None` or a blank
+     string, else `_text("fix", suggestion)`; `confidence` must be a `str`
+     in `CONFIDENCE` (`None` → `missing`, else `invalid`); on `_Rejected`
+     return `ParkedBrief(exc.field, exc.reason)`; finally park
+     `("body", "too-large")` when the rendered body exceeds
+     `MAX_BODY_BYTES` encoded;
+   - `_text(field, value)`: `None` → `missing`; non-`str` → `invalid`;
+     `" ".join(value.split())`; empty → `missing`; over `MAX_TEXT` →
+     `too-long`; any char in category `Cc/Cf/Cs/Co` →
+     `control-character`; first matching `_REJECTIONS` category (IPv6 via
+     `_has_ipv6` as `private-identifier`) → that category;
+   - `_items(field, value)`: falsy → `missing`; non-list → `invalid`; over
+     `MAX_ITEMS` → `too-long`; else `tuple(_text(field, item) ...)`;
+   - `render_brief`: title `f"Repair: {problem}"`, cut to 117 chars +
+     `...` when over 120; body sections and labels exactly as the spec's
+     *Rendering* paragraph, every body source value through `_code`;
+     provenance = `KEY_LINE.format(key)`, blank line, ```` ```text ````
+     fence with the seven `name: value` lines, closing fence;
+   - `_code(text)`: fence = one more backtick than the longest backtick run
+     in `text`; return `f"{fence} {text} {fence}"`.
 4. Run the focused command; expect all pass. `make lint typecheck arch`.
 5. Commit `feat(repair-brief): add sanitized versioned repair brief`.
 
