@@ -273,6 +273,8 @@ def _parse_dependency(entry: object) -> Dependency:
         raise ValueError("invalid dependency field")
     if not (_is_object_id(object_id) if status == "present" else object_id is None):
         raise ValueError("object id does not match status")
+    if status != "unsupported" and not _valid_path(path):
+        raise ValueError("only an unsupported dependency may carry an invalid path")
     return Dependency(path, role, status, object_id)
 
 

@@ -306,6 +306,8 @@ def _mutated(manifest: SourceManifest, change) -> dict:
         lambda r: r["dependencies"].append(dict(r["dependencies"][-1])),
         lambda r: r["dependencies"][0].update(status="missing", object_id=None),
         lambda r: r.pop("coverage"),
+        lambda r: r["dependencies"][0].update(path="../../etc/passwd"),
+        lambda r: r["dependencies"][0].update(path="/" + "a" * MAX_PATH_BYTES),
     ],
 )
 def test_malformed_record_is_unknown(repo: Path, change) -> None:
