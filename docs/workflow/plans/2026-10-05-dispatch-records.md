@@ -11,7 +11,13 @@ exists.
 
 Tech stack: Python 3.11+, pytest, `uv` via the Makefile.
 
-Expected implementation size: 330–420 changed lines (M) — three tasks: engine ~90, adapter ~60, seam ~45, tests ~200.
+Expected implementation size: 620–680 changed lines (M) — three tasks: engine ~145, adapter ~110, seam ~80, tests ~320.
+
+Estimate revised after the build: the first estimate (330–420) predated the
+design review, whose accepted fixes added the pre-launch worktree snapshot, the
+recorded repository/root, reference union, and persist-before-lookup ordering,
+and it undercounted the ten-field record's decoding and its tests. Scope is
+unchanged.
 
 ## Global Constraints
 
