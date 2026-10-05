@@ -80,7 +80,7 @@ Work the items in scope in queue order. Rescan when the batch is done, not after
 **Branch first.** Create a dedicated branch — never commit health work directly to main:
 ```bash
 git checkout -b desloppify/code-health    # or desloppify/<focus-area>
-desloppify config set commit_pr 42        # link a PR for auto-updated descriptions
+desloppify config set commit_pr 42        # only if the user linked a PR for auto-updated descriptions
 ```
 
 **The loop:**
@@ -94,9 +94,9 @@ desloppify next
 
 # 4. When you have a logical batch, commit and record
 git add <files> && git commit -m "desloppify: fix 3 deferred_import findings"
-desloppify plan commit-log record      # moves findings uncommitted → committed, updates PR
+desloppify plan commit-log record      # moves findings uncommitted → committed, updates a linked PR
 
-# 5. Push periodically
+# 5. Push only when the user asked you to publish the branch
 git push -u origin desloppify/code-health
 
 # 6. Stop when the agreed scope is done or nothing left is worth fixing
