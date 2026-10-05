@@ -39,9 +39,11 @@ dominate.
 
 `marker_for_hashes` is removed (callers: engine, merge, two test files);
 `legacy_marker` replaces it for recognition only. `PromotionCandidate.marker`
-becomes `.key`.
+becomes `.key`. Because every caller of those names changes with them, Task 1
+carries the engine, the merge, and the mechanical record-shape edits in the
+command module and both test files, so each commit imports and passes.
 
-## Task 1 — Engine key and record normalizer
+## Task 1 — Engine key, record normalizer, scan merge, and caller shapes
 
 **Interfaces (produced):**
 
@@ -129,12 +131,23 @@ def normalize_record(kind, record, repository, identity, evidence_digest):
    candidate.repository, candidate.identity, candidate.evidence_digest)`.
    `render_issue` swaps marker for key; delete `marker_for_hashes`,
    `_has_matching_record`; update `__all__`.
-3. Focused loop → green; `make typecheck` → exit 0. Commit
-   `feat: derive repair-queue key from repository and identity`.
+3. Mechanical caller edits in `desloppify/app/commands/repair_queue.py`,
+   same commit: `_revalidate` writes `{"key", "repository", "evidence_digest",
+   "attestation"}`; `_create_once` writes pending `{"key", "repository",
+   "evidence_digest"}`; `_write_link` writes `{"key", "repository",
+   "evidence_digest", "number", "url", "state"}`; `_sync`, `_create_once`, and
+   `_write_link` wrap `matching_record` in `try/except RepairRecordError`
+   (sync: `Skipped {id}: repair record is unrecognized; reconcile it
+   manually.`; create/link: treated as changed/stale); `_recover` matches
+   `pending.get("key") == args.marker or pending.get("marker") == args.marker`.
+   Update the existing command tests' imports and expected shapes (pending
+   equals `{key, repository, evidence_digest}`; link includes
+   `evidence_digest`; recover passes the key) and add
+   `test_recover_accepts_legacy_marker`.
+4. Scan merge (below), then focused loop, `make typecheck`, `make arch` → exit
+   0. Commit `feat: key repair-queue records by stable concern key`.
 
-## Task 2 — Scan merge keeps records across evidence changes
-
-**Interfaces:** consumes `concern_hashes`, `normalize_record`, `RepairRecordError`.
+### Scan merge part of Task 1
 
 **Verification:**
 
@@ -149,7 +162,7 @@ def normalize_record(kind, record, repository, identity, evidence_digest):
 **Steps:**
 
 1. Write tests using `upsert_issues(existing, [incoming], [], now, lang=None)`
-   as the current test does. Run → red.
+   as the current test does.
 2. Replace `_preserve_repair_metadata` in `merge_issues.py`:
 
 ```python
@@ -178,17 +191,26 @@ def _preserve_repair_metadata(previous_detail: object, detail: dict) -> None:
 
    `_REPAIR_RECORD_KINDS = ("github_repair", "github_repair_pending",
    "github_repair_revalidated")`; import `concern_hashes`, `normalize_record`,
-   `RepairRecordError` instead of `marker_for_hashes`.
-3. Focused loop and `make arch` → green. Commit
-   `fix: keep repair links across concern evidence changes`.
+   `RepairRecordError` instead of `marker_for_hashes`; `import copy`.
 
-## Task 3 — Command: grouping, local links, union search, new-shape writes
+## Task 2 — Command: grouping, peer records, union search
 
-**Interfaces:** consumes all Task 1 names. Adds private helpers
-`_candidates(state, repository) -> list[PromotionCandidate]`,
-`_local_links(state, repository) -> dict[str, dict[str, dict]]` (key → issue id →
-normalized link; items whose link raises are skipped),
-`_key_claimed_elsewhere(state, candidate) -> bool`.
+**Interfaces:** consumes all Task 1 names. Adds private helpers in
+`desloppify/app/commands/repair_queue.py`:
+
+```python
+Peer = tuple[str, str, dict[str, Any] | None]  # (issue id, kind, normalized or None if unrecognized)
+def _candidates(state: Mapping[str, Any], repository: str) -> list[PromotionCandidate]
+def _peer_records(state: Mapping[str, Any], candidate: PromotionCandidate) -> list[Peer]
+def _key_claimed_elsewhere(state: Mapping[str, Any], candidate: PromotionCandidate) -> bool
+```
+
+`_peer_records` walks every other work item whose `concern_hashes` identity
+gives `concern_key(candidate.repository, identity) == candidate.key` and, for
+`github_repair` and `github_repair_pending` present on it, appends the
+normalized record or `None` on `RepairRecordError`. `_key_claimed_elsewhere`
+is true when `_candidates` yields more than one candidate with the key or
+`_peer_records` is non-empty.
 
 **Verification** (`focused-test`, `test_repair_queue.py`; each red before step 2):
 
@@ -201,13 +223,20 @@ normalized link; items whose link raises are skipped),
   repository, pending with foreign key): 0 searches, 0 creates.
 - `test_ambiguous_key_parks_all_candidates` (two items, same identity).
 - `test_rename_adopts_local_link_from_old_item` (old item `status: fixed` holds link).
+- `test_rename_with_peer_pending_never_creates` (old item `fixed` holds pending,
+  search `[]`): 0 searches, 0 creates; after `recover <key>`, one create.
+- `test_rename_with_corrupt_peer_link_parks`: 0 searches, 0 creates.
+- `test_create_refuses_when_key_becomes_ambiguous_under_lock`: call
+  `_create_once` after adding a second revalidated item with the same identity;
+  0 creates, no pending.
+- `test_evidence_change_round_trip_reuses_link`: `upsert_issues` with changed
+  evidence, again with unchanged evidence, `revalidate --apply`, `sync
+  --apply`; `view` called, 0 creates, link still `closed`.
 - `test_rename_adopts_legacy_issue_found_by_identity` (search returns the issue
   only for the identity term).
-- `test_conflicting_local_links_park`, `test_multiple_github_matches_park`.
+- `test_conflicting_peer_links_park`, `test_multiple_github_matches_park`.
 - `test_human_edited_issue_reconciles_by_number` (search would return `[]`).
-- Existing tests updated: searches assert `[(REPO, key), (REPO, IDENTITY)]`;
-  pending equals `{key, repository, evidence_digest}`; `recover` passes the key;
-  add `test_recover_accepts_legacy_marker`.
+- Existing dry-run test updated: searches assert `[(REPO, key), (REPO, IDENTITY)]`.
 
 **Steps:**
 
@@ -215,31 +244,26 @@ normalized link; items whose link raises are skipped),
 2. In `desloppify/app/commands/repair_queue.py`:
    - `_sync`: `candidates = _candidates(state, repository)`; count keys; a key
      with count > 1 prints `Skipped {id}: concern key is ambiguous across work
-     items.` for each. Build `links = _local_links(state, repository)` once.
-   - Per candidate: `matching_record` for link and pending inside
-     `try/except RepairRecordError` → `Skipped {id}: repair record is
-     unrecognized; reconcile it manually.` Own link → `_read_link(...,
-     expected_key="github_repair")`. Else peer links (other issue ids in
-     `links[key]`) by distinct number: >1 → `Skipped {id}: local links for this
-     concern key conflict.`; 1 → `_read_link(..., expected_key=None)`. Else the
-     existing search/pending/adopt/create flow.
+     items.` for each.
+   - Per candidate after the Task 1 own-record check: own link →
+     `_read_link(..., expected_key="github_repair")`. Else `peers =
+     _peer_records(state, candidate)`: any pending or `None` entry →
+     `Skipped {id}: another work item holds an unresolved record for this
+     concern key.`; peer links by distinct number >1 → `Skipped {id}: local
+     links for this concern key conflict.`; exactly 1 → `_read_link(...,
+     expected_key=None)`. Else the existing search/pending/adopt/create flow.
    - `_search`: `client.search(repo, key)` then `client.search(repo, identity)`;
      return `list({i.number: i for i in found}.values())`; any
      `RuntimeError`/`ValueError` → `None`.
-   - `_create_once`: inside the lock, treat `RepairRecordError` or
-     `_key_claimed_elsewhere` as "changed"; pending =
-     `{"key", "repository", "evidence_digest"}`.
-   - `_write_link`: expected record check catches `RepairRecordError` as stale;
-     link = `{"key", "repository", "evidence_digest", "number", "url", "state"}`.
-   - `_revalidate`: writes `{"key", "repository", "evidence_digest", "attestation"}`.
-   - `_recover`: matches `pending.get("key") == args.marker or
-     pending.get("marker") == args.marker`, repository equal.
+   - `_create_once`: inside the lock, also treat `_key_claimed_elsewhere(state,
+     candidate)` as "changed".
 3. Focused loop → green; then `make lint typecheck arch ci-contracts tests`
-   → exit 0. Commit `feat: reconcile repair issues under the stable concern key`.
+   → exit 0. Commit `feat: reconcile renamed and legacy repair issues by key`.
 
 ## Rollback
 
 Each task is one commit; revert in reverse order. The previous release reads
-new-shape records as absent and searches only legacy markers, so running it
-after an `--apply` sync can create a duplicate issue. Pause `--apply` syncs
-before rolling back past this change; dry runs are safe.
+new-shape records as absent, searches only legacy markers, and its scan merge
+drops every new-shape record. Before running it against a state file this
+change has written, back up the state file and pause scans and `--apply`
+syncs; restore the backup before re-upgrading.

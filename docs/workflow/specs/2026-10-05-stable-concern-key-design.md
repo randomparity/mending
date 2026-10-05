@@ -46,17 +46,21 @@ issue is created for the same concern.
 - **Sync.** Eligible candidates are grouped by key; a key held by more than one
   candidate parks all of them (ambiguous identity). Per candidate:
   a `RepairRecordError` on its link or pending parks it before any GitHub call.
-  Own link → read by number (unchanged). Otherwise, a unique local link for the
-  same key and repository on another work item (any status; a rename) is read
-  by number and adopted; two distinct numbers park. Otherwise search GitHub for
+  Own link → read by number (unchanged). Otherwise consult *peer* records:
+  `github_repair`/`github_repair_pending` on other work items (any status; a
+  rename) whose own identity yields the same key. A peer pending record or a
+  peer record that fails normalization parks the candidate before any GitHub
+  call (`recover <key>` clears peer pending as it does today). Peer links with
+  one distinct number are read by number and adopted; two distinct numbers
+  park. With no peer record, search GitHub for
   the key and for the identity digest (legacy bodies print it) and union the
   results by issue number; then the existing pending/adopt/ambiguous/create
   rules apply. Every link write stores the new shape with the current evidence
   digest and the GitHub state, so a closed (dismissed) issue stays linked and
   closed; nothing reopens or recreates it.
 - **Create** keeps the lock → pending → create → re-search → locked recheck
-  sequence. Under the lock it also refuses when the key became ambiguous or
-  another item now holds a link for the key. The body marker becomes
+  sequence. Under the lock it recomputes candidates and peer records and also
+  refuses when the key is held by another candidate or any peer record. The body marker becomes
   `<!-- desloppify-concern-key: <key> -->`; title uses `key[:12]`.
 - **Recover** clears a pending record whose `key` or legacy `marker` equals the
   argument and whose repository matches. CLI arguments are unchanged.
@@ -78,12 +82,18 @@ issue is created for the same concern.
   digests and static labels.
 - Accepted failure classes:
   - Rename *and* a human deleting both marker lines with no surviving local
-    link anywhere in the state file can still create a second issue — no
-    durable evidence of the first remains.
+    link or pending record anywhere in the state file can still create a
+    second issue — no durable evidence of the first remains.
   - An identity change (owner, cluster, dimension, identifier) is a new
     concern and gets a new issue, by definition of the key.
-  - Parked items (corrupt records, ambiguous keys) need operator action; no
-    command repairs a corrupt link record.
+  - Parked items need operator action and no new command repairs them:
+    ambiguous GitHub matches (e.g. duplicates the pre-#23 bug already made) →
+    remove the marker and identity lines from the duplicate's body; ambiguous
+    local keys → resolve one work item; corrupt records → edit the state file;
+    peer or own pending → attested `recover`.
+  - Mixed versions on one state file: an older release's scan merge drops
+    every new-shape record. Every writer of the shared state file (including
+    the timer unit) must run this version or later.
 - Covered elsewhere: freshness proof and source rereads (#24), dispatch-time
   recheck (#25), cross-machine coordination (excluded; ADR 0005 boundary).
 
@@ -92,15 +102,18 @@ issue is created for the same concern.
 1. Same identity and repository, any evidence digest → same key; another
    repository or identity → different key.
 2. After an evidence change, scan merge keeps the link (including `closed`
-   state) and pending record; sync reconciles the linked issue and calls
-   `create` zero times.
+   state) and pending record. The item becomes syncable again only after the
+   ADR 0004 transient `previous_concern_*` fields clear on a following steady
+   scan and a fresh revalidation; sync then reconciles the linked issue and
+   calls `create` zero times.
 3. A revalidation recorded for old evidence does not make the item eligible.
 4. Legacy link, pending, and revalidation records for current hashes are
    accepted and rewritten to the new shape on the next locked write; a legacy
-   pending record never leads to a second create.
-5. A corrupt or other-repository link/pending record, two candidates sharing a
-   key, two distinct local links for a key, or more than one GitHub match parks
-   with zero `create` calls.
+   pending record leads to zero `create` calls until an attested `recover`
+   clears it.
+5. A corrupt or other-repository link/pending record (own or peer), a peer
+   pending record, two candidates sharing a key, two distinct peer links for a
+   key, or more than one GitHub match parks with zero `create` calls.
 6. A renamed concern adopts the old item's local link, or the pre-migration
    GitHub issue found by identity digest, with zero `create` calls.
 7. Existing lock, pending-before-write, uncertain-create, and attested-recover
