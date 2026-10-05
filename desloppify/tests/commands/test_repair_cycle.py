@@ -17,7 +17,7 @@ from desloppify.app.commands.repair_cycle import (
 )
 from desloppify.base.exception_sets import CommandError
 from desloppify.cli import create_parser
-from desloppify.engine.repair_cycle import CycleConfig, CycleState
+from desloppify.engine.repair_cycle import BudgetAdmission, CycleConfig, CycleState
 
 REPOSITORY = "owner/repository"
 NOW = datetime(2026, 9, 13, 9, 0, tzinfo=UTC)
@@ -605,7 +605,16 @@ def test_legacy_state_decodes_and_new_fields_validate() -> None:
     legacy = {
         key: value
         for key, value in cycle_state.to_mapping().items()
-        if key not in {"observation_calls", "attempt_failure", "disposed_attempt"}
+        if key
+        not in {
+            "observation_calls",
+            "attempt_failure",
+            "disposed_attempt",
+            "consumed_cost_usd",
+            "consumed_calls",
+            "reserved_cost_usd",
+            "reserved_calls",
+        }
     }
 
     decoded = CycleState.from_mapping(legacy)
@@ -616,11 +625,62 @@ def test_legacy_state_decodes_and_new_fields_validate() -> None:
         None,
         None,
     )
+    assert (decoded.consumed_cost_usd, decoded.consumed_calls) == (Decimal(0), 0)
+    assert (decoded.reserved_cost_usd, decoded.reserved_calls) == (Decimal(0), 0)
     for field, bad in (
         ("observation_calls", -1),
+        ("consumed_cost_usd", "-0.01"),
+        ("consumed_cost_usd", True),
+        ("reserved_cost_usd", "NaN"),
+        ("reserved_cost_usd", "lots"),
+        ("consumed_calls", -1),
+        ("reserved_calls", True),
+        ("reserved_calls", "2"),
         ("observation_calls", True),
         ("attempt_failure", 3),
         ("disposed_attempt", ""),
     ):
         with pytest.raises(ValueError):
             CycleState.from_mapping({**legacy, field: bad})
+
+
+def _budget_state() -> CycleState:
+    cycle_state = CycleState.empty()
+    cycle_state.begin(CycleConfig.from_mapping(_config(call_limit=10)), NOW, attempt_id="a1")
+    return cycle_state
+
+
+def test_budget_admission_reserves_remainder_and_settles() -> None:
+    cycle_state = _budget_state()
+
+    admission = cycle_state.admit()
+
+    assert admission == BudgetAdmission(Decimal("2.00"), 10)
+    assert (cycle_state.reserved_cost_usd, cycle_state.reserved_calls) == (Decimal("2.00"), 10)
+    assert cycle_state.admit() is None
+    cycle_state.settle(admission, Decimal("0.75"), 3)
+    assert (cycle_state.reserved_cost_usd, cycle_state.reserved_calls) == (Decimal(0), 0)
+    assert (cycle_state.consumed_cost_usd, cycle_state.consumed_calls) == (Decimal("0.75"), 3)
+    assert not cycle_state.budget_exceeded
+    assert cycle_state.admit() == BudgetAdmission(Decimal("1.25"), 7)
+    round_trip = CycleState.from_mapping(json.loads(json.dumps(cycle_state.to_mapping())))
+    assert round_trip == cycle_state
+    cycle_state.fail("budget-exhausted")
+    cycle_state.dispose("a1")
+    assert cycle_state.begin(CycleConfig.from_mapping(_config()), NOW + timedelta(days=1))
+    assert (cycle_state.consumed_cost_usd, cycle_state.consumed_calls) == (Decimal(0), 0)
+    assert (cycle_state.reserved_cost_usd, cycle_state.reserved_calls) == (Decimal(0), 0)
+    with pytest.raises(ValueError, match="no current lease"):
+        CycleState.empty().admit()
+
+
+def test_unmeasured_cost_charges_whole_admission() -> None:
+    cycle_state = _budget_state()
+    admission = cycle_state.admit()
+    assert admission is not None
+
+    cycle_state.settle(admission, None, 11)
+
+    assert (cycle_state.consumed_cost_usd, cycle_state.consumed_calls) == (Decimal("2.00"), 11)
+    assert cycle_state.budget_exceeded
+    assert cycle_state.admit() is None
