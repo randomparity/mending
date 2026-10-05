@@ -32,8 +32,8 @@ _REJECTIONS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "secret",
         re.compile(
-            r"-----BEGIN [A-Z ]*PRIVATE KEY-----|(?:AKIA|ASIA)[0-9A-Z]{16}(?![0-9A-Z])"
-            r"|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_\w{20,}|xox[abprs]-[\w-]{10,}"
+            r"-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----|(?:AKIA|ASIA)[0-9A-Z]{16}(?![0-9A-Z])"
+            r"|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_\w{20,}|xox[abceprs]-[\w-]{10,}"
             r"|AIza[\w-]{35}|sk-[\w-]{32,}|eyJ[\w-]{10,}\.[\w-]{10,}\."
             r"|(?i:(?:password|passwd|secret|token|api[_-]?key)\w*\s*[:=]\s*['\"][^'\"\s]{8,}['\"])"
         ),

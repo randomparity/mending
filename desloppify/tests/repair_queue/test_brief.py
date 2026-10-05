@@ -144,6 +144,8 @@ def test_absent_or_blank_fix_is_omitted(blank: str | None) -> None:
     [
         ("evidence", "evidence", "-----BEGIN RSA PRIVATE KEY----- abc", "secret"),
         ("evidence", "evidence", "token AKIAABCDEFGHIJKLMNOP", "secret"),
+        ("evidence", "evidence", "-----BEGIN PGP PRIVATE KEY BLOCK----- lQOYBF", "secret"),
+        ("evidence", "evidence", "cookie xoxc-1234567890-abc", "secret"),
         ("evidence", "evidence", "ghp_" + "Z" * 36, "secret"),
         ("verification", "verification", 'set api_key = "abcd1234efgh"', "secret"),
         ("evidence", "evidence", 'client_secret = "abcd1234efgh"', "secret"),
