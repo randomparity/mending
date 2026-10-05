@@ -35,9 +35,10 @@ separately scoped, revalidated execution decision. A no-op is a successful
 result. Scores are optional diagnostics: no finding quotas, no score targets,
 and no score-based reason to defer required tests.
 
-Discovery-only, publication, repair execution, and merge are separately
-controlled capabilities, each enabled by explicit operator configuration for
-the repository. Missing opt-in, or a host that cannot enforce the configured
+On the host-driven path, discovery-only, publication, repair execution, and
+merge are separately controlled capabilities, each enabled by explicit
+operator configuration for the repository. Standalone `scan` and `review`
+remain inherited analyzer commands. Missing opt-in, or a host that cannot enforce the configured
 budgets, parks that action. A workflow instruction, issue body, model finding,
 or nonempty proof string grants no authority.
 
@@ -58,8 +59,9 @@ stays readable and authorizes no merge.
 Code seams and owners:
 
 - `AdeptCycleClient` in `desloppify/app/commands/repair_cycle.py`: one concrete
-  host adapter and loader, execution authority and limits from trusted
-  operator configuration, existing state readable (#19).
+  host adapter and loader, discovery-only and execution controls and limits
+  from trusted operator configuration, existing state readable, and retired
+  per-day merge-permit acceptance (#19).
 - `repair_queue.py` identity markers and revalidation: stable key and
   source-bound evidence (#17).
 - `render_issue`, concern-only eligibility, and the publication control behind
