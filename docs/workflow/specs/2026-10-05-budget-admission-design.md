@@ -124,7 +124,7 @@ Each adapter test request uses a fresh `uuid4` attempt ID, so the derived
    - model calls the host makes that never appear as `assistant` events
      (host-internal auxiliary or compaction calls, background subagents) are
      not counted; the host's cost cap still binds them; checking the stream
-     shape against a captured real transcript is #32's;
+     shape against a captured real transcript is the live pilot's (#7);
    - if Mending is killed uncatchably (SIGKILL), the host keeps running with
      only its own cost cap until it exits; under the systemd unit the control
      group kill ends it, and a local operator stops it before disposition;
