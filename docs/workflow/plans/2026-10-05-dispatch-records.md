@@ -30,7 +30,7 @@ Expected implementation size: 330–420 changed lines (M) — three tasks: engin
 | File | Change |
 |---|---|
 | `desloppify/engine/repair_cycle.py` | add `DispatchRecord`; `CycleState.dispatch`, `attempt_history`; legacy decoding; `begin` archives |
-| `desloppify/app/commands/repair_cycle_host.py` | add `host_session_id`, `HostReferences`, `HostLookupError`, `worker_alive`, `references`; tag line in prompt |
+| `desloppify/app/commands/repair_cycle_host.py` | add `host_session_id`, `HostReferences`, `HostLookupError`, `repository`, `worker_alive`, `worktrees`, `references`; tag line in prompt |
 | `desloppify/app/commands/repair_cycle.py` | `_dispatch_host` intent/replay/return |
 | `desloppify/tests/commands/test_repair_cycle.py` | engine and seam tests |
 | `desloppify/tests/commands/test_repair_cycle_host.py` | adapter lookup tests |

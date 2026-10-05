@@ -94,7 +94,10 @@ After the existing lease-match check:
 
 1. **Replay.** If `cycle_state.dispatch` is not `None`, never call `run`:
    - `worker_alive` is `True` -> park `dispatch-in-flight`; `None` -> park
-     `dispatch-unverified`. Nothing else is looked up or charged.
+     `dispatch-unverified`. Nothing else is looked up or charged, and no
+     failure is recorded even when a reservation is held: `--dispose-attempt`
+     must stay refused while the worker may still run, or a disposition could
+     start a second worker. The first replay after it exits records the failure.
    - Otherwise call `references` with the record's repository, root, and prior
      worktrees (an `unknown` record has none, so it uses the request's root,
      the config's repository, and no prior worktrees) and add what it finds to
