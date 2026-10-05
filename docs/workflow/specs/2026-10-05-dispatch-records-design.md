@@ -36,8 +36,10 @@ repair PR awaiting disposition keeps the repair active").
 | `attempt_id` | the lease's attempt ID; must equal the current lease's |
 | `phase` | `intent` (persisted before launch), `returned` (the adapter returned an outcome), or `unknown` (legacy lease, see below) |
 | `session_id` | the host session ID derived from the attempt ID; `None` for `unknown` |
+| `repository`, `repo_root` | the `config.repository` and `request.repo_root` the dispatch used; replay looks up with these, not the caller's; `None` for `unknown` |
+| `prior_worktrees` | the repository's worktree paths read just before launch |
 | `outcome` | the `HostOutcome.state` once `returned`, else `None` |
-| `pull_requests`, `issues`, `worktrees` | URLs/paths the adapter found for the attempt; empty until looked up |
+| `pull_requests`, `issues`, `worktrees` | URLs/paths found for the attempt; empty until looked up; each lookup adds to them (ordered union) and never removes |
 
 Decoding rules (`CycleState.from_mapping`):
 
@@ -52,8 +54,9 @@ Decoding rules (`CycleState.from_mapping`):
 
 ### Attempt history (engine; operator scope addition)
 
-`CycleState.attempt_history` is a list of mappings, oldest first. When `begin`
-replaces a lease, it first appends the replaced attempt's facts: `lease`,
+`CycleState.attempt_history` is a list of mappings, oldest first. Once
+`_may_replace_lease` allows `begin` to replace a lease (never on a refused
+`begin`), it first appends the replaced attempt's facts: `lease`,
 `authoritative_receipt`, `parked_reason`, `attempt_failure`, `disposed`
 (boolean), `observation_calls`, `consumed_cost_usd`, `consumed_calls`,
 `reserved_cost_usd`, `reserved_calls`, and `dispatch` (mapping or `null`). It
@@ -71,14 +74,19 @@ list is not bounded: `begin` replaces at most one lease per host-local day.
 - `worker_alive(attempt_id) -> bool | None`: whether any process carries the
   attempt's `MENDING_HOST_SESSION` marker (the existing `/proc` scan, which also
   covers the host leader); `None` when `/proc` is unavailable. Local only.
-- `references(request) -> HostReferences(pull_requests, issues, worktrees)`:
-  `gh pr list` and `gh issue list` for `config.repository` (`--state all
-  --limit 100 --json url,body[,headRefName]`), keeping entries whose body has
-  the exact tag line; then `git -C <repo_root> worktree list --porcelain`,
-  keeping worktrees whose branch is a matched PR's head branch. A listing, not
-  GitHub search, so a PR created seconds before a crash is not missed by
-  search-index lag. Each command runs with a 10-second timeout. A missing `gh`,
-  a non-zero exit, a timeout, or unparseable JSON raises `HostLookupError`.
+- `worktrees(repo_root) -> tuple[str, ...]`: the `worktree` paths from
+  `git -C <repo_root> worktree list --porcelain`.
+- `references(attempt_id, repository, repo_root, prior_worktrees) ->
+  HostReferences(pull_requests, issues, worktrees)`: `gh pr list` and
+  `gh issue list --repo <repository> --state all --limit 100 --json url,body`,
+  keeping entries whose body has the exact tag line, and every current worktree
+  not in `prior_worktrees`. The worktree half needs no PR and no host
+  cooperation: one repair runs at a time on the dedicated checkout (ADR 0006),
+  so a worktree that appeared during the dispatch is the attempt's. A listing,
+  not GitHub search, so a PR created seconds before a crash is not missed by
+  search-index lag.
+- Each command runs with fixed argv and a 10-second timeout. A missing `gh`,
+  a non-zero exit, a timeout, or unparseable output raises `HostLookupError`.
 
 ### Dispatch flow (`_dispatch_host`)
 
@@ -87,24 +95,31 @@ After the existing lease-match check:
 1. **Replay.** If `cycle_state.dispatch` is not `None`, never call `run`:
    - `worker_alive` is `True` -> park `dispatch-in-flight`; `None` -> park
      `dispatch-unverified`. Nothing else is looked up or charged.
-   - Otherwise call `references`; on `HostLookupError` park
-     `dispatch-lookup-unavailable` (retryable; nothing recorded).
-   - Record the references on the dispatch record, then: a reservation still
-     held -> fail `unsettled-reservation` (#29's reason, spend unknown); phase
-     `unknown` -> fail `dispatch-outcome-unknown`; otherwise park
+   - Otherwise call `references` with the record's repository, root, and prior
+     worktrees (an `unknown` record has none, so it uses the request's root,
+     the config's repository, and no prior worktrees) and add what it finds to
+     the record. A `HostLookupError` adds nothing.
+   - Then: a reservation still held -> fail `unsettled-reservation` (#29's
+     reason, spend unknown); phase `unknown` -> fail
+     `dispatch-outcome-unknown`; a `HostLookupError` -> park
+     `dispatch-lookup-unavailable` (retryable); otherwise park
      `already-dispatched`. A failure requires `--dispose-attempt` before new
-     work, as today.
+     work, as today, so a lookup outage never strands an attempt.
    Replay runs before the deadline and admission checks: it is an observation,
    and it must work after the lease expires.
-2. The existing unsettled-reservation, deadline, and admission checks.
-3. **Intent.** Set `dispatch = DispatchRecord(attempt, "intent",
-   host_session_id(attempt))` and persist it in the same `save_state` as the
-   reservation, before `run`.
-4. **Return.** A `parked` outcome launched nothing, so `dispatch` returns to
+2. The existing unsettled-reservation and deadline checks.
+3. **Snapshot.** Call `worktrees(request.repo_root)`; a `HostLookupError`
+   parks `dispatch-lookup-unavailable` before anything is admitted.
+4. The existing admission check.
+5. **Intent.** Set `dispatch = DispatchRecord(attempt, "intent", session ID,
+   repository, repo root, prior worktrees)` and persist it in the same
+   `save_state` as the reservation, before `run`.
+6. **Return.** A `parked` outcome launched nothing, so `dispatch` returns to
    `None` (the attempt may dispatch again, as #29 allows). Any other outcome
-   sets phase `returned` and its `outcome`, then calls `references` and records
-   what it finds; a `HostLookupError` there leaves the reference lists empty
-   and does not change the outcome. Settlement follows as in #29.
+   sets phase `returned` and its `outcome`, settles as in #29, and persists
+   before any lookup. Only then does it call `references` and add what it
+   finds; a `HostLookupError` there leaves the lists as they are and changes
+   nothing else.
 
 A `run` that raises (cancellation) leaves the `intent` record and the
 reservation persisted, so the next call takes the replay path.
@@ -114,7 +129,10 @@ reservation persisted, so the next call takes the replay path.
 1. **Actors and deployments**
    - A local operator or the systemd unit running `desloppify repair-cycle`
      on the Linux repair host (ADR 0006, ADR 0010), one process at a time under
-     the state-file lock.
+     the state-file lock, as the account that launched the host: the unit's
+     state directory is `mending`-owned with mode 0700
+     (`docs/systemd/mending-repair-cycle.service`), so only that account or
+     root (which can read every process environment) can replay.
    - The Claude Code host, its worker tree, and the Adept skills it runs,
      acting through the host account's `gh` credentials.
 2. **Invariants and assets at stake**
@@ -129,13 +147,17 @@ reservation persisted, so the next call takes the replay path.
    - The host ignores the tag instruction: lookup finds no issue/PR, so
      references stay empty. Bounded: replay still never relaunches, and the
      attempt fails or parks for the operator.
-   - An issue/PR older than the 100 most recent is not found. Bounded: a replay
-     happens within the same lease (at most a day), and the cost is a missing
-     reference, not a duplicate.
+   - An issue/PR older than the 100 most recent is not found by the first
+     lookup after the worker exits (the return-path lookup, or the first replay
+     that sees no live worker). Bounded: references found earlier are never
+     removed, and the cost is a missing reference, not a duplicate.
+   - A worktree another actor creates in the dedicated checkout during the
+     dispatch is attributed to the attempt. Bounded: one repair runs at a time
+     there (ADR 0006), and the cost is an extra path in the record.
    - A worker that clears its environment and leaves the process group is not
      seen by `worker_alive` (ADR 0010, Consequences).
-   - A post-return lookup failure leaves the reference lists empty for that
-     dispatch.
+   - A post-return lookup failure leaves the reference lists as they were; the
+     outcome and settlement are already on disk.
 4. **Covered elsewhere**
    - Composing `_dispatch_host` into `repair-cycle`, and one active repair per
      window with an open PR keeping the repair active: #31.
@@ -154,8 +176,8 @@ reservation persisted, so the next call takes the replay path.
    the operator's configuration and the local state file.
 3. **Control per boundary** — `gh` and `git` run with fixed argv (no shell);
    the attempt ID is a Mending-generated value used only for exact string
-   comparison. JSON is parsed with `json.loads` and only `url`, `body`, and
-   `headRefName` strings are read; non-string or missing fields are skipped.
+   comparison. JSON is parsed with `json.loads` and only `url` and `body`
+   strings are read; non-string or missing fields are skipped.
    References are recorded, never executed or used to authorize anything, so a
    forged tag can at most add a URL to the record.
 4. **Explicitly out of scope** — authenticating who wrote a tagged body:
@@ -166,11 +188,12 @@ reservation persisted, so the next call takes the replay path.
 | Contract | Evidence |
 |---|---|
 | Dispatch record and history round-trip; legacy decoding; invalid shapes rejected | focused engine tests in `test_repair_cycle.py` |
-| `begin` archives the replaced attempt | focused engine test |
-| Intent persisted before `run` | on-disk read inside a fake `run` |
-| Replay never calls `run`: alive, unverified, lookup failure, unsettled, unknown, already dispatched | parametrized `_dispatch_host` test with a fake host |
-| Parked outcome clears the record; returned outcome records references | `_dispatch_host` tests |
-| `worker_alive`, `references`, tag line in prompt, session-ID derivation | `test_repair_cycle_host.py` with a fake `gh`/`git` on `PATH` and a marked child process |
+| `begin` archives the replaced attempt; a refused `begin` leaves history unchanged | focused engine test |
+| Intent (with repository, root, prior worktrees) persisted before `run` | on-disk read inside a fake `run` |
+| Returned phase and settlement persisted before the post-return lookup | on-disk read inside a fake `references` |
+| Replay never calls `run`: alive, unverified, lookup failure (returned / held reservation / unknown), unsettled, unknown, already dispatched; uses recorded repository and root; references only grow | parametrized `_dispatch_host` test with a fake host |
+| Parked outcome clears the record; snapshot failure admits nothing | `_dispatch_host` tests |
+| `worker_alive`, `worktrees`, `references` (tagged bodies, new worktree with no PR), tag line in prompt, session-ID derivation | `test_repair_cycle_host.py` with a fake `gh` on `PATH`, a real `git` worktree, and a marked child process |
 
 Guardrails: `make lint`, `make typecheck`, `make arch`, `make ci-contracts`,
 `make tests`, `make tests-full`, `make package-smoke`.
