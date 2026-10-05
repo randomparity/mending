@@ -18,6 +18,7 @@ from desloppify.engine.repair_queue import (
     candidate_from_issue,
     concern_hashes,
     concern_key,
+    legacy_marker,
     matching_record,
     normalize_record,
 )
@@ -97,16 +98,7 @@ def _sync_one(args: argparse.Namespace, client: Any, state: Mapping[str, Any], c
     if link is not None:
         _read_link(args, client, candidate, link, expected_key="github_repair")
         return
-    peers = _peer_records(state, candidate)
-    if any(kind != "github_repair" or record is None for _, kind, record in peers):
-        print(f"Skipped {candidate.issue_id}: another work item holds an unresolved record for this concern key.")
-        return
-    peer_links = {record["number"]: record for _, _, record in peers if record is not None}
-    if len(peer_links) > 1:
-        print(f"Skipped {candidate.issue_id}: local links for this concern key conflict.")
-        return
-    if peer_links:
-        _read_link(args, client, candidate, next(iter(peer_links.values())), expected_key=None)
+    if pending is None and _resolved_by_peer(args, client, state, candidate):
         return
     matches = _search(client, candidate)
     if matches is None:
@@ -121,6 +113,22 @@ def _sync_one(args: argparse.Namespace, client: Any, state: Mapping[str, Any], c
         _create_once(args, client, candidate)
     else:
         print(f"Would create a repair issue for {candidate.issue_id}.")
+
+
+def _resolved_by_peer(
+    args: argparse.Namespace, client: Any, state: Mapping[str, Any], candidate: PromotionCandidate
+) -> bool:
+    """Park on or adopt another work item's record for this key; False when none exists."""
+    peers = _peer_records(state, candidate)
+    if any(kind != "github_repair" or record is None for _, kind, record in peers):
+        print(f"Skipped {candidate.issue_id}: another work item holds an unresolved record for this concern key.")
+        return True
+    peer_links = {record["number"]: record for _, _, record in peers if record is not None}
+    if len(peer_links) > 1:
+        print(f"Skipped {candidate.issue_id}: local links for this concern key conflict.")
+    elif peer_links:
+        _read_link(args, client, candidate, next(iter(peer_links.values())), expected_key=None)
+    return bool(peer_links)
 
 
 def _read_link(
@@ -143,12 +151,14 @@ def _read_link(
 
 
 def _search(client: Any, candidate: PromotionCandidate) -> list[Any] | None:
-    """Search the stable key and the identity digest that legacy bodies print."""
+    """Search the stable key, the identity digest, and the current legacy marker."""
+    terms = (
+        candidate.key,
+        candidate.identity,
+        legacy_marker(candidate.identity, candidate.evidence_digest),
+    )
     try:
-        found = [
-            *client.search(candidate.repository, candidate.key),
-            *client.search(candidate.repository, candidate.identity),
-        ]
+        found = [issue for term in terms for issue in client.search(candidate.repository, term)]
     except (RuntimeError, ValueError):
         return None
     return list({issue.number: issue for issue in found}.values())

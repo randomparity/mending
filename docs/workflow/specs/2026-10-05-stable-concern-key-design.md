@@ -46,16 +46,18 @@ issue is created for the same concern.
 - **Sync.** Eligible candidates are grouped by key; a key held by more than one
   candidate parks all of them (ambiguous identity). Per candidate:
   a `RepairRecordError` on its link or pending parks it before any GitHub call.
-  Own link → read by number (unchanged). Otherwise consult *peer* records:
+  Own link → read by number (unchanged). An own pending record skips peer
+  adoption and goes straight to search-and-adopt, so it is never cleared
+  without a GitHub match. Otherwise consult *peer* records:
   `github_repair`/`github_repair_pending` on other work items (any status; a
   rename) whose own identity yields the same key. A peer pending record or a
   peer record that fails normalization parks the candidate before any GitHub
   call (`recover <key>` clears peer pending as it does today). Peer links with
   one distinct number are read by number and adopted; two distinct numbers
   park. With no peer record, search GitHub for
-  the key and for the identity digest (legacy bodies print it) and union the
-  results by issue number — the key term still finds an issue whose identity
-  line a human removed; then the existing pending/adopt/ambiguous/create
+  the key, the identity digest (legacy bodies print it), and the legacy marker
+  for the current hashes, and union the results by issue number — the key and
+  legacy-marker terms still find an issue whose identity line a human removed; then the existing pending/adopt/ambiguous/create
   rules apply. Every link write stores the new shape with the current evidence
   digest and the GitHub state, so a closed (dismissed) issue stays linked and
   closed; nothing reopens or recreates it.

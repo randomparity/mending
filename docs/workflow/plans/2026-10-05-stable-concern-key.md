@@ -255,7 +255,7 @@ is true when `_candidates` yields more than one candidate with the key or
      concern key.`; peer links by distinct number >1 → `Skipped {id}: local
      links for this concern key conflict.`; exactly 1 → `_read_link(...,
      expected_key=None)`. Else the existing search/pending/adopt/create flow.
-   - `_search`: `client.search(repo, key)` then `client.search(repo, identity)`;
+   - `_search`: `client.search(repo, term)` for `key`, `identity`, and `legacy_marker(identity, evidence_digest)`;
      return `list({i.number: i for i in found}.values())`; any
      `RuntimeError`/`ValueError` → `None`.
    - `_create_once`: inside the lock, also treat `_key_claimed_elsewhere(state,

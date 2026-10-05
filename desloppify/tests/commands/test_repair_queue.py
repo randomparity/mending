@@ -18,6 +18,7 @@ IDENTITY = "a" * 64
 EVIDENCE = "b" * 64
 REPOSITORY = "owner/repository"
 KEY = concern_key(REPOSITORY, IDENTITY)
+LEGACY = legacy_marker(IDENTITY, EVIDENCE)
 BASE = {"key": KEY, "repository": REPOSITORY, "evidence_digest": EVIDENCE}
 REVALIDATED = {**BASE, "attestation": "verified current evidence"}
 
@@ -102,7 +103,7 @@ def test_sync_dry_run_does_not_create_or_mutate() -> None:
     client = _Client()
     args = _args("sync", state, client=client)
     cmd_repair_queue(args)
-    assert client.searches == [(REPOSITORY, KEY), (REPOSITORY, IDENTITY)]
+    assert client.searches == [(REPOSITORY, KEY), (REPOSITORY, IDENTITY), (REPOSITORY, LEGACY)]
     assert "github_repair_pending" not in detail
 
 
@@ -279,11 +280,30 @@ def _detail(state: dict, issue_id: str = "concerns::item") -> dict:
     return state["work_items"][issue_id]["detail"]
 
 
-def test_sync_searches_key_and_identity_digest() -> None:
+def test_sync_searches_key_identity_digest_and_legacy_marker() -> None:
     client = _Recorder()
     _sync(_revalidated_state(), client, apply=False)
-    assert client.searches == [(REPOSITORY, KEY), (REPOSITORY, IDENTITY)]
+    assert client.searches == [(REPOSITORY, KEY), (REPOSITORY, IDENTITY), (REPOSITORY, LEGACY)]
     assert client.create_calls == 0
+
+
+def test_human_edited_legacy_issue_is_found_by_legacy_marker() -> None:
+    state = _revalidated_state()
+    client = _Recorder({LEGACY: [ISSUE_7]})
+    _sync(state, client)
+    assert client.create_calls == 0
+    assert _detail(state)["github_repair"] == LINK_7
+
+
+def test_own_pending_is_not_cleared_by_peer_link() -> None:
+    state = _revalidated_state(github_repair_pending=dict(BASE))
+    state["work_items"]["concerns::old"] = _item("concerns::old", status="fixed", github_repair=dict(LINK_7))
+    client = _Recorder()
+    _sync(state, client)
+    assert client.views == []
+    assert client.create_calls == 0
+    assert _detail(state)["github_repair_pending"] == BASE
+    assert "github_repair" not in _detail(state)
 
 
 def test_evidence_change_reconciles_closed_link_without_create() -> None:
