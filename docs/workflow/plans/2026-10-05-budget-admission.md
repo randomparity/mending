@@ -23,7 +23,11 @@ Stack: Python 3.11+, stdlib only, pytest via `uv`.
   `BASE_SHA=$(git rev-parse origin/main) RECORD_PROFILES=adr ./.github/scripts/check-records.sh`.
 
 Expected implementation size: 230–310 changed lines (M) — ~60 engine lines, ~90 adapter
-lines, ~25 seam lines, ~120 test lines.
+lines, ~25 seam lines, ~120 test lines. Built size: about 680 changed lines (~86 engine,
+~204 adapter, ~46 seam, ~340 test). The estimate under-counted the stand-in host's
+rewrite to stream-json, the incremental stream reader, and the parametrized
+outcome and capability cases the Verification inventories require; no work outside
+the spec was added.
 
 ## File map
 
