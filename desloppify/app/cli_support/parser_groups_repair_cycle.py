@@ -12,6 +12,12 @@ def _add_repair_cycle_parser(sub) -> None:
         help="Restricted JSON configuration for the local repair cycle",
     )
     parser.add_argument("--state", type=str, default=None, help="Path to state file")
+    parser.add_argument(
+        "--dispose-attempt",
+        default=None,
+        metavar="ATTEMPT_ID",
+        help="Record the operator's disposition of the current failed attempt, then exit",
+    )
 
 
 __all__ = ["_add_repair_cycle_parser"]

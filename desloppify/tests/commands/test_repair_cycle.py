@@ -15,6 +15,7 @@ from desloppify.app.commands.repair_cycle import (
     AuthorityProof,
     cmd_repair_cycle,
 )
+from desloppify.base.exception_sets import CommandError
 from desloppify.cli import create_parser
 from desloppify.engine.repair_cycle import CycleConfig, CycleState
 
@@ -225,7 +226,7 @@ def test_malformed_receipt_fields_and_transport_failures_park() -> None:
     assert offline_state["repair_cycle"]["parked_reason"] == "selection-unavailable"
 
 
-def test_overdue_adapter_result_parks_before_receipt_is_accepted() -> None:
+def test_overdue_adapter_result_is_recorded_as_runtime_failure() -> None:
     class _OverdueClient(_Client):
         def select(self, config, lease, authority) -> AdeptReceipt:
             return self._receipt(lease, state="terminal")
@@ -242,6 +243,8 @@ def test_overdue_adapter_result_parks_before_receipt_is_accepted() -> None:
     )
 
     assert state["repair_cycle"]["parked_reason"] == "runtime-exhausted"
+    assert state["repair_cycle"]["attempt_failure"] == "runtime-exhausted"
+    assert state["repair_cycle"]["authoritative_receipt"]["state"] == "terminal"
 
 
 def test_unknown_reconciliation_parks_without_new_selection() -> None:
@@ -268,7 +271,7 @@ def test_unknown_reconciliation_parks_without_new_selection() -> None:
     assert state["repair_cycle"]["parked_reason"] == "unknown-receipt"
 
 
-def test_timeout_and_budget_exhaustion_park_without_accepting_receipt() -> None:
+def test_execution_timeout_parks_and_budget_overrun_records_usage() -> None:
     timed_out_state = _state()
     timed_out_client = _Client()
     timed_out_client.select_error = TimeoutError()
@@ -276,6 +279,8 @@ def test_timeout_and_budget_exhaustion_park_without_accepting_receipt() -> None:
     cmd_repair_cycle(_args(timed_out_state, timed_out_client))
 
     assert timed_out_state["repair_cycle"]["parked_reason"] == "timeout"
+    assert timed_out_state["repair_cycle"]["authoritative_receipt"] is None
+    assert timed_out_state["repair_cycle"]["attempt_failure"] is None
 
     class _ExhaustedClient(_Client):
         def _receipt(self, lease, *, state: str) -> AdeptReceipt:
@@ -295,6 +300,8 @@ def test_timeout_and_budget_exhaustion_park_without_accepting_receipt() -> None:
     cmd_repair_cycle(_args(exhausted_state, exhausted_client))
 
     assert exhausted_state["repair_cycle"]["parked_reason"] == "budget-exhausted"
+    assert exhausted_state["repair_cycle"]["attempt_failure"] == "budget-exhausted"
+    assert exhausted_state["repair_cycle"]["authoritative_receipt"]["calls"] == 101
 
 
 def test_non_usd_receipt_parks_and_consumed_merge_stays_daily() -> None:
@@ -400,19 +407,146 @@ def test_only_an_exact_replayed_merge_receipt_reuses_a_daily_permit() -> None:
     assert state["repair_cycle"]["parked_reason"] == "merge-permit-exhausted"
 
 
-def test_expired_lease_does_not_make_another_adapter_call() -> None:
-    config = CycleConfig.from_mapping(_config(runtime_minutes=1))
-    state = _state()
+def _recorded_attempt(state: dict, **config: object):
     cycle_state = CycleState.empty()
-    lease = cycle_state.begin(config, NOW, attempt_id="recorded-attempt")
+    lease = cycle_state.begin(
+        CycleConfig.from_mapping(_config(**config)), NOW, attempt_id="recorded-attempt"
+    )
     assert lease is not None
     state["repair_cycle"] = cycle_state.to_mapping()
+    return lease
+
+
+def test_expired_lease_is_observed_without_execution() -> None:
+    state = _state()
+    _recorded_attempt(state, runtime_minutes=1)
     client = _Client()
 
     cmd_repair_cycle(_args(state, client, now=NOW + timedelta(minutes=2)))
 
+    assert client.reconciliations == 1
+    assert client.verifications == 0
+    assert client.selections == 0
+    recorded = state["repair_cycle"]
+    assert recorded["authoritative_receipt"]["state"] == "terminal"
+    assert recorded["attempt_failure"] == "runtime-exhausted"
+    assert recorded["parked_reason"] == "runtime-exhausted"
+    assert recorded["observation_calls"] == 1
+
+
+def test_observation_allowance_is_bounded_and_persisted(tmp_path) -> None:
+    state_path = tmp_path / "state.json"
+    state = _state()
+    _recorded_attempt(state, runtime_minutes=1)
+    state_path.write_text(json.dumps(state))
+
+    class _OfflineReconcileClient(_Client):
+        def reconcile(self, repository: str, lease) -> AdeptReceipt:
+            self.reconciliations += 1
+            persisted = json.loads(state_path.read_text())
+            assert persisted["repair_cycle"]["observation_calls"] == self.reconciliations
+            raise ConnectionError("adapter offline")
+
+    client = _OfflineReconcileClient()
+
+    def run() -> None:
+        cmd_repair_cycle(
+            _args(
+                None,
+                client,
+                state=str(state_path),
+                config_data=_config(runtime_minutes=1, observation_call_limit=1),
+                now=NOW + timedelta(days=1),
+            )
+        )
+
+    run()
+    first = json.loads(state_path.read_text())["repair_cycle"]
+    assert first["parked_reason"] == "reconciliation-unavailable"
+    assert first["attempt_failure"] is None
+
+    run()
+    second = json.loads(state_path.read_text())["repair_cycle"]
+    assert client.reconciliations == 1
+    assert client.selections == 0
+    assert second["parked_reason"] == "observation-exhausted"
+    assert second["attempt_failure"] == "observation-exhausted"
+    assert second["current_lease"]["attempt_id"] == "recorded-attempt"
+
+
+def test_observation_call_is_time_bounded(monkeypatch) -> None:
+    bounds: list[float] = []
+
+    def expire_immediately(_which: int, seconds: float) -> tuple[float, float]:
+        if seconds:
+            bounds.append(seconds)
+            repair_cycle._deadline_exceeded(repair_cycle.signal.SIGALRM, None)
+        return (0.0, 0.0)
+
+    monkeypatch.setattr(repair_cycle.signal, "setitimer", expire_immediately)
+    state = _state()
+    _recorded_attempt(state, runtime_minutes=1)
+    client = _Client()
+
+    cmd_repair_cycle(
+        _args(
+            state,
+            client,
+            config_data=_config(runtime_minutes=1, observation_minutes=2),
+            now=NOW + timedelta(minutes=2),
+        )
+    )
+
+    assert bounds == [120]
     assert client.reconciliations == 0
-    assert state["repair_cycle"]["parked_reason"] == "timeout"
+    assert state["repair_cycle"]["parked_reason"] == "observation-timeout"
+    assert state["repair_cycle"]["observation_calls"] == 1
+
+
+def test_failed_attempt_requires_disposition_before_new_work() -> None:
+    state = _state()
+    _recorded_attempt(state, runtime_minutes=1)
+    client = _Client()
+    cmd_repair_cycle(_args(state, client, now=NOW + timedelta(minutes=2)))
+    assert state["repair_cycle"]["attempt_failure"] == "runtime-exhausted"
+
+    next_day = NOW + timedelta(days=1)
+    cmd_repair_cycle(_args(state, client, now=next_day))
+
+    assert (client.reconciliations, client.verifications, client.selections) == (1, 0, 0)
+    assert state["repair_cycle"]["parked_reason"] == "disposition-required"
+    assert state["repair_cycle"]["current_lease"]["attempt_id"] == "recorded-attempt"
+
+    with pytest.raises(CommandError, match="not the current attempt"):
+        cmd_repair_cycle(_args(state, client, now=next_day, dispose_attempt="other"))
+    cmd_repair_cycle(_args(state, client, now=next_day, dispose_attempt="recorded-attempt"))
+    assert state["repair_cycle"]["disposed_attempt"] == "recorded-attempt"
+    assert client.selections == 0
+
+    cmd_repair_cycle(_args(state, client, now=next_day))
+
+    assert client.selections == 1
+    recorded = state["repair_cycle"]
+    assert recorded["current_lease"]["attempt_id"] != "recorded-attempt"
+    assert recorded["attempt_failure"] is None
+    assert recorded["disposed_attempt"] is None
+
+
+def test_disposition_requires_a_recorded_failure() -> None:
+    state = _state()
+    _recorded_attempt(state)
+
+    with pytest.raises(CommandError, match="no recorded failure"):
+        cmd_repair_cycle(_args(state, _Client(), dispose_attempt="recorded-attempt"))
+    assert state["repair_cycle"]["disposed_attempt"] is None
+
+
+def test_parser_wires_dispose_attempt() -> None:
+    args = create_parser().parse_args(
+        ["repair-cycle", "--config", "/etc/mending/repair-cycle.json", "--dispose-attempt", "a1"]
+    )
+
+    assert args.dispose_attempt == "a1"
 
 
 def test_deadline_timer_interrupts_before_adapter_selection(monkeypatch) -> None:
@@ -451,3 +585,42 @@ def test_config_host_keys_default_and_decode() -> None:
     assert configured.adept_skills_version == "7.2.0"
     with pytest.raises(ValueError, match="host_executable"):
         CycleConfig.from_mapping(_config(host_executable=""))
+
+
+def test_config_observation_keys_default_and_decode() -> None:
+    defaults = CycleConfig.from_mapping(_config())
+    assert (defaults.observation_call_limit, defaults.observation_seconds) == (3, 300)
+    configured = CycleConfig.from_mapping(_config(observation_call_limit=5, observation_minutes=2))
+    assert (configured.observation_call_limit, configured.observation_seconds) == (5, 120)
+    with pytest.raises(ValueError, match="observation_call_limit"):
+        CycleConfig.from_mapping(_config(observation_call_limit=0))
+    with pytest.raises(ValueError, match="observation_minutes"):
+        CycleConfig.from_mapping(_config(observation_minutes=True))
+
+
+def test_legacy_state_decodes_and_new_fields_validate() -> None:
+    cycle_state = CycleState.empty()
+    lease = cycle_state.begin(CycleConfig.from_mapping(_config()), NOW, attempt_id="legacy")
+    assert lease is not None
+    legacy = {
+        key: value
+        for key, value in cycle_state.to_mapping().items()
+        if key not in {"observation_calls", "attempt_failure", "disposed_attempt"}
+    }
+
+    decoded = CycleState.from_mapping(legacy)
+
+    assert decoded.current_lease == lease
+    assert (decoded.observation_calls, decoded.attempt_failure, decoded.disposed_attempt) == (
+        0,
+        None,
+        None,
+    )
+    for field, bad in (
+        ("observation_calls", -1),
+        ("observation_calls", True),
+        ("attempt_failure", 3),
+        ("disposed_attempt", ""),
+    ):
+        with pytest.raises(ValueError):
+            CycleState.from_mapping({**legacy, field: bad})
