@@ -73,7 +73,7 @@ Paste this prompt into your agent:
 I want you to improve the quality of this codebase. To do this, install and run desloppify.
 Run ALL of the following (requires Python 3.11+):
 
-pip install --upgrade "desloppify[full]"
+pip install --upgrade "desloppify[full] @ git+https://github.com/randomparity/mending.git"
 desloppify update-skill claude    # installs the full workflow guide — pick yours: claude, cursor, codex, copilot, droid, windsurf, gemini, rovodev
 
 Add .desloppify/ to your .gitignore — it contains local state that shouldn't be committed.

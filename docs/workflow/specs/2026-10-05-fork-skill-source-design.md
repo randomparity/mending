@@ -42,7 +42,11 @@ both out. Issue #38. Decision: [ADR 0011](../../adr/0011-fork-hosted-skill-sourc
   wording stays (excluded).
 - `SKILL_VERSION` 7 → 8; `make sync-docs` refreshes `desloppify/data/global/`.
 - README "Using the analyzer directly" note and the #16 spec deferral record
-  the new source.
+  the new source. The README agent prompt's install line, which runs right
+  before `update-skill`, installs from this repository's git URL: the package
+  index `desloppify` is the upstream project, whose `update-skill` installs the
+  upstream skill. The CI install guidance stays (analyzer section; no
+  `update-skill`).
 
 Unchanged: `setup` (reads the bundled copy), section-replacement and
 frontmatter logic, review/triage/plan command reference, overlay review
@@ -68,8 +72,11 @@ sentence above.
   status hint ("it's your north star", `desloppify/app/commands/status/summary.py`),
   the scan score guide and LLM header ("your north star", "The goal is to
   maximize strict scores", `scan/reporting/summary.py`, `agent_context.py`),
-  and the `next` nudge ("North star: strict … target",
-  `next/render_nudges.py`).
+  the `next` nudge ("North star: strict … target",
+  `next/render_nudges.py`), the scan guide's "THIS IS YOUR NORTH STAR" line
+  (`scan/reporting/text.py`), and the scan plan nudge ("Score is frozen until
+  the queue is clear", `scan/plan_nudge.py`). None has an owning issue yet;
+  the campaign routes them.
 - Covered elsewhere: Adept skills and host adapter content (#19).
 
 ## Success

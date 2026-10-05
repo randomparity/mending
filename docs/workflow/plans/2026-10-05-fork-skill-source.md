@@ -33,7 +33,8 @@ Branch `feat/fork-skill-source-38`, base `main`.
 
 ## Task 4 — records
 
-- README "Using the analyzer directly" note; #16 spec deferral paragraph and
+- README "Using the analyzer directly" note and the agent prompt's install
+  line (git URL of this repository); #16 spec deferral paragraph and
   accepted-failure line point at #38 and ADR 0011.
 - Verify: records gate, `rg -n "peteromallet" docs/SKILL.md desloppify/data/global/SKILL.md`
   returns nothing.
