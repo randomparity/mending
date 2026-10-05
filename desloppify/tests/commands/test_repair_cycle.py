@@ -1029,3 +1029,4 @@ def test_replay_never_relaunches(phase, reserved, alive, found, failure, parked)
     record = state["repair_cycle"]["dispatch"]
     assert record["pull_requests"][0] == "https://example.invalid/pull/0"
     assert len(record["pull_requests"]) == (1 if found == "error" else 2)
+    assert record["worktrees"] == ([] if phase == "unknown" or found == "error" else ["/wt"])

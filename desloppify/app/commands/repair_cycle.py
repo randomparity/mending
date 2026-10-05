@@ -355,9 +355,9 @@ def _add_references(
         )
     except HostLookupError:
         return False
-    cycle_state.dispatch = record.with_references(
-        found.pull_requests, found.issues, found.worktrees
-    )
+    # An unknown record has no pre-launch snapshot, so no worktree can be attributed to it.
+    worktrees = () if record.phase == "unknown" else found.worktrees
+    cycle_state.dispatch = record.with_references(found.pull_requests, found.issues, worktrees)
     _store_cycle_state(state, cycle_state)
     return True
 
