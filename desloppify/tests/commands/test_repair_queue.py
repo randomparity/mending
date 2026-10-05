@@ -5,8 +5,14 @@ import argparse
 import pytest
 
 from desloppify.app.commands.repair_queue import _create_once, cmd_repair_queue
+from desloppify.base.exception_sets import CommandError
 from desloppify.cli import create_parser
 from desloppify.engine._state.merge_issues import upsert_issues
+from desloppify.engine.repair_manifest import (
+    MANIFEST_SCHEMA,
+    AnalysisUnknown,
+    manifest_from_record,
+)
 from desloppify.engine.repair_queue import (
     GitHubIssue,
     candidate_from_issue,
@@ -20,7 +26,33 @@ REPOSITORY = "owner/repository"
 KEY = concern_key(REPOSITORY, IDENTITY)
 LEGACY = legacy_marker(IDENTITY, EVIDENCE)
 BASE = {"key": KEY, "repository": REPOSITORY, "evidence_digest": EVIDENCE}
-REVALIDATED = {**BASE, "attestation": "verified current evidence"}
+
+
+def _manifest(blob: str = "d" * 40, coverage: str = "complete"):
+    return manifest_from_record({
+        "schema": MANIFEST_SCHEMA, "revision": "c" * 40, "coverage": coverage,
+        "dependencies": [
+            {"path": "src/impl.py", "role": "implementation", "status": "present", "object_id": blob}
+        ],
+    })
+
+
+MANIFEST = _manifest()
+REVALIDATED = {**BASE, "manifest": MANIFEST.as_record(), "manifest_digest": MANIFEST.digest}
+KEY_BODY = f"<!-- desloppify-concern-key: {KEY} -->"
+LEGACY_BODY = f"<!-- desloppify-concern: {LEGACY} -->"
+
+
+class _Source:
+    """Fake checkout: returns ``manifests`` in turn, repeating the last one."""
+
+    def __init__(self, *manifests) -> None:
+        self.manifests = list(manifests or [MANIFEST])
+        self.calls = 0
+
+    def manifest_for(self, issue):
+        self.calls += 1
+        return self.manifests[min(self.calls, len(self.manifests)) - 1]
 
 
 def _state() -> dict:
@@ -59,11 +91,11 @@ def _args(action: str, state: dict, **extra) -> argparse.Namespace:
         "repository": REPOSITORY,
         "state": None,
         "apply": False,
-        "attest": None,
         "issue_id": None,
         "marker": None,
         "runtime": None,
         "client": _Client(),
+        "source": _Source(),
         "state_data": state,
     }
     values.update(extra)
@@ -78,28 +110,43 @@ def test_parser_wires_repair_queue_commands() -> None:
     assert args.repository == REPOSITORY
 
 
-def test_revalidate_writes_marker_bound_to_repository() -> None:
-    state = _state()
-    args = _args(
-        "revalidate",
-        state,
-        apply=True,
-        issue_id="concerns::item",
-        attest="verified current evidence",
+def test_parser_rejects_attest() -> None:
+    parser = create_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["repair-queue", "revalidate", "ID", "--repo", REPOSITORY, "--attest", "x"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["repair-queue", "recover", KEY, "--repo", REPOSITORY, "--attest", "x"])
+
+
+def test_parser_wires_source_options() -> None:
+    args = create_parser().parse_args(
+        ["repair-queue", "sync", "--repo", REPOSITORY, "--source-root", "/src", "--revision", "main"]
     )
-    cmd_repair_queue(args)
+    assert (args.source_root, args.revision) == ("/src", "main")
+
+
+def test_revalidate_stores_manifest_bound_record() -> None:
+    state = _state()
+    cmd_repair_queue(_args("revalidate", state, apply=True, issue_id="concerns::item"))
     record = state["work_items"]["concerns::item"]["detail"]["github_repair_revalidated"]
     assert record == REVALIDATED
+
+
+@pytest.mark.parametrize(
+    "manifest", [AnalysisUnknown("revision could not be resolved"), _manifest(coverage="partial")]
+)
+def test_revalidate_refuses_unbindable_source(manifest) -> None:
+    state = _state()
+    args = _args("revalidate", state, apply=True, issue_id="concerns::item", source=_Source(manifest))
+    with pytest.raises(CommandError, match="source evidence cannot be bound"):
+        cmd_repair_queue(args)
+    assert "github_repair_revalidated" not in state["work_items"]["concerns::item"]["detail"]
 
 
 def test_sync_dry_run_does_not_create_or_mutate() -> None:
     state = _state()
     detail = state["work_items"]["concerns::item"]["detail"]
-    detail["github_repair_revalidated"] = {
-        "marker": legacy_marker(IDENTITY, EVIDENCE),
-        "repository": REPOSITORY,
-        "attestation": "verified current evidence",
-    }
+    detail["github_repair_revalidated"] = dict(REVALIDATED)
     client = _Client()
     args = _args("sync", state, client=client)
     cmd_repair_queue(args)
@@ -110,15 +157,11 @@ def test_sync_dry_run_does_not_create_or_mutate() -> None:
 def test_sync_adopts_closed_match_with_last_read_state() -> None:
     class ClosedMatchClient(_Client):
         def search(self, repository: str, marker: str):
-            return [GitHubIssue(7, "https://example.test/7", "closed")]
+            return [GitHubIssue(7, "https://example.test/7", "closed", KEY_BODY)]
 
     state = _state()
     detail = state["work_items"]["concerns::item"]["detail"]
-    detail["github_repair_revalidated"] = {
-        "marker": legacy_marker(IDENTITY, EVIDENCE),
-        "repository": REPOSITORY,
-        "attestation": "verified current evidence",
-    }
+    detail["github_repair_revalidated"] = dict(REVALIDATED)
 
     cmd_repair_queue(_args("sync", state, apply=True, client=ClosedMatchClient()))
 
@@ -140,15 +183,11 @@ def test_delayed_writer_cannot_create_after_another_writer_links() -> None:
             self.create_calls += 1
 
         def search(self, repository: str, marker: str):
-            return [GitHubIssue(7, "https://example.test/7", "open")]
+            return [GitHubIssue(7, "https://example.test/7", "open", KEY_BODY)]
 
     state = _state()
     detail = state["work_items"]["concerns::item"]["detail"]
-    detail["github_repair_revalidated"] = {
-        "marker": legacy_marker(IDENTITY, EVIDENCE),
-        "repository": REPOSITORY,
-        "attestation": "verified current evidence",
-    }
+    detail["github_repair_revalidated"] = dict(REVALIDATED)
     candidate = candidate_from_issue(state["work_items"]["concerns::item"], REPOSITORY)
     assert candidate is not None
     client = CreatingClient()
@@ -160,7 +199,7 @@ def test_delayed_writer_cannot_create_after_another_writer_links() -> None:
     assert detail["github_repair"]["number"] == 7
 
 
-def test_uncertain_create_requires_attested_recovery_before_retry() -> None:
+def test_uncertain_create_requires_recovery_before_retry() -> None:
     class FailingCreateClient(_Client):
         def __init__(self) -> None:
             super().__init__()
@@ -181,7 +220,7 @@ def test_uncertain_create_requires_attested_recovery_before_retry() -> None:
     assert client.create_calls == 1
     assert detail["github_repair_pending"] == BASE
 
-    cmd_repair_queue(_args("recover", state, apply=True, client=client, marker=KEY, attest="checked"))
+    cmd_repair_queue(_args("recover", state, apply=True, client=client, marker=KEY))
     cmd_repair_queue(_args("sync", state, apply=True, client=client))
 
     assert client.create_calls == 2
@@ -191,9 +230,9 @@ def test_recover_clears_only_matching_pending_key() -> None:
     state = _state()
     detail = state["work_items"]["concerns::item"]["detail"]
     detail["github_repair_pending"] = dict(BASE)
-    cmd_repair_queue(_args("recover", state, apply=True, marker="f" * 64, attest="checked GitHub"))
+    cmd_repair_queue(_args("recover", state, apply=True, marker="f" * 64))
     assert detail["github_repair_pending"] == BASE
-    cmd_repair_queue(_args("recover", state, apply=True, marker=KEY, attest="checked GitHub"))
+    cmd_repair_queue(_args("recover", state, apply=True, marker=KEY))
     assert "github_repair_pending" not in detail
 
 
@@ -202,7 +241,7 @@ def test_recover_accepts_legacy_marker() -> None:
     marker = legacy_marker(IDENTITY, EVIDENCE)
     detail = state["work_items"]["concerns::item"]["detail"]
     detail["github_repair_pending"] = {"marker": marker, "repository": REPOSITORY}
-    cmd_repair_queue(_args("recover", state, apply=True, marker=marker, attest="checked GitHub"))
+    cmd_repair_queue(_args("recover", state, apply=True, marker=marker))
     assert "github_repair_pending" not in detail
 
 
@@ -220,11 +259,7 @@ def test_sync_search_failure_never_attempts_create() -> None:
 
     state = _state()
     detail = state["work_items"]["concerns::item"]["detail"]
-    detail["github_repair_revalidated"] = {
-        "marker": legacy_marker(IDENTITY, EVIDENCE),
-        "repository": REPOSITORY,
-        "attestation": "verified current evidence",
-    }
+    detail["github_repair_revalidated"] = dict(REVALIDATED)
     client = FailingSearchClient()
 
     cmd_repair_queue(_args("sync", state, apply=True, client=client))
@@ -233,7 +268,7 @@ def test_sync_search_failure_never_attempts_create() -> None:
     assert "github_repair_pending" not in detail
 
 
-ISSUE_7 = GitHubIssue(7, "https://example.test/7", "closed")
+ISSUE_7 = GitHubIssue(7, "https://example.test/7", "closed", LEGACY_BODY)
 LINK_7 = {**BASE, "number": 7, "url": "https://example.test/7", "state": "closed"}
 
 
@@ -313,7 +348,7 @@ def test_evidence_change_reconciles_closed_link_without_create() -> None:
         "concerns::item",
         evidence=new_evidence,
         github_repair=old_link,
-        github_repair_revalidated={**BASE, "evidence_digest": new_evidence, "attestation": "fresh review"},
+        github_repair_revalidated={**REVALIDATED, "evidence_digest": new_evidence},
     )}}
     client = _Recorder()
     _sync(state, client)
@@ -343,7 +378,7 @@ def test_evidence_change_round_trip_reuses_link() -> None:
     upsert_issues(state["work_items"], [scanned], [], "2026-10-06T00:00:00Z", lang=None)
     assert "previous_concern_evidence_digest" not in _detail(state)
     client = _Recorder()
-    cmd_repair_queue(_args("revalidate", state, apply=True, client=client, issue_id="concerns::item", attest="fresh"))
+    cmd_repair_queue(_args("revalidate", state, apply=True, client=client, issue_id="concerns::item"))
     _sync(state, client)
     assert client.views == [7]
     assert client.create_calls == 0
@@ -424,7 +459,7 @@ def test_rename_with_peer_pending_never_creates() -> None:
     client = _Recorder()
     _sync(state, client)
     assert (client.searches, client.create_calls) == ([], 0)
-    cmd_repair_queue(_args("recover", state, apply=True, client=client, marker=KEY, attest="checked GitHub"))
+    cmd_repair_queue(_args("recover", state, apply=True, client=client, marker=KEY))
     _sync(state, client)
     assert client.create_calls == 1
 
@@ -434,7 +469,7 @@ def test_recover_by_key_clears_legacy_peer_pending() -> None:
     legacy = {"marker": LEGACY, "repository": REPOSITORY}
     state["work_items"]["concerns::old"] = _item("concerns::old", status="fixed", github_repair_pending=legacy)
     client = _Recorder()
-    cmd_repair_queue(_args("recover", state, apply=True, client=client, marker=KEY, attest="checked GitHub"))
+    cmd_repair_queue(_args("recover", state, apply=True, client=client, marker=KEY))
     assert "github_repair_pending" not in _detail(state, "concerns::old")
 
 
@@ -461,7 +496,7 @@ def test_conflicting_peer_links_park() -> None:
 
 def test_multiple_github_matches_park() -> None:
     state = _revalidated_state()
-    client = _Recorder({KEY: [ISSUE_7], IDENTITY: [GitHubIssue(8, "https://example.test/8", "open")]})
+    client = _Recorder({KEY: [ISSUE_7], IDENTITY: [GitHubIssue(8, "https://example.test/8", "open", KEY_BODY)]})
     _sync(state, client)
     assert client.create_calls == 0
     assert "github_repair" not in _detail(state)
@@ -491,7 +526,7 @@ def test_successful_create_links_new_shape_record() -> None:
     class CreateThenFind(_Recorder):
         def create(self, repository: str, candidate) -> None:
             super().create(repository, candidate)
-            self.results = {KEY: [GitHubIssue(9, "https://example.test/9", "open")]}
+            self.results = {KEY: [GitHubIssue(9, "https://example.test/9", "open", KEY_BODY)]}
 
     state = _revalidated_state()
     client = CreateThenFind()
@@ -499,3 +534,67 @@ def test_successful_create_links_new_shape_record() -> None:
     assert client.create_calls == 1
     assert _detail(state)["github_repair"] == {**BASE, "number": 9, "url": "https://example.test/9", "state": "open"}
     assert "github_repair_pending" not in _detail(state)
+
+
+CHANGED = _manifest("e" * 40)
+
+
+def test_sync_skips_and_clears_when_source_changed() -> None:
+    state = _revalidated_state()
+    client = _Recorder()
+    cmd_repair_queue(_args("sync", state, apply=True, client=client, source=_Source(CHANGED)))
+    assert (client.searches, client.create_calls) == ([], 0)
+    assert "github_repair_revalidated" not in _detail(state)
+
+
+def test_sync_dry_run_reports_changed_source_without_clearing() -> None:
+    state = _revalidated_state()
+    client = _Recorder()
+    cmd_repair_queue(_args("sync", state, client=client, source=_Source(CHANGED)))
+    assert client.searches == []
+    assert _detail(state)["github_repair_revalidated"] == REVALIDATED
+
+
+def test_create_recheck_mismatch_writes_no_pending() -> None:
+    state = _revalidated_state()
+    client = _Recorder()
+    cmd_repair_queue(_args("sync", state, apply=True, client=client, source=_Source(MANIFEST, CHANGED)))
+    assert client.create_calls == 0
+    assert "github_repair_pending" not in _detail(state)
+    assert "github_repair_revalidated" not in _detail(state)
+
+
+def test_link_recheck_mismatch_keeps_link() -> None:
+    state = _revalidated_state(github_repair=dict(LINK_7))
+    client = _Recorder(viewed=GitHubIssue(7, "https://example.test/7", "open"))
+    cmd_repair_queue(_args("sync", state, apply=True, client=client, source=_Source(MANIFEST, CHANGED)))
+    assert client.views == [7]
+    assert _detail(state)["github_repair"] == LINK_7
+    assert "github_repair_revalidated" not in _detail(state)
+
+
+def test_unique_hit_without_marker_is_not_linked() -> None:
+    state = _revalidated_state()
+    client = _Recorder({KEY: [GitHubIssue(7, "https://example.test/7", "open", f"pasted {KEY}")]})
+    _sync(state, client)
+    assert client.create_calls == 0
+    assert "github_repair" not in _detail(state)
+
+
+def test_verified_hit_beside_unverified_hit_is_linked() -> None:
+    state = _revalidated_state()
+    client = _Recorder({
+        KEY: [GitHubIssue(8, "https://example.test/8", "open", f"comment quoting {KEY}")],
+        IDENTITY: [ISSUE_7],
+    })
+    _sync(state, client)
+    assert client.create_calls == 0
+    assert _detail(state)["github_repair"] == LINK_7
+
+
+def test_two_verified_hits_park() -> None:
+    state = _revalidated_state()
+    client = _Recorder({KEY: [ISSUE_7, GitHubIssue(8, "https://example.test/8", "open", KEY_BODY)]})
+    _sync(state, client)
+    assert client.create_calls == 0
+    assert "github_repair" not in _detail(state)

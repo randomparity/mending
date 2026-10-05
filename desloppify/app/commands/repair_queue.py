@@ -6,16 +6,26 @@ import argparse
 from collections import Counter
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any
 
 from desloppify.app.commands.helpers.state import state_path
+from desloppify.base.discovery.paths import get_project_root
 from desloppify.base.exception_sets import CommandError
 from desloppify.engine._state.persistence import load_state, state_lock
+from desloppify.engine.repair_manifest import (
+    ManifestComparison,
+    SourceCheckout,
+    SourceManifest,
+    compare_manifests,
+    manifest_from_record,
+)
 from desloppify.engine.repair_queue import (
     GitHubIssueClient,
     PromotionCandidate,
     RepairRecordError,
     candidate_from_issue,
+    carries_concern_marker,
     concern_hashes,
     concern_key,
     legacy_marker,
@@ -41,16 +51,23 @@ def cmd_repair_queue(args: argparse.Namespace) -> None:
 def _revalidate(args: argparse.Namespace, client: Any) -> None:
     _require_apply(args, "revalidate")
     repository = client.resolve_repository(args.repository)
-    attestation = _attestation(args)
     with _locked_state(args) as state:
         issue = _issues(state).get(args.issue_id)
         candidate = candidate_from_issue(issue or {}, repository, require_revalidation=False)
         if candidate is None:
             raise CommandError("concern is not current and eligible for revalidation")
-        detail = issue["detail"]
-        detail["github_repair_revalidated"] = {
+        manifest = _source(args).manifest_for(issue)
+        if not isinstance(manifest, SourceManifest) or manifest.coverage != "complete":
+            reason = getattr(manifest, "reason", "coverage is partial")
+            raise CommandError(
+                f"source evidence cannot be bound ({reason}); the concern file and related "
+                "files must be committed regular files under --source-root, the repository "
+                "top level"
+            )
+        issue["detail"]["github_repair_revalidated"] = {
             **_record_base(candidate),
-            "attestation": attestation,
+            "manifest": manifest.as_record(),
+            "manifest_digest": manifest.digest,
         }
     print(f"Revalidated {args.issue_id} for {repository}.")
 
@@ -58,7 +75,6 @@ def _revalidate(args: argparse.Namespace, client: Any) -> None:
 def _recover(args: argparse.Namespace, client: Any) -> None:
     _require_apply(args, "recover")
     repository = client.resolve_repository(args.repository)
-    _attestation(args)
     cleared = 0
     with _locked_state(args) as state:
         for issue in _issues(state).values():
@@ -102,6 +118,8 @@ def _sync(args: argparse.Namespace, client: Any) -> None:
 def _sync_one(
     args: argparse.Namespace, client: Any, state: Mapping[str, Any], candidate: PromotionCandidate
 ) -> None:
+    if not _source_current(args, state, candidate):
+        return
     detail = _issues(state)[candidate.issue_id]["detail"]
     try:
         link = matching_record(detail, "github_repair", candidate)
@@ -116,9 +134,12 @@ def _sync_one(
         return
     if pending is None and _resolved_by_peer(args, client, state, candidate):
         return
-    matches = _search(client, candidate)
-    if matches is None:
+    found = _search(client, candidate)
+    matches = _verified_matches(candidate, found)
+    if found is None:
         print(f"Skipped {candidate.issue_id}: GitHub search failed.")
+    elif matches is None:
+        print(f"Skipped {candidate.issue_id}: GitHub matches do not carry the concern key.")
     elif pending is not None:
         _adopt_if_unique(args, candidate, matches, "github_repair_pending")
     elif len(matches) == 1:
@@ -129,6 +150,50 @@ def _sync_one(
         _create_once(args, client, candidate)
     else:
         print(f"Would create a repair issue for {candidate.issue_id}.")
+
+
+def _source_current(
+    args: argparse.Namespace, state: Mapping[str, Any], candidate: PromotionCandidate
+) -> bool:
+    """Compare without the lock; on a mismatch, clear under the lock (``--apply`` only)."""
+    if _comparison(args, _issues(state)[candidate.issue_id]).current:
+        return True
+    if not args.apply:
+        print(f"Skipped {candidate.issue_id}: source evidence is not current.")
+        return False
+    with _locked_state(args) as locked:
+        if _candidate_by_id(locked, candidate.issue_id, candidate.repository) != candidate:
+            print(f"Skipped {candidate.issue_id}: result is stale.")
+            return False
+        return _recheck_locked(args, locked, candidate)
+
+
+def _recheck_locked(
+    args: argparse.Namespace, state: dict[str, Any], candidate: PromotionCandidate
+) -> bool:
+    """Inside a state-lock transaction: proceed only on current source evidence."""
+    issue = _issues(state)[candidate.issue_id]
+    comparison = _comparison(args, issue)
+    if comparison.current:
+        return True
+    issue["detail"].pop("github_repair_revalidated", None)
+    print(f"Skipped {candidate.issue_id}: source evidence is not current ({comparison.reason}).")
+    return False
+
+
+def _comparison(args: argparse.Namespace, issue: Mapping[str, Any]) -> ManifestComparison:
+    record = issue["detail"].get("github_repair_revalidated")
+    stored = manifest_from_record(record.get("manifest") if isinstance(record, Mapping) else None)
+    return compare_manifests(stored, _source(args).manifest_for(issue))
+
+
+def _source(args: argparse.Namespace) -> Any:
+    supplied = getattr(args, "source", None)
+    if supplied is not None:
+        return supplied
+    root = getattr(args, "source_root", None)
+    revision = getattr(args, "revision", None) or "HEAD"
+    return SourceCheckout(Path(root) if root else get_project_root(), revision)
 
 
 def _resolved_by_peer(
@@ -183,6 +248,16 @@ def _search(client: Any, candidate: PromotionCandidate) -> list[Any] | None:
     return list({issue.number: issue for issue in found}.values())
 
 
+def _verified_matches(
+    candidate: PromotionCandidate, matches: list[Any] | None
+) -> list[Any] | None:
+    """Keep hits whose body carries the key; ``None`` when only unverified hits exist."""
+    if matches is None:
+        return None
+    verified = [issue for issue in matches if carries_concern_marker(issue.body, candidate)]
+    return None if matches and not verified else verified
+
+
 def _adopt_if_unique(args: argparse.Namespace, candidate: PromotionCandidate, matches: list[Any], expected_key: str | None) -> None:
     if len(matches) != 1:
         print(f"Pending {candidate.issue_id}: no unambiguous GitHub match.")
@@ -204,15 +279,21 @@ def _create_once(args: argparse.Namespace, client: Any, candidate: PromotionCand
         ):
             print(f"Skipped {candidate.issue_id}: concern changed while preparing create.")
             return
+        if not _recheck_locked(args, state, candidate):
+            return
         detail["github_repair_pending"] = _record_base(candidate)
     try:
         client.create(candidate.repository, candidate)
     except (RuntimeError, ValueError):
         print(f"Pending {candidate.issue_id}: create outcome is uncertain.")
         return
-    matches = _search(client, candidate)
-    if matches is None:
+    found = _search(client, candidate)
+    matches = _verified_matches(candidate, found)
+    if found is None:
         print(f"Pending {candidate.issue_id}: post-create search failed.")
+        return
+    if matches is None:
+        print(f"Pending {candidate.issue_id}: GitHub matches do not carry the concern key.")
         return
     _adopt_if_unique(args, candidate, matches, "github_repair_pending")
 
@@ -222,6 +303,8 @@ def _write_link(args: argparse.Namespace, candidate: PromotionCandidate, issue: 
         fresh = _candidate_by_id(state, candidate.issue_id, candidate.repository)
         if fresh != candidate:
             print(f"Skipped {candidate.issue_id}: result is stale.")
+            return
+        if not _recheck_locked(args, state, candidate):
             return
         detail = _issues(state)[candidate.issue_id]["detail"]
         if expected_key and _expected_record(detail, expected_key, candidate) is None:
@@ -327,13 +410,6 @@ def _locked_state(args: argparse.Namespace) -> Iterator[dict[str, Any]]:
 def _require_apply(args: argparse.Namespace, action: str) -> None:
     if not getattr(args, "apply", False):
         raise CommandError(f"repair-queue {action} requires --apply", exit_code=2)
-
-
-def _attestation(args: argparse.Namespace) -> str:
-    value = str(getattr(args, "attest", "") or "").strip()
-    if not value:
-        raise CommandError("repair-queue requires a non-empty --attest", exit_code=2)
-    return value
 
 
 __all__ = ["cmd_repair_queue"]

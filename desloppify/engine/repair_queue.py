@@ -9,7 +9,11 @@ from dataclasses import dataclass
 from hashlib import sha256
 from typing import Any
 
+from desloppify.engine.repair_manifest import SourceManifest, manifest_from_record
+
 KEY_SCHEMA = "desloppify-concern-key:v1"
+KEY_LINE = "<!-- desloppify-concern-key: {} -->"
+LEGACY_LINE = "<!-- desloppify-concern: {} -->"
 
 
 class RepairRecordError(ValueError):
@@ -34,6 +38,7 @@ class GitHubIssue:
     number: int
     url: str
     state: str | None
+    body: str = ""
 
 
 Run = Callable[..., subprocess.CompletedProcess[str]]
@@ -97,10 +102,14 @@ def _kind_fields(kind: str, record: Mapping[str, Any]) -> dict[str, Any]:
             raise RepairRecordError("github_repair has an invalid url or state")
         return {"number": number, "url": url, "state": state}
     if kind == "github_repair_revalidated":
-        attestation = record.get("attestation")
-        if not isinstance(attestation, str) or not attestation.strip():
-            raise RepairRecordError("github_repair_revalidated has no attestation")
-        return {"attestation": attestation}
+        manifest = manifest_from_record(record.get("manifest"))
+        if (
+            not isinstance(manifest, SourceManifest)
+            or manifest.coverage != "complete"
+            or record.get("manifest_digest") != manifest.digest
+        ):
+            raise RepairRecordError("github_repair_revalidated has no complete bound manifest")
+        return {"manifest": manifest.as_record(), "manifest_digest": manifest.digest}
     raise RepairRecordError(f"unknown repair record kind {kind}")
 
 
@@ -135,7 +144,7 @@ def render_issue(candidate: PromotionCandidate) -> tuple[str, str]:
         (
             "## Repair queue record",
             "",
-            f"<!-- desloppify-concern-key: {candidate.key} -->",
+            KEY_LINE.format(candidate.key),
             f"Concern identity digest: `{candidate.identity}`",
             f"Evidence digest: `{candidate.evidence_digest}`",
             "Ownership: retained in the local validated concern record.",
@@ -144,6 +153,15 @@ def render_issue(candidate: PromotionCandidate) -> tuple[str, str]:
         )
     )
     return title, body
+
+
+def carries_concern_marker(body: str, candidate: PromotionCandidate) -> bool:
+    """Whether an issue body carries this concern's key line or current legacy line."""
+    expected = {
+        KEY_LINE.format(candidate.key),
+        LEGACY_LINE.format(legacy_marker(candidate.identity, candidate.evidence_digest)),
+    }
+    return any(line.strip() in expected for line in body.splitlines())
 
 
 def matching_record(
@@ -187,7 +205,7 @@ class GitHubIssueClient:
         payload = self._json(
             [
                 "gh", "issue", "list", "--repo", repository, "--state", "all",
-                "--search", marker, "--limit", "100", "--json", "number,url,state",
+                "--search", marker, "--limit", "100", "--json", "number,url,state,body",
             ]
         )
         return _decode_issues(payload, allow_state=True)
@@ -238,7 +256,11 @@ def _decode_issues(payload: object, *, allow_state: bool) -> list[GitHubIssue]:
             raise ValueError("gh returned an invalid issue item")
         if state is not None and (not allow_state or state not in {"OPEN", "CLOSED"}):
             raise ValueError("gh returned an invalid issue state")
-        issues.append(GitHubIssue(number, url, state.lower() if isinstance(state, str) else None))
+        body = item.get("body", "")
+        if not isinstance(body, str):
+            raise ValueError("gh returned an invalid issue body")
+        normalized_state = state.lower() if isinstance(state, str) else None
+        issues.append(GitHubIssue(number, url, normalized_state, body))
     return issues
 
 
@@ -249,6 +271,7 @@ __all__ = [
     "PromotionCandidate",
     "RepairRecordError",
     "candidate_from_issue",
+    "carries_concern_marker",
     "concern_hashes",
     "concern_key",
     "legacy_marker",

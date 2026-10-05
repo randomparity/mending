@@ -4,21 +4,34 @@ import subprocess
 
 import pytest
 
+from desloppify.engine._state.merge_issues import upsert_issues
+from desloppify.engine.repair_manifest import MANIFEST_SCHEMA, manifest_from_record
 from desloppify.engine.repair_queue import (
+    GitHubIssue,
     GitHubIssueClient,
     RepairRecordError,
     candidate_from_issue,
+    carries_concern_marker,
     concern_key,
     legacy_marker,
     normalize_record,
     render_issue,
 )
-from desloppify.engine._state.merge_issues import upsert_issues
 
 IDENTITY = "a" * 64
 EVIDENCE = "b" * 64
 REPOSITORY = "owner/repository"
 KEY = concern_key(REPOSITORY, IDENTITY)
+MANIFEST = {
+    "schema": MANIFEST_SCHEMA,
+    "revision": "c" * 40,
+    "coverage": "complete",
+    "dependencies": [
+        {"path": "src/impl.py", "role": "implementation", "status": "present", "object_id": "d" * 40}
+    ],
+}
+MANIFEST_DIGEST = manifest_from_record(MANIFEST).digest
+BOUND = {"manifest": MANIFEST, "manifest_digest": MANIFEST_DIGEST}
 
 
 def _issue(*, revalidated: bool = True) -> dict:
@@ -34,7 +47,7 @@ def _issue(*, revalidated: bool = True) -> dict:
             "key": KEY,
             "repository": REPOSITORY,
             "evidence_digest": EVIDENCE,
-            "attestation": "verified current evidence",
+            **BOUND,
         }
     return {"id": "concerns::item", "detector": "concerns", "status": "open", "detail": detail}
 
@@ -58,23 +71,34 @@ def test_candidate_requires_matching_durable_revalidation() -> None:
     assert candidate.evidence_digest == EVIDENCE
 
 
-def test_candidate_accepts_legacy_revalidation_for_current_hashes() -> None:
-    issue = _issue()
-    issue["detail"]["github_repair_revalidated"] = {
-        "marker": legacy_marker(IDENTITY, EVIDENCE),
-        "repository": REPOSITORY,
-        "attestation": "verified current evidence",
-    }
-    assert candidate_from_issue(issue, REPOSITORY) is not None
+_PARTIAL = {**MANIFEST, "coverage": "partial"}
 
 
-@pytest.mark.parametrize("attestation", [None, "  ", 3])
-def test_candidate_requires_non_empty_string_revalidation_attestation(
-    attestation: object,
-) -> None:
+@pytest.mark.parametrize(
+    "record",
+    [
+        {"marker": legacy_marker(IDENTITY, EVIDENCE), "repository": REPOSITORY, "attestation": "ok"},
+        {"key": KEY, "repository": REPOSITORY, "evidence_digest": EVIDENCE, "attestation": "ok"},
+        {"key": KEY, "repository": REPOSITORY, "evidence_digest": EVIDENCE, "attestation": "ok",
+         "manifest_digest": MANIFEST_DIGEST},
+        {"key": KEY, "repository": REPOSITORY, "evidence_digest": EVIDENCE,
+         "manifest": {**MANIFEST, "schema": "other"}, "manifest_digest": MANIFEST_DIGEST},
+        {"key": KEY, "repository": REPOSITORY, "evidence_digest": EVIDENCE,
+         "manifest": _PARTIAL, "manifest_digest": manifest_from_record(_PARTIAL).digest},
+        {"key": KEY, "repository": REPOSITORY, "evidence_digest": EVIDENCE,
+         "manifest": MANIFEST, "manifest_digest": "e" * 64},
+    ],
+    ids=["legacy-attested", "attested", "digest-only", "bad-manifest", "partial", "digest-mismatch"],
+)
+def test_revalidation_requires_complete_bound_manifest(record: dict) -> None:
     issue = _issue()
-    issue["detail"]["github_repair_revalidated"]["attestation"] = attestation
+    issue["detail"]["github_repair_revalidated"] = record
     assert candidate_from_issue(issue, REPOSITORY) is None
+
+
+def test_revalidation_normalizes_to_bound_shape() -> None:
+    record = _issue()["detail"]["github_repair_revalidated"]
+    assert _normalize("github_repair_revalidated", record) == record
 
 
 def test_candidate_rejects_revalidation_for_old_evidence() -> None:
@@ -118,7 +142,7 @@ def test_normalize_accepts_new_and_legacy_shapes() -> None:
         ("github_repair", {"key": KEY, "repository": REPOSITORY, "evidence_digest": EVIDENCE, "number": 0, "url": "u", "state": "open"}),
         ("github_repair", {"key": KEY, "repository": REPOSITORY, "evidence_digest": EVIDENCE, "number": 7, "url": "", "state": "open"}),
         ("github_repair", {"key": KEY, "repository": REPOSITORY, "evidence_digest": EVIDENCE, "number": 7, "url": "u", "state": "merged"}),
-        ("github_repair_revalidated", {"key": KEY, "repository": REPOSITORY, "evidence_digest": EVIDENCE, "attestation": " "}),
+        ("github_repair_revalidated", {"key": KEY, "repository": REPOSITORY, "evidence_digest": EVIDENCE, "attestation": "ok"}),
         ("unknown_kind", {"key": KEY, "repository": REPOSITORY, "evidence_digest": EVIDENCE}),
     ],
 )
@@ -166,20 +190,63 @@ def test_client_searches_all_states_with_explicit_repository() -> None:
         return subprocess.CompletedProcess(
             argv,
             0,
-            '[{"number":7,"url":"https://example.test/7","state":"CLOSED"}]',
+            '[{"number":7,"url":"https://example.test/7","state":"CLOSED","body":"text"}]',
             "",
         )
 
     result = GitHubIssueClient(run).search(REPOSITORY, "marker")
-    assert [(item.number, item.url, item.state) for item in result] == [
-        (7, "https://example.test/7", "closed")
+    assert [(item.number, item.url, item.state, item.body) for item in result] == [
+        (7, "https://example.test/7", "closed", "text")
     ]
     assert calls == [
         [
             "gh", "issue", "list", "--repo", REPOSITORY, "--state", "all",
-            "--search", "marker", "--limit", "100", "--json", "number,url,state",
+            "--search", "marker", "--limit", "100", "--json", "number,url,state,body",
         ]
     ]
+
+
+def test_client_rejects_non_string_body() -> None:
+    def run(argv, **_kwargs):
+        payload = '[{"number":7,"url":"https://example.test/7","state":"OPEN","body":3}]'
+        return subprocess.CompletedProcess(argv, 0, payload, "")
+
+    with pytest.raises(ValueError, match="invalid issue body"):
+        GitHubIssueClient(run).search(REPOSITORY, "marker")
+
+
+def _body_issue(body: str) -> GitHubIssue:
+    return GitHubIssue(7, "https://example.test/7", "open", body)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        f"## Repair queue record\n\n<!-- desloppify-concern-key: {KEY} -->\n",
+        f"  <!-- desloppify-concern: {legacy_marker(IDENTITY, EVIDENCE)} -->  ",
+    ],
+)
+def test_carries_concern_marker_accepts_key_or_current_legacy_line(body: str) -> None:
+    candidate = candidate_from_issue(_issue(), REPOSITORY)
+    assert candidate is not None
+    assert carries_concern_marker(_body_issue(body).body, candidate)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "",
+        f"pasted {KEY} in prose",
+        f"see <!-- desloppify-concern-key: {KEY} --> inline",
+        f"<!-- desloppify-concern-key: {concern_key('other/repository', IDENTITY)} -->",
+        f"<!-- desloppify-concern: {legacy_marker(IDENTITY, 'c' * 64)} -->",
+        f"Concern identity digest: `{IDENTITY}`",
+    ],
+)
+def test_carries_concern_marker_rejects_other_text(body: str) -> None:
+    candidate = candidate_from_issue(_issue(), REPOSITORY)
+    assert candidate is not None
+    assert not carries_concern_marker(body, candidate)
 
 
 def test_client_creates_actionable_issue_with_fixed_arguments() -> None:
@@ -222,7 +289,7 @@ _LINK = {
     "state": "closed",
 }
 _PENDING = {"key": KEY, "repository": REPOSITORY, "evidence_digest": EVIDENCE}
-_REVALIDATED = {**_PENDING, "attestation": "verified current evidence"}
+_REVALIDATED = {**_PENDING, **BOUND}
 
 
 def test_scan_merge_keeps_records_when_evidence_is_unchanged() -> None:
