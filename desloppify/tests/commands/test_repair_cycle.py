@@ -21,7 +21,12 @@ from desloppify.app.commands.repair_cycle import (
 from desloppify.app.commands.repair_cycle_host import HostOutcome, HostRequest
 from desloppify.base.exception_sets import CommandError
 from desloppify.cli import create_parser
-from desloppify.engine.repair_cycle import BudgetAdmission, CycleConfig, CycleState
+from desloppify.engine.repair_cycle import (
+    BudgetAdmission,
+    CycleConfig,
+    CycleState,
+    DispatchRecord,
+)
 
 REPOSITORY = "owner/repository"
 NOW = datetime(2026, 9, 13, 9, 0, tzinfo=UTC)
@@ -646,6 +651,78 @@ def test_legacy_state_decodes_and_new_fields_validate() -> None:
     ):
         with pytest.raises(ValueError):
             CycleState.from_mapping({**legacy, field: bad})
+
+
+def test_dispatch_record_round_trips_and_legacy_lease_is_unknown() -> None:
+    cycle_state = CycleState.empty()
+    lease = cycle_state.begin(CycleConfig.from_mapping(_config()), NOW, attempt_id="a1")
+    assert lease is not None
+    cycle_state.dispatch = DispatchRecord(
+        "a1", "returned", "s", "o/r", "/repo", ("/repo",), "completed",
+        ("https://x/pull/1",), (), ("/w",),
+    )
+    assert CycleState.from_mapping(json.loads(json.dumps(cycle_state.to_mapping()))) == cycle_state
+    record = DispatchRecord("a1", "returned", pull_requests=("p2", "p0"))
+    assert record.with_references(("p1", "p2"), ("i1",), ()).pull_requests == ("p2", "p0", "p1")
+    assert record.with_references(("p1", "p2"), ("i1",), ()).issues == ("i1",)
+
+    legacy = {key: value for key, value in cycle_state.to_mapping().items()
+              if key not in {"dispatch", "attempt_history"}}
+    decoded = CycleState.from_mapping(legacy)
+    assert decoded.current_lease == lease
+    assert decoded.dispatch == DispatchRecord("a1", "unknown")
+    assert decoded.attempt_history == []
+    assert CycleState.from_mapping({}).dispatch is None
+
+    valid = cycle_state.to_mapping()
+    dispatch = valid["dispatch"]
+    assert isinstance(dispatch, dict)
+    for bad in (
+        {**valid, "current_lease": None},
+        {**valid, "dispatch": {**dispatch, "attempt_id": "other"}},
+        {**valid, "dispatch": {**dispatch, "phase": "other"}},
+        {**valid, "dispatch": {**dispatch, "pull_requests": "p1"}},
+        {**valid, "dispatch": {**dispatch, "worktrees": [""]}},
+        {**valid, "dispatch": "a1"},
+        {**valid, "attempt_history": {}},
+        {**valid, "attempt_history": [{"lease": None}]},
+        {**valid, "attempt_history": [{"lease": lease.to_mapping(), "dispatch": {"phase": "x"}}]},
+    ):
+        with pytest.raises(ValueError):
+            CycleState.from_mapping(bad)
+
+
+def test_begin_archives_replaced_attempt() -> None:
+    config = CycleConfig.from_mapping(_config())
+    cycle_state = CycleState.empty()
+    lease = cycle_state.begin(config, NOW, attempt_id="a1")
+    assert lease is not None
+    cycle_state.dispatch = DispatchRecord("a1", "returned", "s", outcome="failed")
+    cycle_state.consumed_calls = 4
+    cycle_state.fail("host-error")
+    cycle_state.dispose("a1")
+
+    assert cycle_state.begin(config, NOW + timedelta(days=1), attempt_id="a2") is not None
+    assert cycle_state.begin(config, NOW + timedelta(days=1), attempt_id="a3") is None
+
+    assert cycle_state.dispatch is None
+    assert cycle_state.attempt_history == [
+        {
+            "lease": lease.to_mapping(),
+            "authoritative_receipt": None,
+            "parked_reason": "host-error",
+            "attempt_failure": "host-error",
+            "disposed": True,
+            "observation_calls": 0,
+            "consumed_cost_usd": "0",
+            "consumed_calls": 4,
+            "reserved_cost_usd": "0",
+            "reserved_calls": 0,
+            "dispatch": DispatchRecord("a1", "returned", "s", outcome="failed").to_mapping(),
+        }
+    ]
+    round_trip = CycleState.from_mapping(json.loads(json.dumps(cycle_state.to_mapping())))
+    assert round_trip.attempt_history == cycle_state.attempt_history
 
 
 def _budget_state() -> CycleState:
