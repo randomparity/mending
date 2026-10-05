@@ -17,7 +17,7 @@ description: >
 Find and make worthwhile, verified fixes within the scope the user asked for. The cycle is **scan → plan → execute → rescan**, and each run is bounded: it ends when that scope is done, or when nothing left is worth fixing. Use the scan output's **INSTRUCTIONS FOR AGENTS** as guidance within that scope.
 
 - **Findings are evidence, not a quota.** Fix what is worth fixing; a run that finds nothing worth fixing is a valid result.
-- **Scores are optional diagnostics.** There is no score target. A score is never a reason to keep going, to stop early, or to skip or defer required tests.
+- **Scores are optional diagnostics.** There is no score target. A score is never a reason to continue a run, to stop one early, or to skip or defer required tests.
 - **Keep each fix small and verified.** Fix things properly and run the tests that cover them. A change that needs a broad refactor goes to the user as a proposal with evidence and alternatives, not as unrequested work.
 
 ## 2. The Workflow

@@ -42,7 +42,18 @@ def test_bundled_skill_marker_matches_skill_version() -> None:
 
 @pytest.mark.parametrize(
     "phrase",
-    ["peteromallet", "queue is empty", "north star", "Maximise the"],
+    [
+        "peteromallet",
+        "pip install desloppify",
+        "queue is empty",
+        "finish the queue",
+        "grind the queue",
+        "keep going",
+        "north star",
+        "Maximise the",
+        "touch 20 files",
+        "ask the user what to do",
+    ],
 )
 def test_skill_omits_upstream_score_loop(phrase: str) -> None:
     """ADR 0007/0011: the installed skill sets no score target or queue drain."""

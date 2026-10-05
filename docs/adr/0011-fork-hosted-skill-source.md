@@ -12,7 +12,8 @@ project. That skill tells agents to maximise the strict score and repeat until
 the queue is empty, which contradicts ADR 0007: scores are optional
 diagnostics, there are no finding quotas or score targets, and a no-op is a
 successful run. `desloppify setup` already installs the copies bundled in
-`desloppify/data/global/`, which `make sync-docs` keeps identical to `docs/`.
+`desloppify/data/global/`; `make sync-docs` refreshes them from `docs/` and
+`test_bundled_sync.py` fails when they differ.
 The operator decided on 2026-10-05 to keep the download and point it at this
 repository rather than bundle (#38).
 
@@ -43,7 +44,12 @@ repository rather than bundle (#38).
 - `setup` (bundled copy) and `update-skill` (download) can differ for a given
   build; they agree on a build made from `main`.
 - Only builds of this repository use this source; a build of the upstream
-  project keeps its own URL.
+  project keeps its own URL. The skill's prerequisite therefore installs from
+  this repository's git URL, not the package index.
+- Upstream and this repository share one integer version space, and staleness
+  is `installed < SKILL_VERSION`. An upstream skill at an equal or higher
+  number would read as current here. Accepted: the installed skill only
+  points at this repository, and a later bump can step past upstream.
 
 ## Considered & rejected
 

@@ -16,8 +16,10 @@ Branch `feat/fork-skill-source-38`, base `main`.
 
 - Tests first, in `desloppify/tests/commands/test_bundled_sync.py`: the bundled
   `SKILL.md` marker equals `SKILL_VERSION`; `docs/SKILL.md` contains none of
-  `peteromallet`, `queue is empty`, `north star`, `Maximise the`. Red on the
-  current text.
+  the removed upstream phrases (`peteromallet`, `pip install desloppify`,
+  `queue is empty`, `finish the queue`, `grind the queue`, `keep going`,
+  `north star`, `Maximise the`, `touch 20 files`, `ask the user what to do`).
+  Red on the current text.
 - Rewrite `docs/SKILL.md` per the spec; marker 8. Edit `docs/OPENCODE.md`
   line 3. Set `SKILL_VERSION = 8`. Run `make sync-docs`.
 - Verify: `test_bundled_sync.py`, `test_setup.py`, update-skill tests pass.
