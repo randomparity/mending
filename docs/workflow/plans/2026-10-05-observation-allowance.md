@@ -119,5 +119,12 @@ Verification:
   the next-day run selects once with a new lease and cleared failure. Red: next-day run
   selects without disposition.
 - Mode: focused-test — `test_parser_wires_dispose_attempt`. Red: unrecognized argument.
-- Mode: task-test-not-applicable — `docs/systemd/repair-cycle.md`: operator prose; no
-  executable consumer validates it.
+- Mode: focused-test — `docs/systemd/repair-cycle.md` is read by
+  `desloppify/tests/ci/test_repair_cycle_recipe.py`; keep its asserted phrases
+  ("host system timezone", "OnCalendar", "0640", "parks before selection", the disable
+  command). Green: `uv run --locked pytest desloppify/tests/ci/test_repair_cycle_recipe.py -q`.
+
+## Deferrals
+
+- Authority checks on observation reads and on resume, and revocation detection → #26.
+- Trusted usage measurement and persisted consumed budget → #29.

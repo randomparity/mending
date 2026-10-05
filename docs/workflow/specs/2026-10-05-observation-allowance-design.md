@@ -42,8 +42,8 @@ config/overrun wording in `docs/systemd/repair-cycle.md`.
   is true; once disposed, `begin` may replace the lease on a later day even without
   a terminal receipt. The same-day rule is unchanged. The failed attempt's
   receipt, failure, and disposition are retained until a disposed attempt is
-  replaced; after that the command's journal lines are the history (an attempt
-  history record belongs with dispatch records, #30).
+  replaced; after that the command's journal lines are the history. A durable
+  attempt-history record is out of scope here and has no owner yet.
 
 ### Behavior
 
