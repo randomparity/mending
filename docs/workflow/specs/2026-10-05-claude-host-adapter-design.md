@@ -99,14 +99,19 @@ only after a terminal receipt (existing rule), and #31 maps `unknown` to that pa
 ### Threat model
 
 - Boundaries added: config values become argv and a working directory; the
-  brief (published issue text) becomes the host prompt; host stdout is parsed.
+  brief (published issue text) becomes the host prompt; host stdout is parsed;
+  host stderr returns as `detail`; the host inherits Mending's environment; the
+  adapter reads `/proc/*/environ` and replaces main-thread signal handlers.
 - Actors: the operator (trusted, owns config); issue authors (untrusted brief
   text); the host process (runs code under the account's permissions).
 - Controls: argv list, no shell; the brief goes on stdin, never argv; JSON
   parsing only, no evaluation; host permissions from account settings, no
   bypass flag; output is not echoed into GitHub by this adapter; signals go only
   to the host's group and to PIDs whose environment carries this attempt's marker
-  (a same-user process that copies the marker can already be signalled by that user).
+  (a same-user process that copies the marker can already be signalled by that user);
+  `/proc` reads and signals stay within the running user's own processes; `detail`
+  is untrusted host text that a consumer must redact before publishing; the
+  deployment environment must hold no secret the host should not see.
 - Out of scope: prompt injection in the brief steering the host within its
   granted permissions (owned by the brief review in #18 and host permissions);
   a malicious operator config.
