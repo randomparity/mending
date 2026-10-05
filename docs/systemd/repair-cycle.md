@@ -24,7 +24,9 @@ MENDING_REPAIR_CYCLE_CONFIG=/etc/mending/repair-cycle.json
 Create `/etc/mending/repair-cycle.json`, owned by `root:mending` and mode
 `0640`. The operator selects the repository identity, model, runtime, call
 limit, and USD cost cap. Runtime and call limit may be omitted to use their
-90-minute and 100-call defaults.
+90-minute and 100-call defaults. `observation_call_limit` (default 3) and
+`observation_minutes` (default 5) bound how a recorded attempt is observed; see
+below.
 
 ```json
 {
@@ -37,9 +39,27 @@ limit, and USD cost cap. Runtime and call limit may be omitted to use their
 }
 ```
 
-The command enforces the selected runtime while each adapter call is running,
-then rechecks the lease deadline before accepting its receipt. A deadline
-overrun parks the recorded attempt; it never starts another selection.
+The command enforces the selected runtime while each authority or selection
+call is running. Reading a recorded attempt's outcome is separate: each run may
+make one read-only reconcile call, up to `observation_call_limit` calls per
+attempt, each bounded by `observation_minutes`, even after the runtime has
+expired. It never extends the runtime or starts work. A receipt observed after
+the deadline, or over the call or cost limit, is recorded with its usage and
+the attempt is marked failed (`runtime-exhausted` or `budget-exhausted`).
+Because receipts carry no completion time, any interrupted attempt first
+observed after its deadline is marked failed this way. When the allowance is
+spent the attempt is marked `observation-exhausted` and no further reads occur.
+
+A failed attempt parks every later run as `disposition-required` until the
+operator reviews it and records a disposition:
+
+```sh
+desloppify repair-cycle --config /etc/mending/repair-cycle.json \
+  --state /var/lib/mending-repair-cycle/state.json --dispose-attempt ATTEMPT_ID
+```
+
+The attempt ID is `current_lease.attempt_id` in the state file. Disposing makes
+no external call; the next timer window on a later day may start new work.
 
 Set `enabled` to `false` to park new work while retaining enough local state to
 reconcile an already-recorded attempt. A missing model or positive USD cap also

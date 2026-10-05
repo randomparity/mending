@@ -15,6 +15,7 @@ from desloppify.app.commands.repair_cycle import (
     AuthorityProof,
     cmd_repair_cycle,
 )
+from desloppify.base.exception_sets import CommandError
 from desloppify.cli import create_parser
 from desloppify.engine.repair_cycle import CycleConfig, CycleState
 
@@ -500,6 +501,52 @@ def test_observation_call_is_time_bounded(monkeypatch) -> None:
     assert client.reconciliations == 0
     assert state["repair_cycle"]["parked_reason"] == "observation-timeout"
     assert state["repair_cycle"]["observation_calls"] == 1
+
+
+def test_failed_attempt_requires_disposition_before_new_work() -> None:
+    state = _state()
+    _recorded_attempt(state, runtime_minutes=1)
+    client = _Client()
+    cmd_repair_cycle(_args(state, client, now=NOW + timedelta(minutes=2)))
+    assert state["repair_cycle"]["attempt_failure"] == "runtime-exhausted"
+
+    next_day = NOW + timedelta(days=1)
+    cmd_repair_cycle(_args(state, client, now=next_day))
+
+    assert (client.reconciliations, client.verifications, client.selections) == (1, 0, 0)
+    assert state["repair_cycle"]["parked_reason"] == "disposition-required"
+    assert state["repair_cycle"]["current_lease"]["attempt_id"] == "recorded-attempt"
+
+    with pytest.raises(CommandError, match="not the current attempt"):
+        cmd_repair_cycle(_args(state, client, now=next_day, dispose_attempt="other"))
+    cmd_repair_cycle(_args(state, client, now=next_day, dispose_attempt="recorded-attempt"))
+    assert state["repair_cycle"]["disposed_attempt"] == "recorded-attempt"
+    assert client.selections == 0
+
+    cmd_repair_cycle(_args(state, client, now=next_day))
+
+    assert client.selections == 1
+    recorded = state["repair_cycle"]
+    assert recorded["current_lease"]["attempt_id"] != "recorded-attempt"
+    assert recorded["attempt_failure"] is None
+    assert recorded["disposed_attempt"] is None
+
+
+def test_disposition_requires_a_recorded_failure() -> None:
+    state = _state()
+    _recorded_attempt(state)
+
+    with pytest.raises(CommandError, match="no recorded failure"):
+        cmd_repair_cycle(_args(state, _Client(), dispose_attempt="recorded-attempt"))
+    assert state["repair_cycle"]["disposed_attempt"] is None
+
+
+def test_parser_wires_dispose_attempt() -> None:
+    args = create_parser().parse_args(
+        ["repair-cycle", "--config", "/etc/mending/repair-cycle.json", "--dispose-attempt", "a1"]
+    )
+
+    assert args.dispose_attempt == "a1"
 
 
 def test_deadline_timer_interrupts_before_adapter_selection(monkeypatch) -> None:
