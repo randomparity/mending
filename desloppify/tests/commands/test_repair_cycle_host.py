@@ -7,6 +7,7 @@ import sys
 import threading
 import time
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -199,21 +200,53 @@ def test_unverifiable_tree_is_unknown(host, tmp_path, monkeypatch):
     assert (outcome.state, outcome.reason) == ("unknown", "timeout-survivors")
 
 
-def test_sigterm_stops_tree_and_reraises(host, tmp_path, monkeypatch):
+def test_relative_paths_reach_host_as_absolute(host, tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_HOST_MODE", "ok")
+    monkeypatch.chdir(tmp_path)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    config = _config(host, adept_skills_dir="adept", host_executable="./claude")
+    outcome = ClaudeHostAdapter(config).run(replace(_request(tmp_path), repo_root=repo))
+    assert outcome.state == "completed"
+    argv = json.loads(host["record"].read_text())["argv"]
+    assert argv[argv.index("--plugin-dir") + 1] == host["skills"]
+
+
+def test_launch_failure_parks(host, tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_HOST_MODE", "ok")
+    request = replace(_request(tmp_path), repo_root=tmp_path / "missing")
+    outcome = ClaudeHostAdapter(_config(host)).run(request)
+    assert (outcome.state, outcome.reason) == ("parked", "host-launch-failed")
+
+
+def test_missing_proc_is_unknown(host, tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_HOST_MODE", "hang")
-    previous = signal.getsignal(signal.SIGTERM)
+    monkeypatch.setattr(repair_cycle_host, "_marked_pids", lambda _marker: None)
+    adapter = ClaudeHostAdapter(_config(host), grace_seconds=0.2)
+    outcome = adapter.run(_request(tmp_path, seconds=1))
+    assert (outcome.state, outcome.reason) == ("unknown", "timeout-survivors")
+
+
+@pytest.mark.parametrize(
+    ("signum", "expected"),
+    [(signal.SIGTERM, SystemExit), (signal.SIGINT, KeyboardInterrupt)],
+)
+def test_cancellation_stops_tree_and_reraises(host, tmp_path, monkeypatch, signum, expected):
+    monkeypatch.setenv("FAKE_HOST_MODE", "hang")
+    previous = signal.getsignal(signum)
 
     def cancel_once_launched() -> None:
         deadline = time.monotonic() + 10
         while not host["record"].exists() and time.monotonic() < deadline:
             time.sleep(0.05)
-        os.kill(os.getpid(), signal.SIGTERM)
+        os.kill(os.getpid(), signum)
 
     timer = threading.Thread(target=cancel_once_launched)
     timer.start()
-    with pytest.raises(SystemExit) as raised:
+    with pytest.raises(expected) as raised:
         ClaudeHostAdapter(_config(host), grace_seconds=0.5).run(_request(tmp_path))
     timer.join()
-    assert raised.value.code == 128 + signal.SIGTERM
+    if expected is SystemExit:
+        assert raised.value.code == 128 + signum
     assert all(_gone(pid) for pid in json.loads(host["record"].read_text())["pids"])
-    assert signal.getsignal(signal.SIGTERM) is previous
+    assert signal.getsignal(signum) is previous

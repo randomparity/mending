@@ -80,10 +80,11 @@ class ClaudeHostAdapter:
         with tempfile.TemporaryDirectory(prefix="mending-host-") as scratch:
             files = Path(scratch)
             (files / "prompt").write_text(_prompt(request))
-            with _cancellation_handlers():
-                exit_code, timed_out, emptied = self._launch(command, request, session_id, files)
-            if exit_code is None and not timed_out:
+            with _cancellation_handlers() as cancellation:
+                launched = self._launch(command, request, session_id, files, cancellation)
+            if launched is None:
                 return HostOutcome("parked", "host-launch-failed", session_id, version)
+            exit_code, timed_out, emptied = launched
             stdout = (files / "stdout").read_text(errors="replace")
             stderr = (files / "stderr").read_text(errors="replace")
         if timed_out:
@@ -95,15 +96,21 @@ class ClaudeHostAdapter:
         return HostOutcome(state, reason, session_id, version, exit_code)
 
     def _launch(
-        self, command: list[str], request: HostRequest, session_id: str, files: Path
-    ) -> tuple[int | None, bool, bool]:
-        """Return (exit code, timed out, tree verified empty); exit code None if not launched."""
+        self,
+        command: list[str],
+        request: HostRequest,
+        session_id: str,
+        files: Path,
+        cancellation: _Cancellation,
+    ) -> tuple[int | None, bool, bool] | None:
+        """Return (exit code, timed out, tree verified empty), or None when nothing launched."""
         marker = f"{MARKER_VARIABLE}={session_id}".encode()
         with (
             (files / "prompt").open() as stdin,
             (files / "stdout").open("w") as stdout,
             (files / "stderr").open("w") as stderr,
         ):
+            cancellation.raise_if_requested()
             try:
                 proc = subprocess.Popen(  # nosec B603
                     command,
@@ -115,9 +122,11 @@ class ClaudeHostAdapter:
                     start_new_session=True,
                 )
             except OSError:
-                return None, False, True
+                return None
             try:
-                remaining = (request.deadline - datetime.now(request.deadline.tzinfo)).total_seconds()
+                cancellation.arm()
+                now = datetime.now(request.deadline.tzinfo)
+                remaining = (request.deadline - now).total_seconds()
                 try:
                     proc.wait(timeout=max(remaining, 0))
                     timed_out = False
@@ -125,7 +134,6 @@ class ClaudeHostAdapter:
                     timed_out = True
                 emptied = _stop_tree(proc, marker, self._grace_seconds)
             except BaseException:
-                _ignore_cancellation()
                 _stop_tree(proc, marker, self._grace_seconds)
                 raise
             return proc.returncode, timed_out, emptied
@@ -140,6 +148,8 @@ def _preflight(
     if executable is None:
         return HostOutcome("parked", "missing-host")
     skills_dir, version = config.adept_skills_dir, config.adept_skills_version
+    if skills_dir is not None:
+        skills_dir = os.path.abspath(skills_dir)
     manifest = None if skills_dir is None or version is None else _manifest(skills_dir)
     if skills_dir is None or version is None or manifest is None:
         return HostOutcome("parked", "missing-host-skills")
@@ -147,7 +157,7 @@ def _preflight(
         return HostOutcome("parked", "host-skills-mismatch")
     if now >= request.deadline:
         return HostOutcome("parked", "runtime-exhausted")
-    return executable, skills_dir, version
+    return os.path.abspath(executable), skills_dir, version
 
 
 def _manifest(skills_dir: str) -> dict[str, Any] | None:
@@ -169,30 +179,55 @@ def _prompt(request: HostRequest) -> str:
     )
 
 
+class _Cancellation:
+    """Defer a cancellation signal until the host's process can be stopped.
+
+    A signal that arrives while ``Popen`` runs is recorded and raised once the
+    process handle exists, so the host is never orphaned. The first signal also
+    ignores further cancellation signals, so cleanup runs to completion.
+    """
+
+    def __init__(self) -> None:
+        self.signum: int | None = None
+        self.armed = False
+
+    def handle(self, signum: int, _frame: FrameType | None) -> None:
+        for sig in _CANCEL_SIGNALS:
+            signal.signal(sig, signal.SIG_IGN)
+        self.signum = signum
+        if self.armed:
+            self.raise_if_requested()
+
+    def arm(self) -> None:
+        self.armed = True
+        self.raise_if_requested()
+
+    def raise_if_requested(self) -> None:
+        if self.signum == signal.SIGINT:
+            raise KeyboardInterrupt
+        if self.signum is not None:
+            raise SystemExit(128 + self.signum)
+
+
 @contextmanager
-def _cancellation_handlers() -> Iterator[None]:
-    """Turn SIGTERM/SIGHUP into SystemExit while the host runs on the main thread."""
+def _cancellation_handlers() -> Iterator[_Cancellation]:
+    """Route SIGINT/SIGTERM/SIGHUP through one cancellation while the host runs.
+
+    Handlers can only be installed on the main thread; elsewhere the returned
+    cancellation never fires.
+    """
+    cancellation = _Cancellation()
     if threading.current_thread() is not threading.main_thread():
-        yield
+        yield cancellation
         return
     previous = {sig: signal.getsignal(sig) for sig in _CANCEL_SIGNALS}
-    for sig in (signal.SIGTERM, signal.SIGHUP):
-        signal.signal(sig, _raise_exit)
+    for sig in _CANCEL_SIGNALS:
+        signal.signal(sig, cancellation.handle)
     try:
-        yield
+        yield cancellation
     finally:
         for sig, handler in previous.items():
             signal.signal(sig, handler)
-
-
-def _raise_exit(signum: int, _frame: FrameType | None) -> None:
-    raise SystemExit(128 + signum)
-
-
-def _ignore_cancellation() -> None:
-    if threading.current_thread() is threading.main_thread():
-        for sig in _CANCEL_SIGNALS:
-            signal.signal(sig, signal.SIG_IGN)
 
 
 def _marked_pids(marker: bytes) -> set[int] | None:
@@ -269,7 +304,9 @@ def _outcome_from_exit(
         result = None
     detail = stderr[-_DETAIL_CHARS:] or None
     if not isinstance(result, dict):
-        return HostOutcome("failed", "invalid-host-output", session_id, version, code, detail=detail)
+        return HostOutcome(
+            "failed", "invalid-host-output", session_id, version, code, detail=detail
+        )
     if code == 0 and result.get("is_error") is False:
         return HostOutcome("completed", None, session_id, version, code, result)
     return HostOutcome("failed", "host-error", session_id, version, code, result, detail)

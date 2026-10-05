@@ -46,7 +46,7 @@ stays the command default until #31.
    passed; `host-launch-failed` when `Popen` raises `OSError`.
 2. Launch `[exe, "-p", "--output-format", "json", "--model", model,
    "--session-id", session_id, "--plugin-dir", skills_dir]` with `cwd=repo_root`,
-   `start_new_session=True`, the inherited environment plus
+   `start_new_session=True` (executable and skills dir made absolute first), the inherited environment plus
    `MENDING_HOST_SESSION=<session_id>`, the prompt on stdin from a temp file, and
    stdout and stderr to temp files removed after reading. `session_id` is
    `uuid5(NAMESPACE_URL, "mending-attempt:" + attempt_id)` and is single-use; this
@@ -62,12 +62,13 @@ stays the command default until #31.
    missing `/proc` means the tree cannot be verified empty.
 4. Wait until the deadline. On timeout, stop the tree: empty → `stopped`/`timeout`;
    otherwise `unknown`/`timeout-survivors`.
-5. Cancellation: while the host runs on the main thread, `SIGTERM` and `SIGHUP`
-   handlers raise `SystemExit(128 + signum)`; the handlers and `SIGINT`'s are
-   restored afterwards. On any `BaseException` after launch (including
-   `KeyboardInterrupt`), ignore further `SIGINT`/`SIGTERM`/`SIGHUP`, stop the tree,
-   and re-raise. The persisted lease has no terminal receipt, so the next run treats
-   the attempt as active. Off the main thread no handlers are installed.
+5. Cancellation: while the host runs on the main thread, `SIGINT`, `SIGTERM`, and
+   `SIGHUP` share one handler that ignores further cancellation signals and raises
+   `KeyboardInterrupt` (SIGINT) or `SystemExit(128 + signum)`; a signal arriving
+   during `Popen` is deferred until the process handle exists. On any
+   `BaseException` after launch, stop the tree and re-raise; previous handlers are
+   restored afterwards. The persisted lease has no terminal receipt, so the next run
+   treats the attempt as active. Off the main thread no handlers are installed.
 6. After a normal exit, stop any remaining tree members; survivors →
    `unknown`/`worker-survivors`. Otherwise exit 0 with a JSON object whose
    `is_error` is false → `completed`; unparseable output → `failed`/
