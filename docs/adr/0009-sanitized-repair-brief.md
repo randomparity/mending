@@ -24,7 +24,8 @@ untrusted.
   fixed renderer text over those fields.
 - **Sanitize field by field, park on any rejection.** Every value is
   type-, length-, and character-checked and rejected on recognized secret,
-  private-identifier, link, or hostile-instruction shapes. A missing
+  private-identifier, link/destination, or hostile-instruction shapes, and the
+  problem (which becomes the title) also on `#N`/`@name` references. A missing
   required field, or a wrong-typed or rejected value — optional ones
   included — parks the brief (an absent optional field is omitted): nothing is
   published, no pending record is written, and the operator is told to hand
@@ -51,8 +52,7 @@ replaces only its public-body paragraph.
 
 Published issues now carry reviewer text, so sanitizer misses are public:
 pattern checks cannot recognize every secret or paraphrased instruction, and
-a worker host must treat the issue as untrusted input. A `#N` or `@name` in
-the problem renders as a reference in the title. False positives park
+a worker host must treat the issue as untrusted input. False positives park
 usable briefs, and under the timer a park is only a log line until #22/#19
 add durable state. Issues created before this change keep their digest-only
 bodies and are still adopted by key. The brief version is published but not

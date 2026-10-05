@@ -47,8 +47,11 @@ AWS/GitHub/Slack/Google/`sk-` tokens, JWT, quoted `password|secret|token|
 api_key = "…"`); a private identifier (email, IPv4 address, a token that
 `ipaddress.ip_address` parses as IPv6 and that holds a digit, `/home/`,
 `/Users/`, `/root/`, `C:\Users\`, `~/`, a dotted
-`*.internal|corp|lan|intranet` host); a link (`scheme://`, `www.`,
-`mailto:`, `javascript:`, `data:<type>/`); or a hostile instruction
+`*.internal|corp|lan|intranet` host); a link or destination (`scheme://`,
+`//host`, `www.`, `mailto:`, `javascript:`, `data:<type>/`, a dotted host
+ending in `com|net|org|io|dev|app|co|me|info|xyz|example` followed by `/`);
+in `problem` only (it becomes the title), a `#N`, `owner/repo#N`, or
+`@name` reference (`reference`); or a hostile instruction
 (ignore/disregard previous instructions, system prompt, "you are now", new
 instructions). The manifest must parse and be `complete`, else the brief is
 unbound. A missing required field, any present value of the wrong type
@@ -107,10 +110,8 @@ adoption check are unchanged.
   - False positives (e.g. code quoting `token = "…"`) park a usable brief;
     the operator hands it off privately.
   - Long values park instead of being truncated.
-  - Scheme-less destinations (bare `host/path`, `//host`) are not rejected;
-    they render as inert code-span text.
-  - The title is plain sanitized text, not code-span inert, so a `#N` or
-    `@name` in the problem may render as a reference there.
+  - A bare host under an unlisted TLD followed by a path is not rejected; in
+    the body it renders as inert code-span text.
 - Covered elsewhere: under the #6 timer a park is a log line only and
   `sync` still exits 0; durable park state and surfacing belong to selection
   (#22) and dispatch (#19). Classification and proposal briefs (#21); selection and

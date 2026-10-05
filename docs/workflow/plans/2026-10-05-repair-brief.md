@@ -75,7 +75,8 @@ Verification:
   never appears in `repr(result)`. Mode: focused-test —
   `test_unsafe_value_parks_without_leaking` parametrized over secret,
   private-identifier, link, hostile-instruction, control-character,
-  too-long, compressed IPv6 (`2001:db8::7334`), lone surrogate
+  too-long, `//evil.example/x`, `evil.example/x.sh`, a `#12`/`@octocat`
+  problem (→ `reference`; the same text in `evidence` publishes), compressed IPv6 (`2001:db8::7334`), lone surrogate
   (`"\ud800"`), plus unsafe and non-string optional `suggestion` and list
   `confidence` (→ `invalid`); same red/green.
 - Contract: unsupported-claim labelling. Mode: focused-test —
@@ -107,7 +108,8 @@ Steps:
      `MAX_BODY_BYTES = 60000`, `MAX_TITLE = 120`, `CONFIDENCE`;
    - `_REJECTIONS: tuple[tuple[str, re.Pattern[str]], ...]` — one compiled
      pattern per category (`secret`, `private-identifier`, `link`,
-     `hostile-instruction`) holding exactly the shapes the spec's
+     `hostile-instruction`), plus `_REFERENCE` (`#N`, `owner/repo#N`,
+     `@name`) applied by `_text` only when `field == "problem"`, holding exactly the shapes the spec's
      *Validation and sanitization* paragraph lists, plus
      `_has_ipv6(text) -> bool` (`re.findall(r"[0-9A-Fa-f:]{2,}", text)`
      tokens holding `::` or three colons and a digit that
