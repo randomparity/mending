@@ -56,7 +56,7 @@ is removed from every action; `recover MARKER --repo R --apply` needs no text.
 rebuild the manifest and `compare_manifests(stored, rebuilt)`. Current →
 proceed. The checkout cannot be read (rebuilt side `AnalysisUnknown`: bad
 `--revision`, wrong root, git failure) → skip and keep the record, so an
-operator error never clears the queue. Otherwise not current → remove
+unreadable checkout never clears the queue. Otherwise not current → remove
 `github_repair_revalidated`, print `Skipped <id>: source evidence is not
 current (<reason>)`, and stop this candidate. A refused `revalidate` names
 each dependency that is not `present` (or the missing concern file). A base move with complete
@@ -109,6 +109,13 @@ rereads current source" caveat.
   - A legacy issue whose body carries an older-evidence marker is no longer
     adopted automatically; the operator adds the key line to its body.
   - Operators must re-run `revalidate` once for every pre-#25 record.
+  - A readable but wrong `--revision` or `--source-root` reads as a source
+    change and clears every affected revalidation; the operator re-runs
+    `revalidate` against the intended checkout.
+  - A key or identity digest quoted in a comment or another issue's body is
+    an unverified hit that blocks creation for that concern until the
+    operator removes the mention, or creates the issue with the key line and
+    lets sync adopt it.
   - `revalidate` is the operator's assertion that the concern holds at the
     bound revision; source that changed between the concern review and
     `revalidate` is not detected (concern import records no manifest).
