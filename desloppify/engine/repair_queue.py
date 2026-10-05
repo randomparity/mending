@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from hashlib import sha256
 from typing import Any
 
-
 KEY_SCHEMA = "desloppify-concern-key:v1"
 
 
