@@ -6,12 +6,12 @@ Accepted (2026-10-05)
 
 ## Context
 
-ADR 0006 assigned repair authority, leases, and receipts to an Adept-owned
-executable protocol. Adept is installed workflow and skill content that a
-coding host runs; it exposes no such service. `repair-cycle` therefore has only
-the `AdeptCycleClient` protocol and an unavailable stub. ADR 0005's consequences
-left claims, scope authorization, scheduling, and execution to "Adept/#6". The
-README still teaches a score-maximizing, queue-draining loop.
+ADR 0006, still Proposed, assigned repair authority, leases, and receipts to an
+Adept-owned executable protocol. Adept is installed workflow and skill content
+that a coding host runs; it exposes no such service. `repair-cycle` therefore
+has only the `AdeptCycleClient` protocol and an unavailable stub. ADR 0005's
+consequences left claims, scope authorization, scheduling, and execution to
+"Adept/#6". The README still teaches a score-maximizing, queue-draining loop.
 
 ## Decision
 
@@ -41,31 +41,40 @@ the repository. Missing opt-in, or a host that cannot enforce the configured
 budgets, parks that action. A workflow instruction, issue body, model finding,
 or nonempty proof string grants no authority.
 
-ADR 0006's repository lock, persist-before-dispatch, durable correlation,
-fail-closed parking, `OnCalendar` window, budgets, and no catch-up remain.
+This record accepts these parts of ADR 0006's design as its own: the
+repository lock, persist-before-dispatch, durable correlation, fail-closed
+parking, the `OnCalendar` window, the runtime/call/USD budgets, and no catch-up.
 The first implementation allows one active repair and at most one newly
 dispatched repair per configured window. Merge is not part of a repair attempt
 or the initial pilot; any merge needs separate authorization.
 
-This supersedes, and only these: ADR 0006's Adept-owned authority verifier,
-lease/receipt protocol, and per-window merge permit; and ADR 0005's assignment
-of claims, scope authorization, scheduling, and execution to Adept/#6.
+It replaces ADR 0006's Adept-owned authority verifier, Adept lease/receipt
+exchange, and per-window merge permit, and ADR 0005's assignment of claims,
+scope authorization, scheduling, and execution to Adept/#6. The persisted
+attempt lease (ID, window key, deadline, budgets, correlation) stays as
+Mending's attempt record. A recorded merge permit or `merge_consumed` receipt
+stays readable and authorizes no merge.
 
-Code seams and owners: the `AdeptCycleClient` seam in
-`desloppify/app/commands/repair_cycle.py` becomes one concrete host adapter and
-loader, keeping existing state readable and unresolved leases intact (#19).
-`repair_queue.py` identity markers and revalidation gain a stable key and
-source-bound evidence (#17). `render_issue` and concern-only eligibility gain
-actionable briefs and the proposal path (#18). Target opt-in, the live pilot,
-and timer activation belong to #7. The inherited analyzer CLI stays compatible.
+Code seams and owners:
+
+- `AdeptCycleClient` in `desloppify/app/commands/repair_cycle.py`: one concrete
+  host adapter and loader, execution authority and limits from trusted
+  operator configuration, existing state readable (#19).
+- `repair_queue.py` identity markers and revalidation: stable key and
+  source-bound evidence (#17).
+- `render_issue`, concern-only eligibility, and the publication control behind
+  `repair-queue sync --apply`: briefs and the proposal path (#18).
+- Target opt-in approval, the live pilot, and timer activation: #7.
+- Merge: no implementation; separately authorized later.
+
+The inherited analyzer CLI stays compatible.
 
 ## Consequences
 
 Until #19 lands, `repair-cycle` parks before selection; no live repair path
 exists. There is no Adept server, daemon, scheduler abstraction, or host
-registry. ADRs 0005 and 0006 carry no supersession banner because most of each
-still governs; readers find the superseded portions here. #17 and #18 record
-their ADR 0004/0005 changes in their own successor records.
+registry. ADRs 0005 and 0006 stay unedited; readers find the replaced portions
+here. #17 and #18 record their ADR 0004/0005 changes in their own successors.
 
 ## Considered & rejected
 
@@ -75,8 +84,9 @@ their ADR 0004/0005 changes in their own successor records.
 - **Build an Adept server or daemon.** judgment: cost; it re-hosts content the
   coding host already runs.
 - **Banner ADRs 0005 and 0006 as superseded.** judgment: fit; the banner marks
-  a whole record non-governing, while their locks, timer, and promotion
-  decisions still govern.
+  a whole record non-governing, while ADR 0005's promotion decision and ADR
+  0006's recipe terms (dedicated account, restricted files, defaults) remain
+  the description of shipped code.
 - **Support several hosts behind a registry.** judgment: complexity; one host
   is enough for the first pilot.
 - **Keep a merge permit per window.** judgment: fit; the pilot ends at a draft
