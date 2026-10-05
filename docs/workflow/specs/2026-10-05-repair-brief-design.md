@@ -111,7 +111,8 @@ adoption check are unchanged.
     the operator hands it off privately.
   - Long values park instead of being truncated.
   - A bare host under an unlisted TLD followed by a path is not rejected; in
-    the body it renders as inert code-span text.
+    the body it renders as inert code-span text, and in the title as plain
+    text that a reader may still follow by hand.
 - Covered elsewhere: under the #6 timer a park is a log line only and
   `sync` still exits 0; durable park state and surfacing belong to selection
   (#22) and dispatch (#19). Classification and proposal briefs (#21); selection and
