@@ -13,6 +13,7 @@ from desloppify.engine._state.persistence import load_state, state_lock
 from desloppify.engine.repair_queue import (
     GitHubIssueClient,
     PromotionCandidate,
+    RepairRecordError,
     candidate_from_issue,
     matching_record,
 )
@@ -43,8 +44,7 @@ def _revalidate(args: argparse.Namespace, client: Any) -> None:
             raise CommandError("concern is not current and eligible for revalidation")
         detail = issue["detail"]
         detail["github_repair_revalidated"] = {
-            "marker": candidate.marker,
-            "repository": repository,
+            **_record_base(candidate),
             "attestation": attestation,
         }
     print(f"Revalidated {args.issue_id} for {repository}.")
@@ -61,7 +61,11 @@ def _recover(args: argparse.Namespace, client: Any) -> None:
             if not isinstance(detail, dict):
                 continue
             pending = detail.get("github_repair_pending")
-            if isinstance(pending, Mapping) and pending.get("marker") == args.marker and pending.get("repository") == repository:
+            if (
+                isinstance(pending, Mapping)
+                and args.marker in (pending.get("key"), pending.get("marker"))
+                and pending.get("repository") == repository
+            ):
                 detail.pop("github_repair_pending", None)
                 cleared += 1
     print(f"Cleared {cleared} pending repair attempt(s).")
@@ -75,11 +79,15 @@ def _sync(args: argparse.Namespace, client: Any) -> None:
         if candidate is None:
             continue
         detail = issue["detail"]
-        link = matching_record(detail, "github_repair", candidate)
+        try:
+            link = matching_record(detail, "github_repair", candidate)
+            pending = matching_record(detail, "github_repair_pending", candidate)
+        except RepairRecordError:
+            print(f"Skipped {candidate.issue_id}: repair record is unrecognized; reconcile it manually.")
+            continue
         if link is not None:
             _read_link(args, client, candidate, link)
             continue
-        pending = matching_record(detail, "github_repair_pending", candidate)
         matches = _search(client, candidate)
         if matches is None:
             print(f"Skipped {candidate.issue_id}: GitHub search failed.")
@@ -115,7 +123,7 @@ def _read_link(args: argparse.Namespace, client: Any, candidate: PromotionCandid
 
 def _search(client: Any, candidate: PromotionCandidate) -> list[Any] | None:
     try:
-        return client.search(candidate.repository, candidate.marker)
+        return client.search(candidate.repository, candidate.key)
     except (RuntimeError, ValueError):
         return None
 
@@ -134,17 +142,10 @@ def _create_once(args: argparse.Namespace, client: Any, candidate: PromotionCand
     with _locked_state(args) as state:
         fresh = _candidate_by_id(state, candidate.issue_id, candidate.repository)
         detail = _issues(state)[candidate.issue_id]["detail"]
-        if (
-            fresh != candidate
-            or matching_record(detail, "github_repair", candidate)
-            or matching_record(detail, "github_repair_pending", candidate)
-        ):
+        if fresh != candidate or _has_record(detail, candidate):
             print(f"Skipped {candidate.issue_id}: concern changed while preparing create.")
             return
-        detail["github_repair_pending"] = {
-            "marker": candidate.marker,
-            "repository": candidate.repository,
-        }
+        detail["github_repair_pending"] = _record_base(candidate)
     try:
         client.create(candidate.repository, candidate)
     except (RuntimeError, ValueError):
@@ -164,18 +165,42 @@ def _write_link(args: argparse.Namespace, candidate: PromotionCandidate, issue: 
             print(f"Skipped {candidate.issue_id}: result is stale.")
             return
         detail = _issues(state)[candidate.issue_id]["detail"]
-        if expected_key and matching_record(detail, expected_key, candidate) is None:
+        if expected_key and _expected_record(detail, expected_key, candidate) is None:
             print(f"Skipped {candidate.issue_id}: result is stale.")
             return
         detail["github_repair"] = {
-            "marker": candidate.marker,
-            "repository": candidate.repository,
+            **_record_base(candidate),
             "number": issue.number,
             "url": issue.url,
             "state": issue.state,
         }
         detail.pop("github_repair_pending", None)
     print(f"Linked {candidate.issue_id} to issue #{issue.number}.")
+
+
+def _record_base(candidate: PromotionCandidate) -> dict[str, str]:
+    return {
+        "key": candidate.key,
+        "repository": candidate.repository,
+        "evidence_digest": candidate.evidence_digest,
+    }
+
+
+def _has_record(detail: Mapping[str, Any], candidate: PromotionCandidate) -> bool:
+    try:
+        return any(
+            matching_record(detail, kind, candidate) is not None
+            for kind in ("github_repair", "github_repair_pending")
+        )
+    except RepairRecordError:
+        return True
+
+
+def _expected_record(detail: Mapping[str, Any], kind: str, candidate: PromotionCandidate) -> Mapping[str, Any] | None:
+    try:
+        return matching_record(detail, kind, candidate)
+    except RepairRecordError:
+        return None
 
 
 def _candidate_by_id(state: Mapping[str, Any], issue_id: str, repository: str) -> PromotionCandidate | None:

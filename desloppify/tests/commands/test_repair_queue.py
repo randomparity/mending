@@ -8,13 +8,17 @@ from desloppify.cli import create_parser
 from desloppify.engine.repair_queue import (
     GitHubIssue,
     candidate_from_issue,
-    marker_for_hashes,
+    concern_key,
+    legacy_marker,
 )
 
 
 IDENTITY = "a" * 64
 EVIDENCE = "b" * 64
 REPOSITORY = "owner/repository"
+KEY = concern_key(REPOSITORY, IDENTITY)
+BASE = {"key": KEY, "repository": REPOSITORY, "evidence_digest": EVIDENCE}
+REVALIDATED = {**BASE, "attestation": "verified current evidence"}
 
 
 def _state() -> dict:
@@ -83,22 +87,21 @@ def test_revalidate_writes_marker_bound_to_repository() -> None:
     )
     cmd_repair_queue(args)
     record = state["work_items"]["concerns::item"]["detail"]["github_repair_revalidated"]
-    assert record["marker"] == marker_for_hashes(IDENTITY, EVIDENCE)
-    assert record["repository"] == REPOSITORY
+    assert record == REVALIDATED
 
 
 def test_sync_dry_run_does_not_create_or_mutate() -> None:
     state = _state()
     detail = state["work_items"]["concerns::item"]["detail"]
     detail["github_repair_revalidated"] = {
-        "marker": marker_for_hashes(IDENTITY, EVIDENCE),
+        "marker": legacy_marker(IDENTITY, EVIDENCE),
         "repository": REPOSITORY,
         "attestation": "verified current evidence",
     }
     client = _Client()
     args = _args("sync", state, client=client)
     cmd_repair_queue(args)
-    assert client.searches == [(REPOSITORY, marker_for_hashes(IDENTITY, EVIDENCE))]
+    assert client.searches == [(REPOSITORY, KEY)]
     assert "github_repair_pending" not in detail
 
 
@@ -110,7 +113,7 @@ def test_sync_adopts_closed_match_with_last_read_state() -> None:
     state = _state()
     detail = state["work_items"]["concerns::item"]["detail"]
     detail["github_repair_revalidated"] = {
-        "marker": marker_for_hashes(IDENTITY, EVIDENCE),
+        "marker": legacy_marker(IDENTITY, EVIDENCE),
         "repository": REPOSITORY,
         "attestation": "verified current evidence",
     }
@@ -118,8 +121,7 @@ def test_sync_adopts_closed_match_with_last_read_state() -> None:
     cmd_repair_queue(_args("sync", state, apply=True, client=ClosedMatchClient()))
 
     assert detail["github_repair"] == {
-        "marker": marker_for_hashes(IDENTITY, EVIDENCE),
-        "repository": REPOSITORY,
+        **BASE,
         "number": 7,
         "url": "https://example.test/7",
         "state": "closed",
@@ -141,7 +143,7 @@ def test_delayed_writer_cannot_create_after_another_writer_links() -> None:
     state = _state()
     detail = state["work_items"]["concerns::item"]["detail"]
     detail["github_repair_revalidated"] = {
-        "marker": marker_for_hashes(IDENTITY, EVIDENCE),
+        "marker": legacy_marker(IDENTITY, EVIDENCE),
         "repository": REPOSITORY,
         "attestation": "verified current evidence",
     }
@@ -167,34 +169,38 @@ def test_uncertain_create_requires_attested_recovery_before_retry() -> None:
             raise RuntimeError("unavailable")
 
     state = _state()
-    marker = marker_for_hashes(IDENTITY, EVIDENCE)
     detail = state["work_items"]["concerns::item"]["detail"]
-    detail["github_repair_revalidated"] = {
-        "marker": marker,
-        "repository": REPOSITORY,
-        "attestation": "verified current evidence",
-    }
+    detail["github_repair_revalidated"] = dict(REVALIDATED)
     client = FailingCreateClient()
 
     cmd_repair_queue(_args("sync", state, apply=True, client=client))
     cmd_repair_queue(_args("sync", state, apply=True, client=client))
 
     assert client.create_calls == 1
-    assert detail["github_repair_pending"] == {"marker": marker, "repository": REPOSITORY}
+    assert detail["github_repair_pending"] == BASE
 
-    cmd_repair_queue(_args("recover", state, apply=True, client=client, marker=marker, attest="checked"))
+    cmd_repair_queue(_args("recover", state, apply=True, client=client, marker=KEY, attest="checked"))
     cmd_repair_queue(_args("sync", state, apply=True, client=client))
 
     assert client.create_calls == 2
 
 
-def test_recover_clears_only_matching_pending_marker() -> None:
+def test_recover_clears_only_matching_pending_key() -> None:
     state = _state()
-    marker = marker_for_hashes(IDENTITY, EVIDENCE)
+    detail = state["work_items"]["concerns::item"]["detail"]
+    detail["github_repair_pending"] = dict(BASE)
+    cmd_repair_queue(_args("recover", state, apply=True, marker="f" * 64, attest="checked GitHub"))
+    assert detail["github_repair_pending"] == BASE
+    cmd_repair_queue(_args("recover", state, apply=True, marker=KEY, attest="checked GitHub"))
+    assert "github_repair_pending" not in detail
+
+
+def test_recover_accepts_legacy_marker() -> None:
+    state = _state()
+    marker = legacy_marker(IDENTITY, EVIDENCE)
     detail = state["work_items"]["concerns::item"]["detail"]
     detail["github_repair_pending"] = {"marker": marker, "repository": REPOSITORY}
-    args = _args("recover", state, apply=True, marker=marker, attest="checked GitHub")
-    cmd_repair_queue(args)
+    cmd_repair_queue(_args("recover", state, apply=True, marker=marker, attest="checked GitHub"))
     assert "github_repair_pending" not in detail
 
 
@@ -213,7 +219,7 @@ def test_sync_search_failure_never_attempts_create() -> None:
     state = _state()
     detail = state["work_items"]["concerns::item"]["detail"]
     detail["github_repair_revalidated"] = {
-        "marker": marker_for_hashes(IDENTITY, EVIDENCE),
+        "marker": legacy_marker(IDENTITY, EVIDENCE),
         "repository": REPOSITORY,
         "attestation": "verified current evidence",
     }

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import os
 from collections.abc import Mapping
 from typing import Any
@@ -16,7 +17,11 @@ from desloppify.engine._state.issue_semantics import (
     is_import_only_issue,
     is_assessment_request,
 )
-from desloppify.engine.repair_queue import marker_for_hashes
+from desloppify.engine.repair_queue import (
+    RepairRecordError,
+    concern_hashes,
+    normalize_record,
+)
 
 
 def find_suspect_detectors(
@@ -59,27 +64,39 @@ def find_suspect_detectors(
     return suspect
 
 
+_REPAIR_RECORD_KINDS = ("github_repair", "github_repair_pending", "github_repair_revalidated")
+
+
 def _preserve_repair_metadata(previous_detail: object, detail: dict) -> None:
-    """Keep queue metadata only while it remains bound to current concern hashes."""
+    """Keep queue records while concern identity is unchanged; evidence may move.
+
+    Links and pending attempts survive an evidence change in stable-key shape;
+    an unrecognized record is kept verbatim so sync parks on it. Revalidation is
+    kept only while the evidence digest is unchanged.
+    """
     if not isinstance(previous_detail, Mapping):
         return
-    identity = detail.get("concern_identity")
-    evidence_digest = detail.get("concern_evidence_digest")
-    if not isinstance(identity, str) or not isinstance(evidence_digest, str):
+    previous, current = concern_hashes(previous_detail), concern_hashes(detail)
+    if previous is None or current is None or previous[0] != current[0]:
         return
-    marker = marker_for_hashes(identity, evidence_digest)
-    for key in (
-        "github_repair",
-        "github_repair_pending",
-        "github_repair_revalidated",
-    ):
-        record = previous_detail.get(key)
-        if (
-            isinstance(record, Mapping)
-            and record.get("marker") == marker
-            and isinstance(record.get("repository"), str)
-        ):
-            detail[key] = dict(record)
+    for kind in _REPAIR_RECORD_KINDS:
+        record = previous_detail.get(kind)
+        if record is None:
+            continue
+        repository = record.get("repository") if isinstance(record, Mapping) else None
+        try:
+            normalized = (
+                normalize_record(kind, record, repository, *previous)
+                if isinstance(repository, str)
+                else None
+            )
+        except RepairRecordError:
+            normalized = None
+        if kind == "github_repair_revalidated":
+            if normalized is not None and previous == current:
+                detail[kind] = normalized
+        else:
+            detail[kind] = normalized if normalized is not None else copy.deepcopy(record)
 
 
 def _mark_scan_verified(
