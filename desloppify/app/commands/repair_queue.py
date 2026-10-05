@@ -79,8 +79,10 @@ def _pending_matches(detail: Mapping[str, Any], repository: str, marker: str) ->
     if marker in (pending.get("key"), pending.get("marker")):
         return True
     hashes = concern_hashes(detail)
+    if hashes is None:
+        return False
     try:
-        record = normalize_record("github_repair_pending", pending, repository, *hashes) if hashes else None
+        record = normalize_record("github_repair_pending", pending, repository, *hashes)
     except RepairRecordError:
         return False
     return record is not None and record["key"] == marker
@@ -97,13 +99,17 @@ def _sync(args: argparse.Namespace, client: Any) -> None:
             _sync_one(args, client, state, candidate)
 
 
-def _sync_one(args: argparse.Namespace, client: Any, state: Mapping[str, Any], candidate: PromotionCandidate) -> None:
+def _sync_one(
+    args: argparse.Namespace, client: Any, state: Mapping[str, Any], candidate: PromotionCandidate
+) -> None:
     detail = _issues(state)[candidate.issue_id]["detail"]
     try:
         link = matching_record(detail, "github_repair", candidate)
         pending = matching_record(detail, "github_repair_pending", candidate)
     except RepairRecordError:
-        print(f"Skipped {candidate.issue_id}: repair record is unrecognized; reconcile it manually.")
+        print(
+            f"Skipped {candidate.issue_id}: repair record is unrecognized; reconcile it manually."
+        )
         return
     if link is not None:
         _read_link(args, client, candidate, link, expected_key="github_repair")
@@ -131,7 +137,10 @@ def _resolved_by_peer(
     """Park on or adopt another work item's record for this key; False when none exists."""
     peers = _peer_records(state, candidate)
     if any(kind != "github_repair" or record is None for _, kind, record in peers):
-        print(f"Skipped {candidate.issue_id}: another work item holds an unresolved record for this concern key.")
+        print(
+            f"Skipped {candidate.issue_id}: another work item holds an unresolved record "
+            "for this concern key."
+        )
         return True
     peer_links = {record["number"]: record for _, _, record in peers if record is not None}
     if len(peer_links) > 1:
@@ -188,7 +197,11 @@ def _create_once(args: argparse.Namespace, client: Any, candidate: PromotionCand
     with _locked_state(args) as state:
         fresh = _candidate_by_id(state, candidate.issue_id, candidate.repository)
         detail = _issues(state)[candidate.issue_id]["detail"]
-        if fresh != candidate or _has_record(detail, candidate) or _key_claimed_elsewhere(state, candidate):
+        if (
+            fresh != candidate
+            or _has_record(detail, candidate)
+            or _key_claimed_elsewhere(state, candidate)
+        ):
             print(f"Skipped {candidate.issue_id}: concern changed while preparing create.")
             return
         detail["github_repair_pending"] = _record_base(candidate)
@@ -242,7 +255,9 @@ def _has_record(detail: Mapping[str, Any], candidate: PromotionCandidate) -> boo
         return True
 
 
-def _expected_record(detail: Mapping[str, Any], kind: str, candidate: PromotionCandidate) -> Mapping[str, Any] | None:
+def _expected_record(
+    detail: Mapping[str, Any], kind: str, candidate: PromotionCandidate
+) -> Mapping[str, Any] | None:
     try:
         return matching_record(detail, kind, candidate)
     except RepairRecordError:
@@ -260,8 +275,10 @@ def _peer_records(
     """Return link/pending records other work items hold for this key; ``None`` if unrecognized."""
     peers: list[tuple[str, str, dict[str, Any] | None]] = []
     for issue_id, issue in _issues(state).items():
-        detail = issue.get("detail") if isinstance(issue, Mapping) else None
-        hashes = concern_hashes(detail) if isinstance(detail, Mapping) and issue_id != candidate.issue_id else None
+        if issue_id == candidate.issue_id or not isinstance(issue, Mapping):
+            continue
+        detail = issue.get("detail")
+        hashes = concern_hashes(detail) if isinstance(detail, Mapping) else None
         if hashes is None or concern_key(candidate.repository, hashes[0]) != candidate.key:
             continue
         for kind in ("github_repair", "github_repair_pending"):
@@ -276,7 +293,9 @@ def _peer_records(
 
 
 def _key_claimed_elsewhere(state: Mapping[str, Any], candidate: PromotionCandidate) -> bool:
-    holders = [peer for peer in _candidates(state, candidate.repository) if peer.key == candidate.key]
+    holders = [
+        peer for peer in _candidates(state, candidate.repository) if peer.key == candidate.key
+    ]
     return len(holders) > 1 or bool(_peer_records(state, candidate))
 
 

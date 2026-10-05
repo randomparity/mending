@@ -82,7 +82,8 @@ def normalize_record(
         version = evidence_digest
     else:
         raise RepairRecordError(f"{kind} legacy marker does not match this concern")
-    return {"key": key, "repository": repository, "evidence_digest": version, **_kind_fields(kind, record)}
+    normalized = {"key": key, "repository": repository, "evidence_digest": version}
+    return {**normalized, **_kind_fields(kind, record)}
 
 
 def _kind_fields(kind: str, record: Mapping[str, Any]) -> dict[str, Any]:
