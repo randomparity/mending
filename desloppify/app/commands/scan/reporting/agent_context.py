@@ -65,7 +65,7 @@ def _print_score_lines(
     print("Score guide:")
     print("  overall  = 25% mechanical + 75% subjective (lenient — ignores wontfix)")
     print("  objective = mechanical detectors only (no subjective review)")
-    print("  strict   = like overall, but wontfix counts against you  <-- your north star")
+    print("  strict   = like overall, but wontfix counts against you")
     print("  verified = strict, but only credits scan-verified fixes")
     print()
 
@@ -306,7 +306,7 @@ def _print_llm_header() -> None:
     print("IMPORTANT: ALWAYS present ALL scores to the user after a scan.")
     print("Show overall health (lenient + strict), ALL dimension scores,")
     print("AND all subjective dimension scores in a markdown table.")
-    print("The goal is to maximize strict scores. Never skip the scores.\n")
+    print("Scores are optional diagnostics, not targets.\n")
 
 
 def _load_living_plan_snapshot() -> tuple[dict[str, object], bool]:

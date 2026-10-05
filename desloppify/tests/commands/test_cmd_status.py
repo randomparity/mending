@@ -66,7 +66,8 @@ class TestStatusModuleSanity:
         assert style == "bold"
         # Score legend lines
         assert "Score guide:" in lines[1][0]
-        assert "north star" in lines[2][0]
+        assert "diagnostics" in lines[2][0]
+        assert "north star" not in lines[2][0]
 
     def test_score_summary_lines_unavailable(self):
         """score_summary_lines returns fallback when scores are None."""

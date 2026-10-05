@@ -41,20 +41,12 @@ def score_summary_lines(
             ),
         ]
         if target_strict is not None:
-            gap = round(target_strict - strict_score, 1)
-            if gap > 0:
-                lines.append((
-                    f"  Strict {strict_score:.1f} (target: {target_strict:.1f})"
-                    " — run `desloppify next` to find the next improvement",
-                    "dim",
-                ))
-            else:
-                lines.append((
-                    f"  Strict {strict_score:.1f} — target {target_strict:.1f} reached!",
-                    "green",
-                ))
+            lines.append((
+                f"  Strict {strict_score:.1f} (configured target: {target_strict:.1f})",
+                "dim",
+            ))
         else:
-            lines.append(("  Focus on strict — it's your north star.", "dim"))
+            lines.append(("  Scores are optional diagnostics, not targets.", "dim"))
         return lines
     return [
         ("\n  Scores unavailable", "bold"),

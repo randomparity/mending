@@ -98,7 +98,7 @@ def test_show_score_delta_prints_legend_on_first_scan(monkeypatch, capsys):
     )
     out = capsys.readouterr().out
     assert "Score guide:" in out
-    assert "your north star" in out
+    assert "north star" not in out
     assert "25% mechanical + 75% subjective" in out
 
 
@@ -150,7 +150,7 @@ def test_show_score_delta_shows_legend_in_agent_environment(monkeypatch, capsys)
     )
     out = capsys.readouterr().out
     assert "Score guide:" in out
-    assert "your north star" in out
+    assert "north star" not in out
 
 
 def test_show_score_delta_prints_scores_without_open_breakdown(monkeypatch, capsys):
@@ -506,7 +506,7 @@ def test_print_llm_summary_respects_env_and_includes_dimension_table(
     assert "Top action: `desloppify next` — Resolve top issue" in out
     assert "A scorecard image was saved to" in out
     assert "Score guide:" in out
-    assert "your north star" in out
+    assert "north star" not in out
 
 
 def test_show_scorecard_dimensions_and_dimension_hints(monkeypatch, capsys):
