@@ -41,7 +41,11 @@ binds a concern to the git blob IDs of its concern file and related files at
 `--revision` (default `HEAD`) of `--source-root` (default: the project root,
 which must be the repository top level), and `sync --apply` publishes to
 GitHub only while those files are unchanged, rechecking them before every
-GitHub create and link write.
+GitHub create and link write. `revalidate` also requires the concern's
+evidence to cite those files as `PATH:LINE` and refuses unless every cited
+line, and every identifier quoted in backticks beside it, is still there; `sync`
+re-runs that check and drops a concern whose result changed. Concerns
+revalidated before this check must be revalidated again.
 
 ```bash
 desloppify scan --path .          # refresh findings and scan history
