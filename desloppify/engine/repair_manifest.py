@@ -158,8 +158,10 @@ def concern_dependencies(issue: Mapping[str, Any]) -> tuple[DependencySpec, ...]
     specs: list[DependencySpec] = []
     if isinstance(concern_file, str) and concern_file not in {"", "."}:
         specs.append(DependencySpec(concern_file, "implementation"))
+    seen = {spec.path for spec in specs}
     for path in related:
-        if path not in {spec.path for spec in specs}:
+        if path not in seen:
+            seen.add(path)
             specs.append(DependencySpec(path, "sibling"))
     return tuple(specs)
 
