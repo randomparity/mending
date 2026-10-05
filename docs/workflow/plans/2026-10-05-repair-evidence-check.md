@@ -13,10 +13,13 @@ record; the command module only calls the runner and compares digests.
 
 Tech stack: Python 3.11+, pytest, the `git` CLI via fixed argv.
 
-Expected implementation size: 330–420 changed lines (M) — about 150 production
-lines (new runner ~110, blob read ~12, record validation ~10, command ~30,
-README 4) and about 220 test lines (runner cases, migrated record fixtures,
-injected-result command tests, sync-matrix cases).
+Expected implementation size: 600–700 changed lines (M) — about 350 production
+lines (new runner module ~245 with its dataclasses, record, bounds, parsing and
+reads; blob read ~20; record validation ~15; command ~80; README 5) and about
+290 test lines (runner cases ~170, migrated record fixtures, injected-result
+command tests, sync-matrix cases). Corrected after the build: the first
+estimate (330–420) undercounted the runner module and its tests; no work was
+added beyond the reviewed design.
 
 ## Global Constraints
 
