@@ -25,6 +25,8 @@ from typing import IO, Any
 from desloppify.engine.repair_cycle import BudgetAdmission, CycleConfig
 
 MARKER_VARIABLE = "MENDING_HOST_SESSION"
+# The host is asked to put "<tag>: <attempt ID>" in every issue and PR body it creates.
+ATTEMPT_TAG = "Mending-Attempt"
 # Background subagents are not streamed, so their calls could not be counted.
 BACKGROUND_TASKS_VARIABLE = "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"
 # Subagent messages are forwarded at every nesting depth from this release.
@@ -35,6 +37,26 @@ _PROC_ROOT = Path("/proc")
 _DETAIL_CHARS = 2_000
 _POLL_SECONDS = 0.05
 _CANCEL_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+_LOOKUP_SECONDS = 10.0
+_LOOKUP_LIMIT = "100"
+
+
+def host_session_id(attempt_id: str) -> str:
+    """Return the single-use host session ID derived from a durable attempt ID (ADR 0010)."""
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"mending-attempt:{attempt_id}"))
+
+
+class HostLookupError(RuntimeError):
+    """A lookup of what a dispatched attempt left behind could not be completed."""
+
+
+@dataclass(frozen=True)
+class HostReferences:
+    """Issue and PR URLs carrying an attempt's tag, and worktrees created during it."""
+
+    pull_requests: tuple[str, ...] = ()
+    issues: tuple[str, ...] = ()
+    worktrees: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -134,7 +156,7 @@ class ClaudeHostAdapter:
         if isinstance(preflight, HostOutcome):
             return preflight
         executable, skills_dir, version = preflight
-        session_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"mending-attempt:{request.attempt_id}"))
+        session_id = host_session_id(request.attempt_id)
         command = [
             executable, "-p", "--output-format", "stream-json", "--verbose",
             "--forward-subagent-text", "--max-budget-usd", format(admission.cost_usd, "f"),
@@ -162,6 +184,42 @@ class ClaudeHostAdapter:
         return HostOutcome(
             state, reason, session_id, version, exit_code,
             cost_usd=usage.cost_usd, calls=usage.calls,
+        )
+
+    @property
+    def repository(self) -> str:
+        """The configured repository whose issues and PRs the host may create."""
+        return self._config.repository
+
+    def worker_alive(self, attempt_id: str) -> bool | None:
+        """Return whether any process carries the attempt's marker; None without /proc."""
+        marked = _marked_pids(f"{MARKER_VARIABLE}={host_session_id(attempt_id)}".encode())
+        return None if marked is None else bool(marked)
+
+    def worktrees(self, repo_root: Path) -> tuple[str, ...]:
+        """Return the repository's worktree paths."""
+        listing = _output(["git", "-C", str(repo_root), "worktree", "list", "--porcelain"])
+        return tuple(
+            line.removeprefix("worktree ")
+            for line in listing.splitlines()
+            if line.startswith("worktree ")
+        )
+
+    def references(
+        self,
+        attempt_id: str,
+        repository: str,
+        repo_root: Path,
+        prior_worktrees: tuple[str, ...],
+    ) -> HostReferences:
+        """Find the attempt's tagged issues and PRs and the worktrees created since launch."""
+        tag = f"{ATTEMPT_TAG}: {attempt_id}"
+        return HostReferences(
+            pull_requests=_tagged("pr", repository, tag),
+            issues=_tagged("issue", repository, tag),
+            worktrees=tuple(
+                path for path in self.worktrees(repo_root) if path not in prior_worktrees
+            ),
         )
 
     def _launch(
@@ -291,13 +349,54 @@ def _manifest(skills_dir: str) -> dict[str, Any] | None:
     return raw if isinstance(raw, dict) else None
 
 
+def _tagged(kind: str, repository: str, tag: str) -> tuple[str, ...]:
+    """Return URLs of the repository's recent issues or PRs whose body has the tag line."""
+    output = _output([
+        "gh", kind, "list", "--repo", repository, "--state", "all",
+        "--limit", _LOOKUP_LIMIT, "--json", "url,body",
+    ])
+    try:
+        entries = json.loads(output)
+    except ValueError as exc:
+        raise HostLookupError(f"gh {kind} list returned invalid JSON") from exc
+    if not isinstance(entries, list):
+        raise HostLookupError(f"gh {kind} list did not return a list")
+    return tuple(
+        entry["url"]
+        for entry in entries
+        if isinstance(entry, dict)
+        and isinstance(entry.get("url"), str)
+        and isinstance(entry.get("body"), str)
+        and tag in entry["body"].splitlines()
+    )
+
+
+def _output(argv: list[str]) -> str:
+    """Run a fixed lookup command and return its stdout; raise HostLookupError on failure."""
+    executable = shutil.which(argv[0])
+    if executable is None:
+        raise HostLookupError(f"{argv[0]} is not installed")
+    try:
+        done = subprocess.run(  # nosec B603
+            [executable, *argv[1:]],
+            capture_output=True, text=True, timeout=_LOOKUP_SECONDS, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise HostLookupError(f"{argv[0]} {argv[1]} could not run") from exc
+    if done.returncode != 0:
+        raise HostLookupError(f"{argv[0]} {argv[1]} exited {done.returncode}")
+    return done.stdout
+
+
 def _prompt(request: HostRequest) -> str:
     return (
         "Use the installed Adept skills to claim, isolate, implement, verify, and review "
         "this repair. Stop at a draft pull request; do not merge.\n\n"
         f"Attempt ID: {request.attempt_id}\n"
         f"Source revision: {request.source_revision}\n"
-        f"Authorized scope: {request.authorized_scope}\n\n"
+        f"Authorized scope: {request.authorized_scope}\n"
+        f"Put the line '{ATTEMPT_TAG}: {request.attempt_id}' in the body of every issue "
+        "and pull request you create.\n\n"
         f"Brief:\n{request.brief}\n"
     )
 
@@ -434,4 +533,13 @@ def _outcome_from_result(
     )
 
 
-__all__ = ["MARKER_VARIABLE", "ClaudeHostAdapter", "HostOutcome", "HostRequest"]
+__all__ = [
+    "ATTEMPT_TAG",
+    "MARKER_VARIABLE",
+    "ClaudeHostAdapter",
+    "HostLookupError",
+    "HostOutcome",
+    "HostReferences",
+    "HostRequest",
+    "host_session_id",
+]
