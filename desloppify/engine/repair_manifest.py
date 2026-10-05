@@ -21,7 +21,6 @@ ROLES = frozenset({"implementation", "sibling", "test", "decision"})
 STATUSES = frozenset({"present", "missing", "unsupported"})
 MAX_DEPENDENCIES = 64
 MAX_PATH_BYTES = 1024
-APPROVAL_KINDS = ("github_repair_revalidated",)
 _GIT_TIMEOUT_SECONDS = 30
 _REGULAR_MODES = frozenset({"100644", "100755"})
 
@@ -146,22 +145,42 @@ def compare_manifests(
     return ManifestComparison(current_now, reason, changed, base_changed, old_digest, new_digest)
 
 
-def retain_bound_approvals(
-    detail: Mapping[str, Any], comparison: ManifestComparison
-) -> dict[str, Any]:
-    """Return ``detail`` keeping approvals only while their manifest stays current."""
-    retained = dict(detail)
-    for kind in APPROVAL_KINDS:
-        if kind not in retained:
-            continue
-        record = retained.pop(kind)
-        if (
-            comparison.current
-            and isinstance(record, Mapping)
-            and record.get("manifest_digest") == comparison.previous_digest
-        ):
-            retained[kind] = {**record, "manifest_digest": comparison.current_digest}
-    return retained
+def concern_dependencies(issue: Mapping[str, Any]) -> tuple[DependencySpec, ...] | None:
+    """The concern file as implementation and its related files as siblings.
+
+    ``None`` means ``related_files`` is not a list of strings.
+    """
+    detail = issue.get("detail")
+    related = detail.get("related_files", []) if isinstance(detail, Mapping) else []
+    if not isinstance(related, list) or not all(isinstance(path, str) for path in related):
+        return None
+    concern_file = issue.get("file")
+    specs: list[DependencySpec] = []
+    if isinstance(concern_file, str) and concern_file not in {"", "."}:
+        specs.append(DependencySpec(concern_file, "implementation"))
+    seen = {spec.path for spec in specs}
+    for path in related:
+        if path not in seen:
+            seen.add(path)
+            specs.append(DependencySpec(path, "sibling"))
+    return tuple(specs)
+
+
+@dataclass(frozen=True)
+class SourceCheckout:
+    """The operator's checkout and the revision concerns are checked against."""
+
+    root: Path
+    revision: str
+
+    def manifest_for(self, issue: Mapping[str, Any]) -> SourceManifest | AnalysisUnknown:
+        """Read the concern's dependencies, declared complete as the reviewed input set."""
+        dependencies = concern_dependencies(issue)
+        if dependencies is None:
+            return AnalysisUnknown("malformed related_files")
+        return build_manifest(
+            self.root, self.revision, dependencies, coverage_declared_complete=True
+        )
 
 
 def _spec_problem(dependencies: Sequence[DependencySpec]) -> str | None:
@@ -288,7 +307,6 @@ def _parse_dependency(entry: object) -> Dependency:
 
 
 __all__ = [
-    "APPROVAL_KINDS",
     "AnalysisUnknown",
     "Dependency",
     "DependencySpec",
@@ -297,9 +315,10 @@ __all__ = [
     "MAX_PATH_BYTES",
     "ManifestComparison",
     "ROLES",
+    "SourceCheckout",
     "SourceManifest",
     "build_manifest",
     "compare_manifests",
+    "concern_dependencies",
     "manifest_from_record",
-    "retain_bound_approvals",
 ]

@@ -11,11 +11,12 @@ from desloppify.engine.repair_manifest import (
     MAX_PATH_BYTES,
     AnalysisUnknown,
     DependencySpec,
+    SourceCheckout,
     SourceManifest,
     build_manifest,
     compare_manifests,
+    concern_dependencies,
     manifest_from_record,
-    retain_bound_approvals,
 )
 
 FILES = {
@@ -118,40 +119,39 @@ def test_unrelated_edit_with_complete_coverage_is_current(repo: Path) -> None:
     )
 
 
-def _approved_detail(manifest: SourceManifest) -> dict:
-    return {
-        "concern_identity": "a" * 64,
-        "concern_evidence_digest": "b" * 64,
-        "maintenance_consequence": "unchanged prose",
-        "github_repair_revalidated": {"attestation": "ok", "manifest_digest": manifest.digest},
-    }
+def _concern(file: object = "src/impl.py", related: object = None) -> dict:
+    if related is None:
+        related = ["src/impl.py", "src/sibling.py"]
+    return {"file": file, "detail": {"related_files": related}}
 
 
-def test_source_edit_clears_approval_with_unchanged_prose(repo: Path) -> None:
-    before = _build(repo)
-    detail = _approved_detail(before)
-    commit(repo, "src/impl.py", "def impl():\n    return 3\n")
-    retained = retain_bound_approvals(detail, compare_manifests(before, _build(repo)))
-    assert "github_repair_revalidated" not in retained
-    assert retained == {k: v for k, v in detail.items() if k != "github_repair_revalidated"}
+def test_concern_dependencies_maps_file_and_related_files() -> None:
+    assert concern_dependencies(_concern()) == (
+        DependencySpec("src/impl.py", "implementation"),
+        DependencySpec("src/sibling.py", "sibling"),
+    )
 
 
-def test_current_comparison_rebinds_approval(repo: Path) -> None:
-    before = _build(repo)
-    commit(repo, "README.md", "unrelated\n")
-    after = _build(repo)
-    retained = retain_bound_approvals(_approved_detail(before), compare_manifests(before, after))
-    assert retained["github_repair_revalidated"] == {
-        "attestation": "ok",
-        "manifest_digest": after.digest,
-    }
+@pytest.mark.parametrize("file", ["", ".", None])
+def test_concern_without_file_has_no_implementation(repo: Path, file: object) -> None:
+    issue = _concern(file)
+    assert all(spec.role == "sibling" for spec in concern_dependencies(issue))
+    manifest = SourceCheckout(repo, "HEAD").manifest_for(issue)
+    assert isinstance(manifest, SourceManifest)
+    assert manifest.coverage == "partial"
 
 
-@pytest.mark.parametrize("record", [{"attestation": "ok"}, {"manifest_digest": "c" * 64}, "x"])
-def test_unbound_approval_is_removed(repo: Path, record: object) -> None:
-    manifest = _build(repo)
-    detail = {"github_repair_revalidated": record}
-    assert retain_bound_approvals(detail, compare_manifests(manifest, manifest)) == {}
+@pytest.mark.parametrize("related", [[{"path": "x"}], [["x"]], {"x": 1}, "src/sibling.py", [3]])
+def test_malformed_related_files_are_unknown(repo: Path, related: object) -> None:
+    manifest = SourceCheckout(repo, "HEAD").manifest_for(_concern(related=related))
+    assert isinstance(manifest, AnalysisUnknown)
+
+
+def test_source_checkout_declares_reviewed_set_complete(repo: Path) -> None:
+    manifest = SourceCheckout(repo, "HEAD").manifest_for(_concern())
+    assert isinstance(manifest, SourceManifest)
+    assert manifest.coverage == "complete"
+    assert [d.path for d in manifest.dependencies] == ["src/impl.py", "src/sibling.py"]
 
 
 @pytest.mark.parametrize(

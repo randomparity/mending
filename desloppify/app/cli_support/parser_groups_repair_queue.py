@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
-
 
 def _add_repair_queue_parser(sub) -> None:
     parser = sub.add_parser("repair-queue", help="Promote revalidated concerns to GitHub")
@@ -13,7 +11,15 @@ def _add_repair_queue_parser(sub) -> None:
         child.add_argument("--repo", dest="repository", required=True, metavar="OWNER/REPO")
         child.add_argument("--state", type=str, default=None, help="Path to state file")
         child.add_argument("--apply", action="store_true", help="Permit local or GitHub writes")
-        child.add_argument("--attest", type=str, default=None, metavar="TEXT")
+    for action in ("sync", "revalidate"):
+        child = actions.choices[action]
+        child.add_argument(
+            "--source-root", default=None, metavar="PATH",
+            help="Repository top level to read source from (default: project root)",
+        )
+        child.add_argument(
+            "--revision", default="HEAD", help="Revision to read source at (default: HEAD)"
+        )
     actions.choices["revalidate"].add_argument("issue_id")
     actions.choices["recover"].add_argument("marker")
 

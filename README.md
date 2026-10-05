@@ -36,21 +36,23 @@ opt-in for the repository, or without host and budget enforcement, that
 action parks. Text in an issue, a model finding, or a proof string never
 grants authority.
 
-Available today, with the operator's flags as the only controls: `sync
---apply` publishes to GitHub when you pass it, and `--attest` records your
-own attestation; neither rereads current source.
+Available today, with the operator's flags as the only controls: `revalidate`
+binds a concern to the git blob IDs of its concern file and related files at
+`--revision` (default `HEAD`) of `--source-root` (default: the project root,
+which must be the repository top level), and `sync --apply` publishes to
+GitHub only while those files are unchanged, rechecking them before every
+GitHub create and link write.
 
 ```bash
 desloppify scan --path .          # refresh findings and scan history
 desloppify review --run-batches   # bounded subjective and architecture-concern review
-desloppify repair-queue revalidate ID --repo OWNER/REPO --apply --attest TEXT
+desloppify repair-queue revalidate ID --repo OWNER/REPO --apply
 desloppify repair-queue sync --repo OWNER/REPO            # dry run; --apply publishes
-desloppify repair-queue recover MARKER --repo OWNER/REPO --apply --attest TEXT
+desloppify repair-queue recover MARKER --repo OWNER/REPO --apply
 desloppify repair-cycle --config FILE --state FILE        # parks: no host adapter yet
 ```
 
-Planned, not yet available: a stable concern key with source-bound
-revalidation ([#17](https://github.com/randomparity/mending/issues/17)), actionable repair briefs and a separate proposal path
+Planned, not yet available: actionable repair briefs and a separate proposal path
 ([#18](https://github.com/randomparity/mending/issues/18)), and a Mending-owned host adapter that runs one bounded repair ([#19](https://github.com/randomparity/mending/issues/19)).
 A manual pilot ([#7](https://github.com/randomparity/mending/issues/7)) comes before any scheduled run; the
 [systemd recipe](docs/systemd/repair-cycle.md) stays disabled until then.
