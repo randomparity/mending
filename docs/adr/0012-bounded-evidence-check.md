@@ -19,26 +19,29 @@ a model-driven review batch; its only machine-readable link to source is the
 ## Decision
 
 - **Check.** The relevant check is an evidence-anchor predicate
-  (`desloppify-repair-check:v1`): every `PATH:LINE[-LINE]` citation in the
-  concern's evidence must resolve to a recorded present dependency, its lines
-  must exist in that blob, and each backtick quote in a citing item must occur
-  in one of that item's cited files. Evidence with no citation, a citation
-  outside the recorded inputs, an unreadable blob, or an exceeded item, byte,
-  citation, or time bound is `unknown`.
+  (`desloppify-repair-check:v1`): each `PATH:LINE[-LINE]` citation in the
+  concern's evidence that resolves to a recorded present dependency must name
+  lines that exist in that blob, and each identifier quoted in backticks in a
+  citing item must occur in one of that item's cited files. Evidence with no
+  resolved citation, an unreadable blob, or an exceeded item, byte, citation,
+  or time bound is `unknown`.
 - **Revalidation.** `revalidate` stores the check record and its digest beside
-  the manifest and refuses, writing nothing, unless the outcome is `pass`.
-  Only a record with a passing check whose digest matches is eligible.
+  the manifest; any other outcome refuses and removes a stored record. Only a
+  record with a passing check whose digest matches is eligible. The digest
+  covers the schema, outcome, and parsed claims, not reasons or bounds.
 - **Recheck.** Where the manifest compares current under ADR 0008, the check
   is re-run against the rebuilt manifest. A different digest is not current
-  and clears the revalidation; `unknown` skips the concern and keeps it.
+  and clears the revalidation, except that a transient `unknown` (unreadable
+  blob, wall bound) skips the concern and keeps it.
 
 ADR 0008 otherwise stays in force, including the lenient base move.
 
 ## Consequences
 
 Every revalidation stored under ADR 0008 must be re-run. Concerns whose
-evidence cites no source line are never promoted; reviewers who want a concern
-promoted must cite `PATH:LINE`. Editing a concern's evidence after
+evidence cites no recorded source line are never promoted. The review prompt
+and skill docs do not ask reviewers for `PATH:LINE`, so promotion stays rare
+until a separate change asks for it. Editing a concern's evidence after
 revalidation invalidates it. The check proves that the reviewer's anchors
 still hold, not that the concern is true, so `revalidate` remains partly the
 operator's assertion. `check_concern` is the entry point the execution-time
@@ -49,9 +52,12 @@ recheck (#26/#31) calls.
 - **Re-run the originating detector.** judgment: cost; the detector is a
   model-driven review batch, neither bounded nor deterministic, and
   revalidation has no model runner.
-- **Re-run the mechanical detectors over the recorded files.** judgment: fit;
-  no recorded field links a confirmed concern to the mechanical findings that
-  prompted it, so their outcome says nothing about this concern.
+- **Re-run the mechanical detectors over the recorded files.** verified:
+  `rg -n "finding_ids|concern_fingerprint|source_issues"
+  desloppify/intelligence/review/importing/holistic_issue_flow.py` at
+  `ae9647ed` matches only the dismissed-concern fingerprint (line 106); a
+  confirmed concern records no link to the mechanical findings that prompted
+  it, so their outcome says nothing about this concern.
 - **Execute the concern's `verification` text.** judgment: fit; it is free
   model-written text, and running it would execute untrusted instructions.
 - **Treat a concern without citations as passing.** judgment: fit; #41
