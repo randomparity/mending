@@ -18,7 +18,9 @@ docs, and CI guidance. It separates commands available today (`scan`,
 `docs/SKILL.md` and the per-host overlays stay unchanged: `update-skill`
 downloads them from the upstream repository (`_RAW_BASE` in
 `desloppify/app/commands/update_skill/cmd.py`), so editing them here would not
-change what agents install.
+change what agents install. #38 later pointed `update-skill` at this
+repository and aligned the skill
+([ADR 0011](../../adr/0011-fork-hosted-skill-source.md)).
 
 ### Failure model
 
@@ -28,7 +30,8 @@ change what agents install.
   timer readiness that does not exist; accepted ADRs keep their bodies.
 - Accepted failure classes: the upstream analyzer skill still teaches its
   score loop; tolerated because the README labels it as the inherited
-  analyzer workflow, not the maintenance entry path (Success 3).
+  analyzer workflow, not the maintenance entry path (Success 3). Resolved by
+  #38.
 - Covered elsewhere: adapter and loader #19; concern key and revalidation
   #17; briefs and proposals #18; opt-in, pilot, timer, merge authority #7.
 
