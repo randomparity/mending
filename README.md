@@ -50,9 +50,9 @@ desloppify repair-cycle --config FILE --state FILE        # parks: no host adapt
 ```
 
 Planned, not yet available: a stable concern key with source-bound
-revalidation (#17), actionable repair briefs and a separate proposal path
-(#18), and a Mending-owned host adapter that runs one bounded repair (#19).
-A manual pilot (#7) comes before any scheduled run; the
+revalidation ([#17](https://github.com/randomparity/mending/issues/17)), actionable repair briefs and a separate proposal path
+([#18](https://github.com/randomparity/mending/issues/18)), and a Mending-owned host adapter that runs one bounded repair ([#19](https://github.com/randomparity/mending/issues/19)).
+A manual pilot ([#7](https://github.com/randomparity/mending/issues/7)) comes before any scheduled run; the
 [systemd recipe](docs/systemd/repair-cycle.md) stays disabled until then.
 
 ## Using the analyzer directly
