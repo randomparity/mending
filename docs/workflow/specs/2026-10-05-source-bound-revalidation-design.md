@@ -111,8 +111,8 @@ rereads current source" caveat.
     `revalidate` is not detected (concern import records no manifest).
   - A project root below the repository top level is unsupported: every
     revalidation is refused.
-- Covered elsewhere: execution-time recheck in `repair-cycle` and the host
-  adapter (#19); briefs (#18); contract docs (#16); live publication (#7);
+- Covered elsewhere: execution-time recheck — no execution path consumes
+  repair-queue eligibility yet; owner tracked on #17; briefs (#18); contract docs (#16); live publication (#7);
   independent state files (excluded).
 
 ### Threat model

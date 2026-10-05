@@ -57,8 +57,9 @@ without a concern file, or whose related files are missing, symlinked, or
 invalid, is never promoted. Unrelated commits do not churn eligibility; an
 omitted dependency is not tracked. Linking reads issue bodies but stores none
 of their text. A legacy issue whose body marker predates the current evidence
-is no longer adopted automatically. Execution-time rechecks belong to the host
-adapter (#19). ADRs 0004 and 0005 are not edited; readers find the replaced
+is no longer adopted automatically. No execution path consumes repair-queue
+eligibility yet, so this record adds no execution-time recheck; its owner is
+tracked on #17. ADRs 0004 and 0005 are not edited; readers find the replaced
 parts here.
 
 ## Considered & rejected
