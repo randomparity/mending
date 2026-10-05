@@ -98,3 +98,9 @@ Commit `feat(repair-cycle): add Claude Code host adapter`.
 Verification: Mode: task-test-not-applicable — prose record; the records gate checks
 its shape (`.github/scripts/check-records.sh`), which is the only executable consumer.
 Commit with the design artifacts.
+
+## Deferrals
+
+- Mapping `unknown` to a retained active attempt in `cmd_repair_cycle` → #31.
+- Whether `--max-budget-usd` binds under the deployment's auth mode → #32.
+- Live host run → #7.

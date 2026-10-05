@@ -48,8 +48,12 @@ capabilities, after evaluating reuse of the Codex batch runner.
 
 - Budget admission (#29), dispatch records (#30), and wiring into
   `repair-cycle` (#31) extend this adapter; it enforces only the deadline.
-  `--max-budget-usd` is documented for API calls in print mode; whether it
-  bounds the deployment's auth mode is an open condition for #29.
+- The capability evidence is the CLIs' documented options plus the observed
+  session layout; no paid host call was made (live runs belong to #7).
+  `--max-budget-usd` is documented "only works with --print" for API calls;
+  whether it binds under the deployment's auth mode is reported by the
+  host-versus-Mending limit matrix (#32). If it does not, the choice rests on
+  permission and cancellation fit alone, and this record is revisited.
 - A descendant that both leaves the group and clears or replaces its
   environment, or changes user, is not observed.
 - The reported Adept version is the configured plugin directory's. The host
