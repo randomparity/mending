@@ -40,7 +40,10 @@ config/overrun wording in `docs/systemd/repair-cycle.md`.
 - `awaiting_disposition` is true when `attempt_failure` is set and
   `disposed_attempt` differs from the current attempt ID. `begin` refuses while it
   is true; once disposed, `begin` may replace the lease on a later day even without
-  a terminal receipt. The same-day rule is unchanged.
+  a terminal receipt. The same-day rule is unchanged. The failed attempt's
+  receipt, failure, and disposition are retained until a disposed attempt is
+  replaced; after that the command's journal lines are the history (an attempt
+  history record belongs with dispatch records, #30).
 
 ### Behavior
 
@@ -56,7 +59,14 @@ config/overrun wording in `docs/systemd/repair-cycle.md`.
    valid receipt is recorded (merge permit consumed if reported). Then, if
    `now > deadline` it fails `runtime-exhausted`, else if calls or cost exceed the
    lease it fails `budget-exhausted`: the failure is recorded and the run parks
-   with that reason.
+   with that reason. The receipt has no completion time, so observation time
+   stands in for it: any receipt first observed after the deadline fails, even
+   when the work finished on time, and needs a disposition. A merged attempt's
+   later, different receipt still parks `merge-permit-exhausted` unrecorded;
+   merge stays outside the pilot (ADR 0007) and its receipt semantics are #31's.
+   Execution-path parks (`timeout`, `authority-unavailable`,
+   `selection-unavailable`, invalid receipts) do not set `attempt_failure`; the
+   attempt reaches a failure through later observation.
 3. New work: `_begin_and_select` parks `disposition-required`, with no external
    call, while `awaiting_disposition`. Execution (`verify_authority`, `select`)
    keeps `_call_before_deadline`.

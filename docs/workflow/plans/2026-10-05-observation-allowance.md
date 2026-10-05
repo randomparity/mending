@@ -64,9 +64,10 @@ Interfaces: consumes Task 1. Produces `_call_within(seconds: float, operation)`;
 `_call_before_deadline(args, lease, operation)` delegates to it with the remaining lease
 time and still raises `TimeoutError` when none remains.
 
-Steps: in `cmd_repair_cycle`, for a current lease that is not terminal and not disposed,
-call `_reconcile`; then `_begin_and_select`, which parks `disposition-required` before
-`begin` while `awaiting_disposition`. `_reconcile`: if `observation_calls >=
+Steps: in `cmd_repair_cycle`, with a current lease: terminal or disposed →
+`_begin_and_select`; otherwise `_reconcile`, then `_begin_and_select` only when it
+returns True. `_begin_and_select` parks `disposition-required` before `begin` while
+`awaiting_disposition`. `_reconcile`: if `observation_calls >=
 config.observation_call_limit` → `fail("observation-exhausted")` and park
 `observation-exhausted`, no call; else increment, store, persist, and call
 `client.reconcile` through `_call_within(config.observation_seconds, ...)`;
@@ -90,21 +91,26 @@ Verification:
 - Mode: focused-test — `test_observation_call_is_time_bounded` monkeypatches
   `signal.setitimer` as the existing deadline-timer test does; parks
   `observation-timeout` with an expired lease. Red: parks `timeout` today.
-- Mode: focused-test — update `test_timeout_and_budget_exhaustion_park_without_accepting_receipt`
-  (rename `..._park_and_record_usage`) and `test_overdue_adapter_result_parks_before_receipt_is_accepted`
-  to assert the receipt is recorded and `attempt_failure` is set. Red: receipt is None.
+- Mode: focused-test — rename `test_timeout_and_budget_exhaustion_park_without_accepting_receipt`
+  to `test_execution_timeout_parks_and_budget_overrun_records_usage`: the timeout half
+  keeps `parked_reason == "timeout"`, no receipt, `attempt_failure is None`; the budget
+  half asserts the receipt is recorded with `attempt_failure == "budget-exhausted"`.
+  Rename `test_overdue_adapter_result_parks_before_receipt_is_accepted` to
+  `test_overdue_adapter_result_is_recorded_as_runtime_failure` and assert the receipt
+  is recorded with `attempt_failure == "runtime-exhausted"`. Red: receipt is None.
 
 ## Task 3: Disposition gate and dispose flag
 
 Interfaces: consumes Task 1 `dispose`, `awaiting_disposition`. Produces parser flag
-`--dispose-attempt ATTEMPT_ID` (`args.dispose_attempt`, default None).
+`--dispose-attempt ATTEMPT_ID`, read as `getattr(args, "dispose_attempt", None)`.
 
 Steps: in `cmd_repair_cycle`, inside the lock and before any adapter call, when
 `dispose_attempt` is set call `dispose`, store, persist, print
 `Repair cycle attempt <id> disposed.`; map `ValueError` to `CommandError(..., exit_code=2)`.
 Add the parser argument. Update `docs/systemd/repair-cycle.md`: the two config keys
 with defaults, and replace "A deadline overrun parks the recorded attempt" with the
-observation, failure-retention, and `--dispose-attempt` behavior.
+observation, failure-retention, and `--dispose-attempt` behavior, including that any
+attempt first observed after its deadline needs a disposition.
 
 Verification:
 - Mode: focused-test — `test_failed_attempt_requires_disposition_before_new_work`: after
