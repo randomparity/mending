@@ -73,11 +73,11 @@ def concern_dependencies(issue: Mapping[str, Any]) -> tuple[DependencySpec, ...]
     detail = issue.get("detail")
     related = detail.get("related_files", []) if isinstance(detail, Mapping) else []
     concern_file = issue.get("file")
-    specs = []
+    specs: list[DependencySpec] = []
     if isinstance(concern_file, str) and concern_file not in {"", "."}:
         specs.append(DependencySpec(concern_file, "implementation"))
     for path in related if isinstance(related, list) else [related]:
-        if path not in {spec.path for spec in specs}:
+        if not isinstance(path, str) or path not in {spec.path for spec in specs}:
             specs.append(DependencySpec(path, "sibling"))
     return tuple(specs)
 
@@ -96,8 +96,10 @@ class SourceCheckout:
         )
 ```
 
-A non-string `related_files` entry flows into `DependencySpec` and
-`build_manifest` returns `AnalysisUnknown("invalid dependency spec")`.
+A non-list `related_files` or a non-string entry (including a dict) flows
+into `DependencySpec` without a hash lookup, and `build_manifest` returns
+`AnalysisUnknown("invalid dependency spec")`; `test_concern_dependencies_*`
+includes a dict-entry case.
 
 Code (repair_queue.py `_kind_fields` branch):
 
@@ -124,6 +126,9 @@ complete manifest record (one `implementation` dependency with a 40-hex blob).
 
 ## Task 2 — command wiring and CLI
 
+Tasks 1 and 2 land as one commit: Task 1 alone makes every attestation fixture
+in `test_repair_queue.py` ineligible, so the suite is green only with both.
+
 Files: `desloppify/app/commands/repair_queue.py`,
 `desloppify/app/cli_support/parser_groups_repair_queue.py`,
 `desloppify/tests/commands/test_repair_queue.py`, `README.md`.
@@ -144,7 +149,9 @@ Verification:
   `test_create_recheck_mismatch_writes_no_pending`,
   `test_link_recheck_mismatch_keeps_link`; fake source switches manifests.
 - Contract: verified adoption. Mode: focused-test —
-  `test_unique_hit_without_marker_is_not_linked`; red: link written.
+  `test_unique_hit_without_marker_is_not_linked` and
+  `test_verified_hit_beside_unverified_hit_is_linked`; red: link written /
+  ambiguous skip.
 - Contract: README. Mode: task-test-not-applicable — prose with no executable
   consumer.
 
@@ -176,13 +183,17 @@ def _recheck_locked(args, state, candidate) -> bool:
 ```
 
 `_sync_one` starts with `if not _source_current(args, state, candidate): return`;
-`_source_current` in dry run prints the same message without clearing when
-`_comparison` is not current; with `--apply` it opens `_locked_state`, returns
-False on a stale `_candidate_by_id`, else `_recheck_locked`. `_create_once`
+`_source_current` compares without the lock and returns True when current.
+Otherwise, in dry run it prints the skip message; with `--apply` it opens
+`_locked_state`, prints the stale message and returns False on a changed
+`_candidate_by_id`, else returns `_recheck_locked` (which clears). `_create_once`
 adds `or not _recheck_locked(...)` after the existing checks (its own skip
 message only when the recheck passed); `_write_link` returns after the fresh
-check when `_recheck_locked` is False. `_adopt_if_unique` checks
-`carries_concern_marker(matches[0].body, candidate)` before linking.
+check when `_recheck_locked` is False. Adoption counts only verified hits: `_sync_one` and `_create_once` compute
+`verified = [m for m in matches if carries_concern_marker(m.body, candidate)]`;
+when `matches` is non-empty and `verified` is empty, print `Skipped <id>:
+GitHub matches do not carry the concern key` and stop; otherwise the existing
+pending/unique/ambiguous/create branches run on `verified`.
 `_revalidate` builds `_source(args).manifest_for(issue)` under the lock and
 raises `CommandError(f"source evidence cannot be bound: {reason}")` for an
 `AnalysisUnknown` or `coverage-incomplete` partial manifest. Remove `_attestation`.
@@ -194,15 +205,18 @@ Parser: remove `--attest`; add `--source-root` and `--revision` to `sync` and
 
 File: `desloppify/tests/repair_queue/test_sync_matrix.py`.
 
-Verification: Mode: focused-test — one test per spec Success 4(a)–(e) and 3,
+Verification: Mode: focused-test — one test per spec Success 4(a)–(f) and 3,
 each running `cmd_repair_queue` with `SourceCheckout(tmp repo, "HEAD")`, an
 in-memory `state_data`, and a recording client whose `create` makes later
 searches return a body carrying the key line; (c) commits a dependency edit
-inside the client's `search`. Red: before Task 2, (b)–(d) create or link.
+inside the client's `search`; (f) commits one inside `create`, then
+re-runs `revalidate` and `sync` and asserts one create and a link to it. Red: before Task 2, (b)–(d) create or link.
 Green: `uv run --locked pytest -q desloppify/tests/repair_queue/test_sync_matrix.py`.
 The fixture repo uses the `GIT_ENV` isolation of `test_manifest.py`.
 
 ## Rollback
 
-Each task is one commit; `git revert` restores the attested path. Existing
-attestation records stay in state files and become eligible again on revert.
+Tasks 1–2 are one commit and Task 3 another. `git revert` restores the
+attested code path, but not eligibility: a rescan under the new code drops
+attestation records, and the reverted code rejects manifest records, so after
+a revert every concern needs `revalidate --attest` again.

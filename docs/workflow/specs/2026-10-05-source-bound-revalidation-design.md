@@ -23,14 +23,18 @@ than `.`, and each `detail.related_files` entry not equal to it as `sibling`,
 deduplicated in order. The list is declared complete: it is the input set the
 concern review named. A concern with no concern file has no implementation
 dependency, so its manifest is `partial` and it is never eligible. A
-non-string or invalid entry yields `AnalysisUnknown` or an `unsupported`
-dependency (both ineligible), as #24 already defines.
+`related_files` value that is not a list, or a non-string entry, is passed
+through as an invalid spec so `build_manifest` returns `AnalysisUnknown`; an
+invalid path string becomes an `unsupported` dependency (both ineligible).
 
 **Source checkout** (`SourceCheckout(root, revision)`, engine):
 `manifest_for(issue)` returns `build_manifest(root, revision,
 concern_dependencies(issue), coverage_declared_complete=True)`. The command
 builds it from `--source-root` (default: project root) and `--revision`
-(default `HEAD`); tests inject `args.source`.
+(default `HEAD`); tests inject `args.source`. Work-item paths are relative
+to the project root, so the project root must be the repository top level;
+otherwise `build_manifest` returns `AnalysisUnknown` and the `revalidate`
+error names `--source-root`.
 
 **Revalidation record** (`github_repair_revalidated`, persisted shape
 replaced): `{key, repository, evidence_digest, manifest, manifest_digest}`,
@@ -56,8 +60,10 @@ current (<reason>)`, and stop this candidate. A base move with complete
 coverage and no recorded dependency change is current (operator decision,
 lenient rule of #24); the stored record is not rewritten.
 
-**Sync** calls it at three points, each skipping on mismatch:
-1. before any GitHub read for the candidate (dry run compares and prints
+**Sync** checks at three points, each skipping on mismatch:
+1. before any GitHub read for the candidate: compare without the lock; only
+   on a mismatch (and only with `--apply`) open the lock, confirm the
+   candidate is unchanged, and run `_recheck_locked` to clear (dry run prints
    without clearing);
 2. in `_create_once`'s locked transaction, after the existing stale/peer
    checks and before the pending record is written — the last point before
@@ -68,11 +74,13 @@ behavior are otherwise unchanged.
 
 **Search adoption**: `GitHubIssueClient.search` also requests `body`;
 `GitHubIssue` gains `body: str = ""` (a non-string body is malformed JSON).
-`_adopt_if_unique` links a unique hit only when `carries_concern_marker(body,
-candidate)` finds a whole line equal to `<!-- desloppify-concern-key: KEY -->`
-or the current legacy line `<!-- desloppify-concern: LEGACY -->`; otherwise
-it prints `Skipped <id>: GitHub match #N does not carry the concern key` and
-neither links nor creates. Match counting is unchanged.
+A hit is verified when `carries_concern_marker(body, candidate)` finds a
+whole line equal to `<!-- desloppify-concern-key: KEY -->` or the current
+legacy line `<!-- desloppify-concern: LEGACY -->`. `_search` keeps every hit;
+the adoption decision counts only verified hits: one → link; more than one →
+ambiguous skip; none while unverified hits exist → print `Skipped <id>:
+GitHub matches do not carry the concern key` and neither link nor create;
+no hits at all → the existing create / pending rules.
 
 **Docs**: README's repair-queue lines drop `--attest` and the "neither
 rereads current source" caveat.
@@ -83,8 +91,8 @@ rereads current source" caveat.
   Mending against a checkout it controls; concern files come from imported
   model output; GitHub issue bodies and comments are writable by third
   parties.
-- Invariants and assets: a recorded dependency changed since revalidation is
-  never promoted, linked, or created for; at most one GitHub issue per key
+- Invariants and assets: no create or link write proceeds unless the
+  manifest compared current in the locked recheck immediately before it; at most one GitHub issue per key
   among writers sharing one state file; persisted links and pending records
   are never discarded by a recheck.
 - Accepted failure classes:
@@ -98,6 +106,11 @@ rereads current source" caveat.
   - A legacy issue whose body carries an older-evidence marker is no longer
     adopted automatically; the operator adds the key line to its body.
   - Operators must re-run `revalidate` once for every pre-#25 record.
+  - `revalidate` is the operator's assertion that the concern holds at the
+    bound revision; source that changed between the concern review and
+    `revalidate` is not detected (concern import records no manifest).
+  - A project root below the repository top level is unsupported: every
+    revalidation is refused.
 - Covered elsewhere: execution-time recheck in `repair-cycle` and the host
   adapter (#19); briefs (#18); contract docs (#16); live publication (#7);
   independent state files (excluded).
@@ -130,9 +143,13 @@ rereads current source" caveat.
    dependency edit between the first check and the locked create recheck →
    zero creates and no pending record; (d) an existing closed link plus a
    dependency edit → link kept unchanged, revalidation cleared; (e) repeated
-   syncs after a create → one create in total.
-5. A unique search hit whose body lacks both marker lines is neither linked
-   nor followed by a create; one carrying either line is linked.
+   syncs after a create → one create in total; (f) dependency edit inside
+   `create` → one create, no link, pending kept, revalidation cleared; after
+   `revalidate` and another sync the item links to that issue with no
+   second create.
+5. A search hit whose body lacks both marker lines is neither linked nor
+   followed by a create; one verified hit is linked even beside unverified
+   hits; two verified hits park.
 
 ## Validation
 

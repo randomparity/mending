@@ -32,12 +32,15 @@ An edit to the code a concern describes changes none of those inputs. ADR
   attempt on `--apply` alone.
 - **Recheck before mutation.** `sync` rebuilds and compares the manifest
   before reading GitHub for a concern, and again inside the state-lock
-  transaction that precedes each `gh issue create` and each local link write.
-  Any mismatch, partial coverage, or unknown analysis clears the revalidation
-  and skips the concern. With complete coverage, a base move that touches no
-  recorded dependency keeps the concern current.
-- **Verified adoption.** A unique search hit is linked only when its issue
-  body carries the stable-key line or the current legacy marker line.
+  transaction that precedes each `gh issue create` and each local link write;
+  no create or link write proceeds without a current comparison in that
+  transaction. Any mismatch, partial coverage, or unknown analysis skips the
+  concern and, outside a dry run, clears the revalidation. With complete
+  coverage, a base move that touches no recorded dependency keeps the concern
+  current.
+- **Verified adoption.** Only search hits whose issue body carries the
+  stable-key line or the current legacy marker line count toward adoption;
+  unverified hits alone block creation but are never linked.
 
 ADR 0004's identity and evidence digests, plan-reference transfer, and
 dismissal rules stay in force. ADR 0005's `gh` adapter, dry-run default,
@@ -46,7 +49,10 @@ and single-state-file guarantee stay in force.
 
 ## Consequences
 
-Every pre-existing revalidation must be re-run against a checkout. A concern
+Every pre-existing revalidation must be re-run against a checkout.
+`revalidate` remains the operator's assertion that the concern holds at the
+bound revision; freshness is measured from that point, not from the concern
+review. The project root must be the repository top level. A concern
 without a concern file, or whose related files are missing, symlinked, or
 invalid, is never promoted. Unrelated commits do not churn eligibility; an
 omitted dependency is not tracked. Linking reads issue bodies but stores none
@@ -57,6 +63,8 @@ parts here.
 
 ## Considered & rejected
 
+- **Keep attested promotion (do nothing).** judgment: fit; a source edit
+  changes no input that ADRs 0004/0005 check, which is the defect #25 fixes.
 - **Keep `--attest` beside the manifest.** judgment: fit; two proofs of
   freshness where one is unverifiable leaves the weaker path open.
 - **Invalidate on any base move.** judgment: cost; with complete coverage it
