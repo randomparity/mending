@@ -36,10 +36,14 @@ capabilities, after evaluating reuse of the Codex batch runner.
   Claude Code 2.1.289, Linux), so the group alone is not the tree.
 - Timeout or cancellation (`SIGINT`, `SIGTERM`, `SIGHUP` while the host runs on
   the main thread) sends `SIGTERM`, then `SIGKILL`, to the group and to every
-  marked process, reaps the leader, and checks again. An empty tree is
-  `stopped`; any remaining member, or a missing `/proc`, is `unknown`. The same
-  check runs after a normal exit, so a finished wrapper is not taken as proof
-  that its workers stopped.
+  marked process, reaps the leader, and checks again. After a timeout, an empty
+  tree is `stopped`; any remaining member, or a missing `/proc`, is `unknown`.
+  Cancellation stops the tree and re-raises without an outcome, leaving the
+  persisted lease active. The same check runs after a normal exit, so a
+  finished wrapper is not taken as proof that its workers stopped.
+- The skills directory must hold the manifest and at least one
+  `skills/*/SKILL.md`; the manifest is the version identity, and skill
+  contents are not otherwise verified.
 - The session ID is derived from the durable attempt ID, so the host session
   correlates with Mending's attempt record without a second claim system. It is
   single-use: rerunning an attempt needs a new attempt ID (#30, #31).

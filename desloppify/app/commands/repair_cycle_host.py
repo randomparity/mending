@@ -161,6 +161,9 @@ def _preflight(
 
 
 def _manifest(skills_dir: str) -> dict[str, Any] | None:
+    """Return the plugin manifest, or None when it or every packaged skill is missing."""
+    if not any(Path(skills_dir, "skills").glob("*/SKILL.md")):
+        return None
     try:
         raw = json.loads(Path(skills_dir, ".claude-plugin", "plugin.json").read_text())
     except (OSError, ValueError):

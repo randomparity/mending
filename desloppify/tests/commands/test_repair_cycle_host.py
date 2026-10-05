@@ -82,6 +82,9 @@ def host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     manifest = tmp_path / "adept" / ".claude-plugin" / "plugin.json"
     manifest.parent.mkdir(parents=True)
     manifest.write_text(json.dumps({"name": "adept", "version": "7.2.0"}))
+    skill = tmp_path / "adept" / "skills" / "quest" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("# quest\n")
     record = tmp_path / "record.json"
     monkeypatch.setenv("FAKE_HOST_RECORD", str(record))
     yield {"exe": str(exe), "skills": str(manifest.parent.parent), "record": record}
@@ -212,6 +215,32 @@ def test_relative_paths_reach_host_as_absolute(host, tmp_path, monkeypatch):
     assert argv[argv.index("--plugin-dir") + 1] == host["skills"]
 
 
+def test_manifest_without_skills_parks(host, tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_HOST_MODE", "ok")
+    (Path(host["skills"]) / "skills" / "quest" / "SKILL.md").unlink()
+    outcome = ClaudeHostAdapter(_config(host)).run(_request(tmp_path))
+    assert (outcome.state, outcome.reason) == ("parked", "missing-host-skills")
+    assert not host["record"].exists()
+
+
+def test_signal_during_launch_is_deferred_until_stoppable(host, tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_HOST_MODE", "hang")
+    real_popen = repair_cycle_host.subprocess.Popen
+
+    def popen_then_signal(*args, **kwargs):
+        proc = real_popen(*args, **kwargs)
+        deadline = time.monotonic() + 10
+        while not host["record"].exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        os.kill(os.getpid(), signal.SIGTERM)
+        return proc
+
+    monkeypatch.setattr(repair_cycle_host.subprocess, "Popen", popen_then_signal)
+    with pytest.raises(SystemExit):
+        ClaudeHostAdapter(_config(host), grace_seconds=0.5).run(_request(tmp_path))
+    assert all(_gone(pid) for pid in json.loads(host["record"].read_text())["pids"])
+
+
 def test_launch_failure_parks(host, tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_HOST_MODE", "ok")
     request = replace(_request(tmp_path), repo_root=tmp_path / "missing")
@@ -229,7 +258,11 @@ def test_missing_proc_is_unknown(host, tmp_path, monkeypatch):
 
 @pytest.mark.parametrize(
     ("signum", "expected"),
-    [(signal.SIGTERM, SystemExit), (signal.SIGINT, KeyboardInterrupt)],
+    [
+        (signal.SIGTERM, SystemExit),
+        (signal.SIGHUP, SystemExit),
+        (signal.SIGINT, KeyboardInterrupt),
+    ],
 )
 def test_cancellation_stops_tree_and_reraises(host, tmp_path, monkeypatch, signum, expected):
     monkeypatch.setenv("FAKE_HOST_MODE", "hang")
