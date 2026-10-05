@@ -30,6 +30,14 @@ them with the `AdeptCycleClient`.
 | USD cost | remaining lease cost passed as `--max-budget-usd` | the host stops the session (subagents included) | result event `total_cost_usd` |
 | Model calls | remaining lease calls | Mending counts calls in the host's event stream and stops the worker tree once the count exceeds the admission | distinct assistant `message.id` values, main and subagent |
 | Runtime | lease deadline (existing) | Mending stops the worker tree at the deadline (existing) | wall clock |
+| Host-internal calls (summarization, compaction) | none | bounded only by the `--max-budget-usd` cost cap | not counted as calls |
+
+`call_limit` means streamed model responses: the main session plus foreground
+subagents (operator decision on #29, 2026-10-05). The adapter sets
+`CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` in the host environment so no
+background subagent runs outside the stream. Calls the host makes for its own
+background functionality are not streamed and have no switch; only the cost cap
+bounds them.
 
 The host runs with `--output-format stream-json --verbose
 --forward-subagent-text`. Per the Claude Code headless docs ("Follow subagent
@@ -121,10 +129,11 @@ Each adapter test request uses a fresh `uuid4` attempt ID, so the derived
      the calls already in flight (bounded by host concurrency; recorded as
      consumed, then failed `budget-exhausted`); a stop by Mending charges the
      whole admission instead of guessing the in-flight count;
-   - model calls the host makes that never appear as `assistant` events
-     (host-internal auxiliary or compaction calls, background subagents) are
-     not counted; the host's cost cap still binds them; checking the stream
-     shape against a captured real transcript is the live pilot's (#7);
+   - host-internal calls (summarization, compaction) never appear as
+     `assistant` events and are not counted as calls; by the operator's
+     definition of `call_limit` the host's cost cap alone bounds them; background
+     subagents are disabled, so they make no uncounted calls; checking the
+     stream shape against a captured real transcript is the live pilot's (#7);
    - if Mending is killed uncatchably (SIGKILL), the host keeps running with
      only its own cost cap until it exits; under the systemd unit the control
      group kill ends it, and a local operator stops it before disposition;
@@ -140,8 +149,9 @@ Each adapter test request uses a fresh `uuid4` attempt ID, so the derived
 
 ## Success
 
-- A dispatch is launched only with a persisted reservation and with
-  `--max-budget-usd` equal to the remaining lease cost.
+- A dispatch is launched only with a persisted reservation, with
+  `--max-budget-usd` equal to the remaining lease cost, and with
+  `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` in its environment.
 - A host exceeding its admitted calls is stopped and its usage settled; the
   attempt fails `budget-exhausted`.
 - A host whose `--help` lacks a required option, or a host without `/proc`,

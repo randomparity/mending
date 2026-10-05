@@ -82,7 +82,8 @@ Interfaces: consumes `BudgetAdmission`. Produces
 
 Verification:
 - Contract: argv carries `--output-format stream-json --verbose
-  --forward-subagent-text --max-budget-usd <admission cost>`. Mode: focused-test.
+  --forward-subagent-text --max-budget-usd <admission cost>`, and the host
+  environment carries `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`. Mode: focused-test.
   Update `test_completed_run_reports_identity` — red: `TypeError` for the new
   `admission` argument, then argv lacks the flags.
 - Contract: measured cost and distinct-message call count reach the outcome,
@@ -128,7 +129,8 @@ Steps:
 5. Replace `proc.wait` with a poll loop that feeds the reader from the stdout
    file each `_POLL_SECONDS` and returns stop reason `call-limit` once
    `calls > admission.calls`, `timeout` at the deadline, or `None` on exit;
-   then `_stop_tree` as before and feed the rest.
+   then `_stop_tree` as before and feed the rest. The launch environment adds
+   `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` beside the session marker.
 6. Map outcomes: stop reason with empty tree → `stopped`/reason; with survivors
    → `unknown`/`<reason>-survivors`; no stop and survivors → `unknown`/
    `worker-survivors`; else the result event decides `completed`/`failed`, no
