@@ -65,15 +65,25 @@ def _recover(args: argparse.Namespace, client: Any) -> None:
             detail = issue.get("detail") if isinstance(issue, Mapping) else None
             if not isinstance(detail, dict):
                 continue
-            pending = detail.get("github_repair_pending")
-            if (
-                isinstance(pending, Mapping)
-                and args.marker in (pending.get("key"), pending.get("marker"))
-                and pending.get("repository") == repository
-            ):
+            if _pending_matches(detail, repository, args.marker):
                 detail.pop("github_repair_pending", None)
                 cleared += 1
     print(f"Cleared {cleared} pending repair attempt(s).")
+
+
+def _pending_matches(detail: Mapping[str, Any], repository: str, marker: str) -> bool:
+    """Match a pending record by its literal key/legacy marker or by its normalized key."""
+    pending = detail.get("github_repair_pending")
+    if not isinstance(pending, Mapping) or pending.get("repository") != repository:
+        return False
+    if marker in (pending.get("key"), pending.get("marker")):
+        return True
+    hashes = concern_hashes(detail)
+    try:
+        record = normalize_record("github_repair_pending", pending, repository, *hashes) if hashes else None
+    except RepairRecordError:
+        return False
+    return record is not None and record["key"] == marker
 
 
 def _sync(args: argparse.Namespace, client: Any) -> None:

@@ -65,8 +65,9 @@ issue is created for the same concern.
   sequence. Under the lock it recomputes candidates and peer records and also
   refuses when the key is held by another candidate or any peer record. The body marker becomes
   `<!-- desloppify-concern-key: <key> -->`; title uses `key[:12]`.
-- **Recover** clears a pending record whose `key` or legacy `marker` equals the
-  argument and whose repository matches. CLI arguments are unchanged.
+- **Recover** clears a pending record whose `key`, legacy `marker`, or
+  normalized key (a legacy record on a renamed-away item) equals the argument
+  and whose repository matches. CLI arguments are unchanged.
 - **Migration** is read-time recognition plus rewrite at the next locked write
   (link write, pending write, revalidation, scan merge). Legacy shapes stay
   readable indefinitely; no bulk rewrite pass.

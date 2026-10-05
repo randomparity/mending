@@ -429,6 +429,15 @@ def test_rename_with_peer_pending_never_creates() -> None:
     assert client.create_calls == 1
 
 
+def test_recover_by_key_clears_legacy_peer_pending() -> None:
+    state = _revalidated_state()
+    legacy = {"marker": LEGACY, "repository": REPOSITORY}
+    state["work_items"]["concerns::old"] = _item("concerns::old", status="fixed", github_repair_pending=legacy)
+    client = _Recorder()
+    cmd_repair_queue(_args("recover", state, apply=True, client=client, marker=KEY, attest="checked GitHub"))
+    assert "github_repair_pending" not in _detail(state, "concerns::old")
+
+
 def test_rename_with_corrupt_peer_link_parks() -> None:
     state = _revalidated_state()
     state["work_items"]["concerns::old"] = _item(
