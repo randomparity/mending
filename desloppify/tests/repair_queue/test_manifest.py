@@ -298,6 +298,13 @@ def _mutated(manifest: SourceManifest, change) -> dict:
     return record
 
 
+def _oversize_unsupported_path(record: dict) -> None:
+    record["coverage"] = "partial"
+    record["dependencies"][0].update(
+        path="/" + "a" * MAX_PATH_BYTES, status="unsupported", object_id=None
+    )
+
+
 @pytest.mark.parametrize(
     "change",
     [
@@ -313,9 +320,7 @@ def _mutated(manifest: SourceManifest, change) -> dict:
         lambda r: r.pop("coverage"),
         lambda r: r["dependencies"][0].update(path="../../etc/passwd"),
         lambda r: r["dependencies"][0].update(path="/" + "a" * MAX_PATH_BYTES),
-        lambda r: (r.update(coverage="partial"), r["dependencies"][0].update(
-            path="/" + "a" * MAX_PATH_BYTES, status="unsupported", object_id=None
-        )),
+        _oversize_unsupported_path,
     ],
 )
 def test_malformed_record_is_unknown(repo: Path, change) -> None:

@@ -137,14 +137,13 @@ def compare_manifests(
     base_changed = previous.revision != current.revision
     changed = _changed_paths(previous, current)
     if "partial" in (previous.coverage, current.coverage):
-        return ManifestComparison(
-            False, "coverage-incomplete", changed, base_changed, old_digest, new_digest
-        )
-    if changed:
-        return ManifestComparison(
-            False, "dependencies-changed", changed, base_changed, old_digest, new_digest
-        )
-    return ManifestComparison(True, "unchanged", (), base_changed, old_digest, new_digest)
+        reason = "coverage-incomplete"
+    elif changed:
+        reason = "dependencies-changed"
+    else:
+        reason = "unchanged"
+    current_now = reason == "unchanged"
+    return ManifestComparison(current_now, reason, changed, base_changed, old_digest, new_digest)
 
 
 def retain_bound_approvals(
