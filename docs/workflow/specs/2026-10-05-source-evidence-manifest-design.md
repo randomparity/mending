@@ -56,7 +56,12 @@ changes.
   3. dependency paths, roles, statuses or blob IDs differ → not current,
      `dependencies-changed`, `changed_paths` sorted;
   4. otherwise current, `unchanged` — a base change that touched no
-     dependency (`base_changed` true) keeps eligibility.
+     dependency (`base_changed` true) keeps eligibility. This reads #24's
+     "base or relevant dependency change" through its own qualifier: broad
+     invalidation is the stated allowance only where coverage is
+     incomplete, and the "unrelated edits with complete dependency
+     coverage" fixture is distinct from the dependency-edit fixtures.
+     `base_changed` stays reported so a caller can be stricter.
 
   Whenever both sides are manifests, `changed_paths` lists every path whose
   role, status or blob ID differs or that exists on one side only, so a
