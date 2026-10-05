@@ -184,14 +184,21 @@ reservation persisted, so the next call takes the replay path.
 
 1. **Boundary inventory** — added: Mending reads `gh pr list`/`gh issue list`
    output (issue/PR bodies written by the host or anyone with write access) and
-   `git worktree list` output. Widened: none.
+   `git worktree list` output; replay passes the state-recorded `repository`
+   and `repo_root` as `gh --repo` and `git -C` values; the `/proc` marker scan
+   now gates replay; lookup errors print up to 200 characters of `gh`/`git`
+   stderr to stdout. Widened: none.
 2. **Actor model** — the host model and anyone able to open issues/PRs in the
    configured repository can write bodies containing a tag. Trust stays with
-   the operator's configuration and the local state file.
-3. **Control per boundary** — `gh` and `git` run with fixed argv (no shell);
-   the attempt ID is a Mending-generated value used only for exact string
+   the operator's configuration, the local state file (0700, owned by the
+   repair account), and same-account processes.
+3. **Control per boundary** — `gh` and `git` run as list argv (no shell) whose
+   only variable values are config- or state-sourced option arguments; the
+   attempt ID is a Mending-generated value used only for exact string
    comparison. JSON is parsed with `json.loads` and only `url` and `body`
-   strings are read; non-string or missing fields are skipped.
+   strings are read; non-string or missing fields are skipped. The marker scan
+   matches whole NUL-delimited environment entries. Error text is a bounded
+   stderr tail; `gh` and `git` do not print credentials there.
    References are recorded, never executed or used to authorize anything, so a
    forged tag can at most add a URL to the record.
 4. **Explicitly out of scope** — authenticating who wrote a tagged body:
