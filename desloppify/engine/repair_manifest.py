@@ -263,12 +263,10 @@ def _parse_record(record: object) -> SourceManifest:
 def _parse_dependency(entry: object) -> Dependency:
     if not isinstance(entry, Mapping):
         raise ValueError("invalid dependency")
-    path, role, status, object_id = (
-        entry["path"], entry["role"], entry["status"], entry["object_id"]
-    )
+    path, role, status, object_id = (entry[k] for k in ("path", "role", "status", "object_id"))
     if not isinstance(path, str) or role not in ROLES or status not in STATUSES:
         raise ValueError("invalid dependency field")
-    if (status == "present") != _is_object_id(object_id) or (object_id is not None and status != "present"):
+    if not (_is_object_id(object_id) if status == "present" else object_id is None):
         raise ValueError("object id does not match status")
     return Dependency(path, role, status, object_id)
 

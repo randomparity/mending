@@ -11,8 +11,10 @@ the comparison, and approval rebinding. Nothing calls it yet; #25 wires it.
 
 **Tech stack:** Python 3.11+, stdlib only, installed `git` CLI, pytest.
 
-Expected implementation size: 380–450 changed lines (M) — ~190 lines for the
-module and ~220 for one test file covering seven Success items.
+Expected implementation size: 560–600 changed lines (M) — measured after the
+build: ~290 module lines and ~305 test lines. The authored 380–450 omitted
+docstrings, `__all__`, the stored-record validator's field checks, and the
+parametrized cases the design review added; scope is unchanged.
 
 ## Global Constraints
 

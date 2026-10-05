@@ -300,6 +300,8 @@ def test_malformed_record_is_unknown(repo: Path, change) -> None:
     assert isinstance(manifest_from_record(record), AnalysisUnknown)
 
 
-@pytest.mark.parametrize("record", [None, "manifest", [], {"schema": "desloppify-source-manifest:v1"}])
+@pytest.mark.parametrize(
+    "record", [None, "manifest", [], {"schema": "desloppify-source-manifest:v1"}]
+)
 def test_non_record_is_unknown(record: object) -> None:
     assert isinstance(manifest_from_record(record), AnalysisUnknown)
