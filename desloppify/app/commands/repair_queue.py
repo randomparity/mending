@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from typing import Any
@@ -13,8 +14,13 @@ from desloppify.engine._state.persistence import load_state, state_lock
 from desloppify.engine.repair_queue import (
     GitHubIssueClient,
     PromotionCandidate,
+    RepairRecordError,
     candidate_from_issue,
+    concern_hashes,
+    concern_key,
+    legacy_marker,
     matching_record,
+    normalize_record,
 )
 
 
@@ -43,8 +49,7 @@ def _revalidate(args: argparse.Namespace, client: Any) -> None:
             raise CommandError("concern is not current and eligible for revalidation")
         detail = issue["detail"]
         detail["github_repair_revalidated"] = {
-            "marker": candidate.marker,
-            "repository": repository,
+            **_record_base(candidate),
             "attestation": attestation,
         }
     print(f"Revalidated {args.issue_id} for {repository}.")
@@ -60,64 +65,122 @@ def _recover(args: argparse.Namespace, client: Any) -> None:
             detail = issue.get("detail") if isinstance(issue, Mapping) else None
             if not isinstance(detail, dict):
                 continue
-            pending = detail.get("github_repair_pending")
-            if isinstance(pending, Mapping) and pending.get("marker") == args.marker and pending.get("repository") == repository:
+            if _pending_matches(detail, repository, args.marker):
                 detail.pop("github_repair_pending", None)
                 cleared += 1
     print(f"Cleared {cleared} pending repair attempt(s).")
 
 
-def _sync(args: argparse.Namespace, client: Any) -> None:
-    repository = args.repository
-    state = _read_state(args)
-    for issue in _issues(state).values():
-        candidate = candidate_from_issue(issue, repository)
-        if candidate is None:
-            continue
-        detail = issue["detail"]
-        link = matching_record(detail, "github_repair", candidate)
-        if link is not None:
-            _read_link(args, client, candidate, link)
-            continue
-        pending = matching_record(detail, "github_repair_pending", candidate)
-        matches = _search(client, candidate)
-        if matches is None:
-            print(f"Skipped {candidate.issue_id}: GitHub search failed.")
-            continue
-        if pending is not None:
-            _adopt_if_unique(args, candidate, matches, "github_repair_pending")
-            continue
-        if len(matches) == 1:
-            _adopt_if_unique(args, candidate, matches, None)
-        elif len(matches) > 1:
-            print(f"Skipped {candidate.issue_id}: marker is ambiguous.")
-        elif args.apply:
-            _create_once(args, client, candidate)
-        else:
-            print(f"Would create a repair issue for {candidate.issue_id}.")
-
-
-def _read_link(args: argparse.Namespace, client: Any, candidate: PromotionCandidate, link: Mapping[str, Any]) -> None:
-    number = link.get("number")
-    if isinstance(number, bool) or not isinstance(number, int):
-        print(f"Skipped {candidate.issue_id}: linked issue record is malformed.")
-        return
+def _pending_matches(detail: Mapping[str, Any], repository: str, marker: str) -> bool:
+    """Match a pending record by its literal key/legacy marker or by its normalized key."""
+    pending = detail.get("github_repair_pending")
+    if not isinstance(pending, Mapping) or pending.get("repository") != repository:
+        return False
+    if marker in (pending.get("key"), pending.get("marker")):
+        return True
+    hashes = concern_hashes(detail)
+    if hashes is None:
+        return False
     try:
-        issue = client.view(candidate.repository, number)
+        record = normalize_record("github_repair_pending", pending, repository, *hashes)
+    except RepairRecordError:
+        return False
+    return record is not None and record["key"] == marker
+
+
+def _sync(args: argparse.Namespace, client: Any) -> None:
+    state = _read_state(args)
+    candidates = _candidates(state, args.repository)
+    key_counts = Counter(candidate.key for candidate in candidates)
+    for candidate in candidates:
+        if key_counts[candidate.key] > 1:
+            print(f"Skipped {candidate.issue_id}: concern key is ambiguous across work items.")
+        else:
+            _sync_one(args, client, state, candidate)
+
+
+def _sync_one(
+    args: argparse.Namespace, client: Any, state: Mapping[str, Any], candidate: PromotionCandidate
+) -> None:
+    detail = _issues(state)[candidate.issue_id]["detail"]
+    try:
+        link = matching_record(detail, "github_repair", candidate)
+        pending = matching_record(detail, "github_repair_pending", candidate)
+    except RepairRecordError:
+        print(
+            f"Skipped {candidate.issue_id}: repair record is unrecognized; reconcile it manually."
+        )
+        return
+    if link is not None:
+        _read_link(args, client, candidate, link, expected_key="github_repair")
+        return
+    if pending is None and _resolved_by_peer(args, client, state, candidate):
+        return
+    matches = _search(client, candidate)
+    if matches is None:
+        print(f"Skipped {candidate.issue_id}: GitHub search failed.")
+    elif pending is not None:
+        _adopt_if_unique(args, candidate, matches, "github_repair_pending")
+    elif len(matches) == 1:
+        _adopt_if_unique(args, candidate, matches, None)
+    elif len(matches) > 1:
+        print(f"Skipped {candidate.issue_id}: concern key is ambiguous on GitHub.")
+    elif args.apply:
+        _create_once(args, client, candidate)
+    else:
+        print(f"Would create a repair issue for {candidate.issue_id}.")
+
+
+def _resolved_by_peer(
+    args: argparse.Namespace, client: Any, state: Mapping[str, Any], candidate: PromotionCandidate
+) -> bool:
+    """Park on or adopt another work item's record for this key; False when none exists."""
+    peers = _peer_records(state, candidate)
+    if any(kind != "github_repair" or record is None for _, kind, record in peers):
+        print(
+            f"Skipped {candidate.issue_id}: another work item holds an unresolved record "
+            "for this concern key."
+        )
+        return True
+    peer_links = {record["number"]: record for _, _, record in peers if record is not None}
+    if len(peer_links) > 1:
+        print(f"Skipped {candidate.issue_id}: local links for this concern key conflict.")
+    elif peer_links:
+        _read_link(args, client, candidate, next(iter(peer_links.values())), expected_key=None)
+    return bool(peer_links)
+
+
+def _read_link(
+    args: argparse.Namespace,
+    client: Any,
+    candidate: PromotionCandidate,
+    link: Mapping[str, Any],
+    *,
+    expected_key: str | None,
+) -> None:
+    try:
+        issue = client.view(candidate.repository, link["number"])
     except (RuntimeError, ValueError):
         print(f"Skipped {candidate.issue_id}: linked issue could not be read.")
         return
     if args.apply:
-        _write_link(args, candidate, issue, expected_key="github_repair")
+        _write_link(args, candidate, issue, expected_key=expected_key)
     else:
         print(f"Would reconcile linked issue #{issue.number} for {candidate.issue_id}.")
 
 
 def _search(client: Any, candidate: PromotionCandidate) -> list[Any] | None:
+    """Search the stable key, the identity digest, and the current legacy marker."""
+    terms = (
+        candidate.key,
+        candidate.identity,
+        legacy_marker(candidate.identity, candidate.evidence_digest),
+    )
     try:
-        return client.search(candidate.repository, candidate.marker)
+        found = [issue for term in terms for issue in client.search(candidate.repository, term)]
     except (RuntimeError, ValueError):
         return None
+    return list({issue.number: issue for issue in found}.values())
 
 
 def _adopt_if_unique(args: argparse.Namespace, candidate: PromotionCandidate, matches: list[Any], expected_key: str | None) -> None:
@@ -136,15 +199,12 @@ def _create_once(args: argparse.Namespace, client: Any, candidate: PromotionCand
         detail = _issues(state)[candidate.issue_id]["detail"]
         if (
             fresh != candidate
-            or matching_record(detail, "github_repair", candidate)
-            or matching_record(detail, "github_repair_pending", candidate)
+            or _has_record(detail, candidate)
+            or _key_claimed_elsewhere(state, candidate)
         ):
             print(f"Skipped {candidate.issue_id}: concern changed while preparing create.")
             return
-        detail["github_repair_pending"] = {
-            "marker": candidate.marker,
-            "repository": candidate.repository,
-        }
+        detail["github_repair_pending"] = _record_base(candidate)
     try:
         client.create(candidate.repository, candidate)
     except (RuntimeError, ValueError):
@@ -164,18 +224,79 @@ def _write_link(args: argparse.Namespace, candidate: PromotionCandidate, issue: 
             print(f"Skipped {candidate.issue_id}: result is stale.")
             return
         detail = _issues(state)[candidate.issue_id]["detail"]
-        if expected_key and matching_record(detail, expected_key, candidate) is None:
+        if expected_key and _expected_record(detail, expected_key, candidate) is None:
             print(f"Skipped {candidate.issue_id}: result is stale.")
             return
         detail["github_repair"] = {
-            "marker": candidate.marker,
-            "repository": candidate.repository,
+            **_record_base(candidate),
             "number": issue.number,
             "url": issue.url,
             "state": issue.state,
         }
         detail.pop("github_repair_pending", None)
     print(f"Linked {candidate.issue_id} to issue #{issue.number}.")
+
+
+def _record_base(candidate: PromotionCandidate) -> dict[str, str]:
+    return {
+        "key": candidate.key,
+        "repository": candidate.repository,
+        "evidence_digest": candidate.evidence_digest,
+    }
+
+
+def _has_record(detail: Mapping[str, Any], candidate: PromotionCandidate) -> bool:
+    try:
+        return any(
+            matching_record(detail, kind, candidate) is not None
+            for kind in ("github_repair", "github_repair_pending")
+        )
+    except RepairRecordError:
+        return True
+
+
+def _expected_record(
+    detail: Mapping[str, Any], kind: str, candidate: PromotionCandidate
+) -> Mapping[str, Any] | None:
+    try:
+        return matching_record(detail, kind, candidate)
+    except RepairRecordError:
+        return None
+
+
+def _candidates(state: Mapping[str, Any], repository: str) -> list[PromotionCandidate]:
+    found = (candidate_from_issue(issue, repository) for issue in _issues(state).values())
+    return [candidate for candidate in found if candidate is not None]
+
+
+def _peer_records(
+    state: Mapping[str, Any], candidate: PromotionCandidate
+) -> list[tuple[str, str, dict[str, Any] | None]]:
+    """Return link/pending records other work items hold for this key; ``None`` if unrecognized."""
+    peers: list[tuple[str, str, dict[str, Any] | None]] = []
+    for issue_id, issue in _issues(state).items():
+        if issue_id == candidate.issue_id or not isinstance(issue, Mapping):
+            continue
+        detail = issue.get("detail")
+        hashes = concern_hashes(detail) if isinstance(detail, Mapping) else None
+        if hashes is None or concern_key(candidate.repository, hashes[0]) != candidate.key:
+            continue
+        for kind in ("github_repair", "github_repair_pending"):
+            if detail.get(kind) is None:
+                continue
+            try:
+                record = normalize_record(kind, detail[kind], candidate.repository, *hashes)
+            except RepairRecordError:
+                record = None
+            peers.append((issue_id, kind, record))
+    return peers
+
+
+def _key_claimed_elsewhere(state: Mapping[str, Any], candidate: PromotionCandidate) -> bool:
+    holders = [
+        peer for peer in _candidates(state, candidate.repository) if peer.key == candidate.key
+    ]
+    return len(holders) > 1 or bool(_peer_records(state, candidate))
 
 
 def _candidate_by_id(state: Mapping[str, Any], issue_id: str, repository: str) -> PromotionCandidate | None:
