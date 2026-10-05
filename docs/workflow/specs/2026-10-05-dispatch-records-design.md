@@ -95,9 +95,11 @@ After the existing lease-match check:
 1. **Replay.** If `cycle_state.dispatch` is not `None`, never call `run`:
    - `worker_alive` is `True` -> park `dispatch-in-flight`; `None` -> park
      `dispatch-unverified`. Nothing else is looked up or charged, and no
-     failure is recorded even when a reservation is held: `--dispose-attempt`
-     must stay refused while the worker may still run, or a disposition could
-     start a second worker. The first replay after it exits records the failure.
+     failure is recorded even when a reservation is held, so replay itself never
+     makes the attempt disposable while its worker may run; the first replay
+     after it exits records the failure. Failures that other paths record
+     (reconcile and receipt limits) stay disposable as today; refusing a new
+     attempt while a recorded worker lives belongs to #31's composition.
    - Otherwise call `references` with the record's repository, root, and prior
      worktrees (an `unknown` record has none, so it uses the request's root,
      the config's repository, and no prior worktrees, and records no worktrees
@@ -117,8 +119,11 @@ After the existing lease-match check:
    parks `dispatch-lookup-unavailable` before anything is admitted.
 4. The existing admission check.
 5. **Intent.** Set `dispatch = DispatchRecord(attempt, "intent", session ID,
-   repository, repo root, prior worktrees)` and persist it in the same
-   `save_state` as the reservation, before `run`.
+   repository, resolved repo root, prior worktrees)` and persist it in the same
+   `save_state` as the reservation, before `run`. The intent precedes every
+   external side effect (host launch, publication); the only earlier I/O is the
+   read-only local snapshot it records, and the lease carrying the attempt
+   correlation was persisted by `begin` before that.
 6. **Return.** A `parked` outcome launched nothing, so `dispatch` returns to
    `None` (the attempt may dispatch again, as #29 allows). Any other outcome
    sets phase `returned` and its `outcome`, settles as in #29, and persists

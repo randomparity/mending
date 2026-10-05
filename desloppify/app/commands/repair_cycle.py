@@ -274,7 +274,8 @@ def _dispatch_host(
         return None
     try:
         prior_worktrees = adapter.worktrees(request.repo_root)
-    except HostLookupError:
+    except HostLookupError as exc:
+        print(f"Repair cycle lookup failed: {exc}")
         _park(state, cycle_state, "dispatch-lookup-unavailable")
         return None
     admission = cycle_state.admit()
@@ -286,7 +287,7 @@ def _dispatch_host(
         "intent",
         host_session_id(lease.attempt_id),
         adapter.repository,
-        str(request.repo_root),
+        str(request.repo_root.resolve()),
         prior_worktrees,
     )
     cycle_state.dispatch = record
@@ -353,7 +354,8 @@ def _add_references(
             Path(record.repo_root) if record.repo_root else request.repo_root,
             record.prior_worktrees,
         )
-    except HostLookupError:
+    except HostLookupError as exc:
+        print(f"Repair cycle lookup failed: {exc}")
         return False
     # An unknown record has no pre-launch snapshot, so no worktree can be attributed to it.
     worktrees = () if record.phase == "unknown" else found.worktrees

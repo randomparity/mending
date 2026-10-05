@@ -418,6 +418,7 @@ import os, sys
 kind = sys.argv[1]
 mode = os.environ.get("FAKE_GH_MODE", "ok")
 if mode == "fail":
+    print("denied", file=sys.stderr)
     sys.exit(1)
 if mode == "garbage":
     print("not json")
@@ -479,15 +480,16 @@ def test_references_keep_tagged_bodies_and_new_worktrees(lookup, tmp_path, monke
     assert all("--repo owner/repository --state all --limit 100" in call for call in calls)
 
 
-@pytest.mark.parametrize("mode", ["fail", "garbage"])
-def test_references_fail_closed(lookup, monkeypatch, mode):
+@pytest.mark.parametrize(("mode", "message"), [("fail", "gh pr list exited 1: denied"),
+                                                 ("garbage", "gh pr list returned invalid JSON")])
+def test_references_fail_closed(lookup, monkeypatch, mode, message):
     monkeypatch.setenv("FAKE_GH_MODE", mode)
-    with pytest.raises(HostLookupError):
+    with pytest.raises(HostLookupError, match=message):
         lookup["adapter"].references("a1", "owner/repository", lookup["repo"], ())
 
 
 def test_lookup_without_gh_or_git_repository_fails_closed(lookup, tmp_path, monkeypatch):
-    with pytest.raises(HostLookupError):
+    with pytest.raises(HostLookupError, match="git worktree list exited"):
         lookup["adapter"].worktrees(tmp_path / "bin")
     monkeypatch.setenv("FAKE_GH_PR", "{}")
     with pytest.raises(HostLookupError):

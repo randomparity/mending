@@ -39,6 +39,7 @@ _POLL_SECONDS = 0.05
 _CANCEL_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
 _LOOKUP_SECONDS = 10.0
 _LOOKUP_LIMIT = "100"
+_LOOKUP_DETAIL_CHARS = 200
 
 
 def host_session_id(attempt_id: str) -> str:
@@ -198,7 +199,9 @@ class ClaudeHostAdapter:
 
     def worktrees(self, repo_root: Path) -> tuple[str, ...]:
         """Return the repository's worktree paths."""
-        listing = _output(["git", "-C", str(repo_root), "worktree", "list", "--porcelain"])
+        listing = _output(
+            "git worktree list", ["git", "-C", str(repo_root), "worktree", "list", "--porcelain"]
+        )
         return tuple(
             line.removeprefix("worktree ")
             for line in listing.splitlines()
@@ -351,7 +354,7 @@ def _manifest(skills_dir: str) -> dict[str, Any] | None:
 
 def _tagged(kind: str, repository: str, tag: str) -> tuple[str, ...]:
     """Return URLs of the repository's recent issues or PRs whose body has the tag line."""
-    output = _output([
+    output = _output(f"gh {kind} list", [
         "gh", kind, "list", "--repo", repository, "--state", "all",
         "--limit", _LOOKUP_LIMIT, "--json", "url,body",
     ])
@@ -371,20 +374,21 @@ def _tagged(kind: str, repository: str, tag: str) -> tuple[str, ...]:
     )
 
 
-def _output(argv: list[str]) -> str:
+def _output(label: str, argv: list[str]) -> str:
     """Run a fixed lookup command and return its stdout; raise HostLookupError on failure."""
     executable = shutil.which(argv[0])
     if executable is None:
-        raise HostLookupError(f"{argv[0]} is not installed")
+        raise HostLookupError(f"{label}: {argv[0]} is not installed")
     try:
         done = subprocess.run(  # nosec B603
             [executable, *argv[1:]],
             capture_output=True, text=True, timeout=_LOOKUP_SECONDS, check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise HostLookupError(f"{argv[0]} {argv[1]} could not run") from exc
+        raise HostLookupError(f"{label} could not run: {exc}") from exc
     if done.returncode != 0:
-        raise HostLookupError(f"{argv[0]} {argv[1]} exited {done.returncode}")
+        detail = done.stderr.strip()[-_LOOKUP_DETAIL_CHARS:]
+        raise HostLookupError(f"{label} exited {done.returncode}: {detail}")
     return done.stdout
 
 

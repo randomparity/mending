@@ -907,7 +907,7 @@ def test_dispatch_persists_reservation_before_launch(tmp_path) -> None:
 
     assert (seen[0]["reserved_cost_usd"], seen[0]["reserved_calls"]) == ("2.00", 10)
     assert seen[0]["dispatch"] == DispatchRecord(
-        "a1", "intent", host_session_id("a1"), REPOSITORY, ".", ("/repo",)
+        "a1", "intent", host_session_id("a1"), REPOSITORY, str(Path(".").resolve()), ("/repo",)
     ).to_mapping()
     settled = json.loads(state_path.read_text())["repair_cycle"]
     assert (settled["reserved_calls"], settled["consumed_calls"]) == (0, 3)
@@ -950,7 +950,7 @@ def test_returned_dispatch_is_persisted_before_reference_lookup(tmp_path) -> Non
     assert seen[0]["dispatch"]["phase"] == "returned"
     assert seen[0]["dispatch"]["outcome"] == "completed"
     assert (seen[0]["reserved_calls"], seen[0]["consumed_calls"]) == (0, 3)
-    assert host.lookups == [("a1", REPOSITORY, Path("."), ("/repo",))]
+    assert host.lookups == [("a1", REPOSITORY, Path(".").resolve(), ("/repo",))]
     recorded = json.loads(state_path.read_text())["repair_cycle"]["dispatch"]
     assert recorded["pull_requests"] == ["https://example.invalid/pull/1"]
 
