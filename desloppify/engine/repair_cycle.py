@@ -229,11 +229,10 @@ class CycleState:
     @property
     def awaiting_disposition(self) -> bool:
         """Return whether a failed attempt blocks new work until an operator disposes it."""
-        lease = self.current_lease
         return (
-            lease is not None
+            self.current_lease is not None
             and self.attempt_failure is not None
-            and self.disposed_attempt != lease.attempt_id
+            and not self.disposed
         )
 
     @property
