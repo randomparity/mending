@@ -9,7 +9,8 @@ window, and limits.
 
 ## Install
 
-Install `desloppify` at `/usr/local/bin/desloppify`. Create the dedicated
+Perform these steps only after the pilot and approval above. Install
+`desloppify` at `/usr/local/bin/desloppify`. Create the dedicated
 unprivileged `mending` account and make it the owner of the one target checkout
 at `/var/lib/mending/repository`. Copy the two unit files in this directory to
 `/etc/systemd/system/`.
@@ -52,8 +53,8 @@ window. With no timezone suffix, systemd interprets it in the host system
 timezone. Do not add a second window check to configuration. `Persistent=false`
 deliberately skips missed windows rather than catching them up.
 
-After the pilot and that approval, copy the units, create the restricted
-files, and activate the timer:
+After copying the units and creating the restricted files, activate the
+timer:
 
 ```sh
 systemctl daemon-reload

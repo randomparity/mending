@@ -2,7 +2,7 @@
 
 [![PyPI version](https://img.shields.io/pypi/v/desloppify)](https://pypi.org/project/desloppify/) ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
 
-Desloppify gives your AI coding agent the tools to identify, understand, and systematically improve codebase quality. It combines mechanical detection (dead code, duplication, complexity) with subjective LLM review (naming, abstractions, module boundaries), then works through a prioritized fix loop. State persists across scans so it chips away over multiple sessions, and the scoring is designed to resist gaming.
+Desloppify gives your AI coding agent the tools to identify, understand, and systematically improve codebase quality. It combines mechanical detection (dead code, duplication, complexity) with subjective LLM review (naming, abstractions, module boundaries), then helps prioritize and track fixes. State persists across scans so it chips away over multiple sessions, and the scoring is designed to resist gaming.
 
 <img src="assets/explained.png" width="100%">
 
@@ -16,7 +16,8 @@ Currently supports 29 languages — full plugin depth for TypeScript, Python, C#
 
 Mending uses this analyzer as evidence for a bounded, host-driven maintenance
 loop, defined in [ADR 0007](docs/adr/0007-host-driven-maintenance.md). The goal
-is worthwhile, verified work, not a higher score:
+is worthwhile, verified work, not a higher score. The contract, most of which
+is still being built (see Planned below):
 
 - Mending owns scan history, concern identity, dismissals, source-bound
   revalidation, candidate selection, and durable repair-attempt state.
@@ -29,12 +30,15 @@ A run ends with a verified, reviewed draft PR for one small repair, an
 architecture proposal awaiting a human decision, a parked action, or a no-op.
 A no-op is a successful result. Scores are optional diagnostics: there are no
 finding quotas or score targets, and a score is never a reason to defer
-required tests. Discovery, publication, repair execution, and merge are
-separately controlled; without explicit operator opt-in for the repository,
-or without host and budget enforcement, that action parks. Text in an issue,
-a model finding, or a proof string never grants authority.
+required tests. On the host-driven path, discovery, publication, repair
+execution, and merge are separately controlled; without explicit operator
+opt-in for the repository, or without host and budget enforcement, that
+action parks. Text in an issue, a model finding, or a proof string never
+grants authority.
 
-Available today:
+Available today, with the operator's flags as the only controls: `sync
+--apply` publishes to GitHub when you pass it, and `--attest` records your
+own attestation; neither rereads current source.
 
 ```bash
 desloppify scan --path .          # refresh findings and scan history
