@@ -24,7 +24,14 @@ Branch `feat/fork-skill-source-38`, base `main`.
   line 3. Set `SKILL_VERSION = 8`. Run `make sync-docs`.
 - Verify: `test_bundled_sync.py`, `test_setup.py`, update-skill tests pass.
 
-## Task 3 — records
+## Task 3 — scan agent guide
+
+- Test first, in `desloppify/tests/commands/test_direct_coverage_scan_plan_modules.py`:
+  `build_workflow_guide` has no "repeat until plan clear" or "at target?" and
+  has "nothing left is worth fixing". Red on the current text.
+- Replace the two-loops sentence in `desloppify/app/commands/scan/reporting/text.py`.
+
+## Task 4 — records
 
 - README "Using the analyzer directly" note; #16 spec deferral paragraph and
   accepted-failure line point at #38 and ADR 0011.

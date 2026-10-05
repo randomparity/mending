@@ -34,13 +34,20 @@ both out. Issue #38. Decision: [ADR 0011](../../adr/0011-fork-hosted-skill-sourc
   - Version marker 7 → 8.
 - Overlays: `docs/OPENCODE.md` drops "health score questions" from its trigger
   line. The other overlays hold review-batching mechanics only (excluded).
+- Scan agent guide (`scan/reporting/text.py`): the skill now points agents at
+  the scan's instructions, so the guide's "outer loop … at target?" and "inner
+  loop … repeat until plan clear" sentence becomes the bounded-run sentence.
+  The operator's exclusion of scan/review agent strings excepts strings that
+  say drain the queue; this is the only one found. The guide's other score
+  wording stays (excluded).
 - `SKILL_VERSION` 7 → 8; `make sync-docs` refreshes `desloppify/data/global/`.
 - README "Using the analyzer directly" note and the #16 spec deferral record
   the new source.
 
 Unchanged: `setup` (reads the bundled copy), section-replacement and
 frontmatter logic, review/triage/plan command reference, overlay review
-mechanics, `docs/scoring.md`, runtime CLI strings.
+mechanics, `docs/scoring.md`, runtime CLI strings other than the drain
+sentence above.
 
 ### Failure model
 
@@ -58,7 +65,11 @@ mechanics, `docs/scoring.md`, runtime CLI strings.
   `desloppify/app/commands/helpers/transition_messages.py`), the scan reminder
   ("The goal is to maximize strict scores",
   `desloppify/intelligence/narrative/reminders_rules_followup.py`), and the
-  status hint ("it's your north star", `desloppify/app/commands/status/summary.py`).
+  status hint ("it's your north star", `desloppify/app/commands/status/summary.py`),
+  the scan score guide and LLM header ("your north star", "The goal is to
+  maximize strict scores", `scan/reporting/summary.py`, `agent_context.py`),
+  and the `next` nudge ("North star: strict … target",
+  `next/render_nudges.py`).
 - Covered elsewhere: Adept skills and host adapter content (#19).
 
 ## Success
@@ -70,5 +81,7 @@ mechanics, `docs/scoring.md`, runtime CLI strings.
    or package; a test guards the removed upstream phrases against a re-import.
 3. The bundled `SKILL.md` marker equals `SKILL_VERSION` (new test) and every
    bundled doc equals its `docs/` copy (existing test).
-4. Guardrails: `make lint typecheck arch ci-contracts tests tests-full
+4. `build_workflow_guide` contains no "repeat until plan clear" or "at
+   target?" (new test).
+5. Guardrails: `make lint typecheck arch ci-contracts tests tests-full
    package-smoke` and the ADR records gate pass.

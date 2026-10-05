@@ -63,3 +63,11 @@ def test_direct_coverage_scan_plan_go_modules_smoke():
     assert callable(resolve_cmd_mod.cmd_resolve)
     assert callable(resolve_selection_mod._validate_resolve_inputs)
     assert callable(attestation_mod.validate_attestation)
+
+
+def test_scan_workflow_guide_sets_no_drain_loop_or_score_target() -> None:
+    """ADR 0007: the scan's agent guide bounds the run instead of draining the queue."""
+    guide = scan_reporting_text_mod.build_workflow_guide("attest")
+    assert "repeat until plan clear" not in guide
+    assert "at target?" not in guide
+    assert "nothing left is worth fixing" in guide
