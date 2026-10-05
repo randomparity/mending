@@ -193,7 +193,7 @@ Verification:
   error) -> fail `dispatch-outcome-unknown`; returned -> park
   `already-dispatched`. The fake records the repository/root it was asked for
   (must be the record's), and a pre-populated reference survives a lookup that
-  returns fewer. Red: `run` called.
+  returns fewer; an `unknown` record records no worktrees. Red: `run` called.
 - Mode: focused-test — intent on disk inside `run`
   (extend `test_dispatch_persists_reservation_before_launch`): phase `intent`,
   `session_id == host_session_id("a1")`, repository, root, prior worktrees.

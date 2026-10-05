@@ -100,8 +100,10 @@ After the existing lease-match check:
      start a second worker. The first replay after it exits records the failure.
    - Otherwise call `references` with the record's repository, root, and prior
      worktrees (an `unknown` record has none, so it uses the request's root,
-     the config's repository, and no prior worktrees) and add what it finds to
-     the record. A `HostLookupError` adds nothing.
+     the config's repository, and no prior worktrees, and records no worktrees
+     because without a pre-launch snapshot every worktree would be
+     misattributed) and add what it finds to the record. A `HostLookupError`
+     adds nothing.
    - Then: a reservation still held -> fail `unsettled-reservation` (#29's
      reason, spend unknown); phase `unknown` -> fail
      `dispatch-outcome-unknown`; a `HostLookupError` -> park
@@ -161,6 +163,10 @@ reservation persisted, so the next call takes the replay path.
      seen by `worker_alive` (ADR 0010, Consequences).
    - A post-return lookup failure leaves the reference lists as they were; the
      outcome and settlement are already on disk.
+   - Running a build from before this change against state this change wrote
+     drops `dispatch` and `attempt_history` on its next save. Bounded: a
+     re-upgrade decodes the lease as `unknown` and never relaunches; downgrades
+     are outside the named deployments.
 4. **Covered elsewhere**
    - Composing `_dispatch_host` into `repair-cycle`, and one active repair per
      window with an open PR keeping the repair active: #31.
@@ -194,7 +200,7 @@ reservation persisted, so the next call takes the replay path.
 | `begin` archives the replaced attempt; a refused `begin` leaves history unchanged | focused engine test |
 | Intent (with repository, root, prior worktrees) persisted before `run` | on-disk read inside a fake `run` |
 | Returned phase and settlement persisted before the post-return lookup | on-disk read inside a fake `references` |
-| Replay never calls `run`: alive, unverified, lookup failure (returned / held reservation / unknown), unsettled, unknown, already dispatched; uses recorded repository and root; references only grow | parametrized `_dispatch_host` test with a fake host |
+| Replay never calls `run`: alive, unverified, lookup failure (returned / held reservation / unknown), unsettled, unknown (no worktrees recorded), already dispatched; uses recorded repository and root; references only grow | parametrized `_dispatch_host` test with a fake host |
 | Parked outcome clears the record; snapshot failure admits nothing | `_dispatch_host` tests |
 | `worker_alive`, `worktrees`, `references` (tagged bodies, new worktree with no PR), tag line in prompt, session-ID derivation | `test_repair_cycle_host.py` with a fake `gh` on `PATH`, a real `git` worktree, and a marked child process |
 
