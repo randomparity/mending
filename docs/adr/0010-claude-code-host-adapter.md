@@ -28,39 +28,57 @@ capabilities, after evaluating reuse of the Codex batch runner.
 - The Adept version identity is the `version` in the plugin directory's
   `.claude-plugin/plugin.json`; it must equal the configured version or the
   run parks.
-- The host runs in a new session (`start_new_session=True`), so its process
-  group ID equals its PID. Timeout or cancellation sends `SIGTERM`, then
-  `SIGKILL`, to the whole group, reaps the leader, and checks the group with
-  signal 0. An empty group is `stopped`; a group that still has members after
-  the grace period is `unknown`. The same check runs after a normal exit, so
-  a finished wrapper is not taken as proof that its workers stopped.
+- The host runs in a new session (`start_new_session=True`) with a marker
+  environment variable, `MENDING_HOST_SESSION=<session ID>`. The worker tree is
+  the host's process group plus every same-user process whose environment
+  carries the marker. Claude Code runs its tool commands in their own sessions
+  (observed: the Bash tool shell's SID differs from the `claude` process's SID,
+  Claude Code 2.1.289, Linux), so the group alone is not the tree.
+- Timeout or cancellation (`SIGINT`, `SIGTERM`, `SIGHUP` while the host runs on
+  the main thread) sends `SIGTERM`, then `SIGKILL`, to the group and to every
+  marked process, reaps the leader, and checks again. An empty tree is
+  `stopped`; any remaining member, or a missing `/proc`, is `unknown`. The same
+  check runs after a normal exit, so a finished wrapper is not taken as proof
+  that its workers stopped.
 - The session ID is derived from the durable attempt ID, so the host session
-  correlates with Mending's attempt record without a second claim system.
+  correlates with Mending's attempt record without a second claim system. It is
+  single-use: rerunning an attempt needs a new attempt ID (#30, #31).
 
 ## Consequences
 
 - Budget admission (#29), dispatch records (#30), and wiring into
   `repair-cycle` (#31) extend this adapter; it enforces only the deadline.
-- Verification covers the process group. A descendant that calls `setsid`
-  leaves the group and is not observed. On the timer path the systemd unit's
-  default control-group kill stops such a process when the service exits.
-- Non-Linux POSIX hosts work; Windows has no process groups and is not a
-  supported repair host.
+  `--max-budget-usd` is documented for API calls in print mode; whether it
+  bounds the deployment's auth mode is an open condition for #29.
+- A descendant that both leaves the group and clears or replaces its
+  environment, or changes user, is not observed.
+- The reported Adept version is the configured plugin directory's. The host
+  account must not enable another `adept` plugin, whose skills could shadow it.
+- The systemd unit hides home directories (`ProtectHome=true`). Running this
+  host there needs an absolute `host_executable` and a readable Claude config
+  directory with the account's credentials and permission rules exposed to the
+  unit; that wiring belongs to #31 and the live pilot to #7.
+- Linux is the only supported repair host.
 
 ## Considered & rejected
 
-- **Reuse `codex_batch.py` with the Codex CLI.** verified: `codex exec --help`
-  (codex-cli 0.160.0) lists no spending-limit option, while `claude --help`
-  lists `--max-budget-usd`. The runner also retries timed-out attempts, which
-  would launch a second worker, and its termination path
-  (`review/runner_process_impl/io.py` `_terminate_process` at `67889ca`)
+- **Do nothing.** verified: `_UnavailableAdeptCycleClient` in
+  `repair_cycle.py` at `67889ca` raises for every call; issue #27 asks for a
+  production host.
+- **Reuse `codex_batch.py`.** verified: it retries timed-out attempts
+  (`run_codex_batch` at `67889ca`), which would launch a second worker, and its
+  termination path (`review/runner_process_impl/io.py` `_terminate_process`)
   signals only the direct child.
+- **Use the Codex CLI as host.** verified: `codex exec --help` (codex-cli
+  0.160.0) offers `--sandbox` for permissions and no spending-limit option,
+  while `claude --help` lists `--max-budget-usd`. Cancellation is a process
+  property either host needs from this adapter, so usage limits decide.
 - **Keep the in-process `SIGALRM` deadline.** verified: `_call_before_deadline`
   in `repair_cycle.py` at `67889ca` returns without a deadline off the main
   thread and has no subprocess handling.
 - **Contain the tree with a cgroup or child subreaper.** judgment: complexity;
-  it needs privileges or `prctl` via ctypes for a case the systemd unit already
-  covers.
+  a cgroup needs delegated privileges, and a subreaper makes Mending reap every
+  orphan, competing with other `subprocess` users for exit statuses.
 - **Pass `--dangerously-skip-permissions`.** judgment: fit; it moves the
   permission boundary from operator configuration into code.
 - **Support both hosts.** judgment: complexity; ADR 0007 rejects a registry.
