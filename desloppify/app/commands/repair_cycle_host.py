@@ -148,10 +148,11 @@ def _preflight(
     if executable is None:
         return HostOutcome("parked", "missing-host")
     skills_dir, version = config.adept_skills_dir, config.adept_skills_version
-    if skills_dir is not None:
-        skills_dir = os.path.abspath(skills_dir)
-    manifest = None if skills_dir is None or version is None else _manifest(skills_dir)
-    if skills_dir is None or version is None or manifest is None:
+    if skills_dir is None or version is None:
+        return HostOutcome("parked", "missing-host-skills")
+    skills_dir = os.path.abspath(skills_dir)
+    manifest = _manifest(skills_dir)
+    if manifest is None:
         return HostOutcome("parked", "missing-host-skills")
     if manifest.get("name") != "adept" or manifest.get("version") != version:
         return HostOutcome("parked", "host-skills-mismatch")
