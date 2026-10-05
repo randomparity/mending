@@ -63,7 +63,9 @@ _REJECTIONS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ),
 )
 # The problem becomes the issue title, which GitHub renders outside a code span.
-_REFERENCE = re.compile(r"(?<![\w`])#\d+|\b[\w.-]+/[\w.-]+#\d+|(?<![\w`])@[A-Za-z0-9][\w-]*")
+_REFERENCE = re.compile(
+    r"(?<!\w)#\d+|\b[\w.-]+/[\w.-]+#\d+|(?i:\bGH-\d+)|(?<!\w)@[A-Za-z0-9][\w-]*"
+)
 
 
 class _Rejected(Exception):
