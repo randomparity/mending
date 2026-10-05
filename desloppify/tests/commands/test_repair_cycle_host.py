@@ -212,6 +212,15 @@ def test_completed_run_reports_identity(host, tmp_path, monkeypatch):
     assert f"Attempt ID: {request.attempt_id}" in seen["stdin"]
 
 
+@pytest.mark.parametrize(("cost", "flag"), [("1E-7", "0.0000001"), ("1E+1", "10")])
+def test_budget_flag_is_fixed_point(host, tmp_path, monkeypatch, cost, flag):
+    monkeypatch.setenv("FAKE_HOST_MODE", "ok")
+    admission = BudgetAdmission(Decimal(cost), 100)
+    ClaudeHostAdapter(_config(host)).run(_request(tmp_path), admission)
+    argv = json.loads(host["record"].read_text())["argv"]
+    assert argv[argv.index("--max-budget-usd") + 1] == flag
+
+
 @pytest.mark.parametrize(
     ("mode", "state", "reason", "cost"),
     [

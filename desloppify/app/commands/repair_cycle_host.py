@@ -137,7 +137,7 @@ class ClaudeHostAdapter:
         session_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"mending-attempt:{request.attempt_id}"))
         command = [
             executable, "-p", "--output-format", "stream-json", "--verbose",
-            "--forward-subagent-text", "--max-budget-usd", str(admission.cost_usd),
+            "--forward-subagent-text", "--max-budget-usd", format(admission.cost_usd, "f"),
             "--model", str(self._config.model),
             "--session-id", session_id,
             "--plugin-dir", skills_dir,
