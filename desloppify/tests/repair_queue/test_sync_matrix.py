@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from desloppify.app.commands.repair_queue import cmd_repair_queue
+from desloppify.base.exception_sets import CommandError
 from desloppify.engine._state.merge_issues import upsert_issues
 from desloppify.engine.repair_manifest import SourceCheckout
 from desloppify.engine.repair_queue import GitHubIssue, concern_key
@@ -206,3 +207,19 @@ def test_dependency_change_during_create_keeps_pending_then_adopts(repo: Path) -
     assert client.creates == 1
     assert _detail(state)["github_repair"]["number"] == 101
     assert "github_repair_pending" not in _detail(state)
+
+
+def test_revalidate_names_unbound_dependency(repo: Path) -> None:
+    state = _state()
+    _detail(state)["related_files"] = ["./src/sibling.py"]
+    with pytest.raises(CommandError, match=r"\./src/sibling\.py is unsupported"):
+        _run("revalidate", state, repo, _GitHub(), issue_id=next(iter(state["work_items"])))
+    assert "github_repair_revalidated" not in _detail(state)
+
+
+def test_mistyped_revision_keeps_revalidation(repo: Path) -> None:
+    client = _GitHub()
+    state = _revalidated(repo, client)
+    _run("sync", state, repo, client, source=SourceCheckout(repo, "HAED"))
+    assert (client.searches, client.creates) == (0, 0)
+    assert "github_repair_revalidated" in _detail(state)

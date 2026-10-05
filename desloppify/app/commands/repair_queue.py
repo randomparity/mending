@@ -58,11 +58,10 @@ def _revalidate(args: argparse.Namespace, client: Any) -> None:
             raise CommandError("concern is not current and eligible for revalidation")
         manifest = _source(args).manifest_for(issue)
         if not isinstance(manifest, SourceManifest) or manifest.coverage != "complete":
-            reason = getattr(manifest, "reason", "coverage is partial")
             raise CommandError(
-                f"source evidence cannot be bound ({reason}); the concern file and related "
-                "files must be committed regular files under --source-root, the repository "
-                "top level"
+                f"source evidence cannot be bound ({_unbound_reason(manifest)}); the concern "
+                "file and related files must be committed regular files, as repository-relative "
+                "paths, under --source-root, the repository top level"
             )
         issue["detail"]["github_repair_revalidated"] = {
             **_record_base(candidate),
@@ -70,6 +69,15 @@ def _revalidate(args: argparse.Namespace, client: Any) -> None:
             "manifest_digest": manifest.digest,
         }
     print(f"Revalidated {args.issue_id} for {repository}.")
+
+
+def _unbound_reason(manifest: Any) -> str:
+    if not isinstance(manifest, SourceManifest):
+        return manifest.reason
+    unbound = [f"{d.path} is {d.status}" for d in manifest.dependencies if d.status != "present"]
+    if not any(d.role == "implementation" for d in manifest.dependencies):
+        unbound.insert(0, "no concern file")
+    return "; ".join(unbound)
 
 
 def _recover(args: argparse.Namespace, client: Any) -> None:
@@ -176,6 +184,9 @@ def _recheck_locked(
     comparison = _comparison(args, issue)
     if comparison.current:
         return True
+    if comparison.current_digest is None:
+        print(f"Skipped {candidate.issue_id}: source could not be read; revalidation kept.")
+        return False
     issue["detail"].pop("github_repair_revalidated", None)
     print(f"Skipped {candidate.issue_id}: source evidence is not current ({comparison.reason}).")
     return False

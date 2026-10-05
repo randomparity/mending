@@ -138,7 +138,8 @@ def test_revalidate_stores_manifest_bound_record() -> None:
 def test_revalidate_refuses_unbindable_source(manifest) -> None:
     state = _state()
     args = _args("revalidate", state, apply=True, issue_id="concerns::item", source=_Source(manifest))
-    with pytest.raises(CommandError, match="source evidence cannot be bound"):
+    reason = "revision could not be resolved" if isinstance(manifest, AnalysisUnknown) else "cannot be bound"
+    with pytest.raises(CommandError, match=reason):
         cmd_repair_queue(args)
     assert "github_repair_revalidated" not in state["work_items"]["concerns::item"]["detail"]
 
@@ -598,3 +599,12 @@ def test_two_verified_hits_park() -> None:
     _sync(state, client)
     assert client.create_calls == 0
     assert "github_repair" not in _detail(state)
+
+
+def test_unreadable_source_skips_without_clearing() -> None:
+    state = _revalidated_state()
+    client = _Recorder()
+    source = _Source(AnalysisUnknown("revision could not be resolved"))
+    cmd_repair_queue(_args("sync", state, apply=True, client=client, source=source))
+    assert (client.searches, client.create_calls) == ([], 0)
+    assert _detail(state)["github_repair_revalidated"] == REVALIDATED

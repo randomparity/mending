@@ -54,9 +54,12 @@ is removed from every action; `recover MARKER --repo R --apply` needs no text.
 
 **Recheck** (`_recheck_locked`, inside an open state-lock transaction):
 rebuild the manifest and `compare_manifests(stored, rebuilt)`. Current →
-proceed. Not current (any reason, including `unknown`) → remove
+proceed. The checkout cannot be read (rebuilt side `AnalysisUnknown`: bad
+`--revision`, wrong root, git failure) → skip and keep the record, so an
+operator error never clears the queue. Otherwise not current → remove
 `github_repair_revalidated`, print `Skipped <id>: source evidence is not
-current (<reason>)`, and stop this candidate. A base move with complete
+current (<reason>)`, and stop this candidate. A refused `revalidate` names
+each dependency that is not `present` (or the missing concern file). A base move with complete
 coverage and no recorded dependency change is current (operator decision,
 lenient rule of #24); the stored record is not rewritten.
 

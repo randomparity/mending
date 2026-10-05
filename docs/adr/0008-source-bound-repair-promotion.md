@@ -34,8 +34,9 @@ An edit to the code a concern describes changes none of those inputs. ADR
   before reading GitHub for a concern, and again inside the state-lock
   transaction that precedes each `gh issue create` and each local link write;
   no create or link write proceeds without a current comparison in that
-  transaction. Any mismatch, partial coverage, or unknown analysis skips the
-  concern and, outside a dry run, clears the revalidation. With complete
+  transaction. Any mismatch or partial coverage skips the concern and,
+  outside a dry run, clears the revalidation; a checkout that cannot be read
+  skips it and keeps the revalidation. With complete
   coverage, a base move that touches no recorded dependency keeps the concern
   current.
 - **Verified adoption.** Only search hits whose issue body carries the
