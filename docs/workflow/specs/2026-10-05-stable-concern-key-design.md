@@ -98,6 +98,12 @@ issue is created for the same concern.
     remove the marker and identity lines from the duplicate's body; ambiguous
     local keys → resolve one work item; corrupt records → edit the state file;
     peer or own pending → attested `recover`.
+  - Search adoption trusts a unique full-text hit: a third party who pastes a
+    public key or identity digest into another issue makes the item park (two
+    matches) or, if the genuine issue is gone, be linked to that issue. The
+    class predates this change (the old public marker had the same exposure);
+    verifying the matched body needs a new `gh` read and is left to a
+    follow-up.
   - Mixed versions on one state file: an older release's scan merge drops
     every new-shape record. Every writer of the shared state file (including
     the timer unit) must run this version or later.
