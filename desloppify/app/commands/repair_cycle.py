@@ -96,10 +96,14 @@ def cmd_repair_cycle(args: argparse.Namespace) -> None:
     config = _load_config(args)
     now = _now(args)
     client = cast(AdeptCycleClient, getattr(args, "client", None) or _UnavailableAdeptCycleClient())
+    dispose_attempt = getattr(args, "dispose_attempt", None)
     with _locked_state(args) as state:
         cycle_state = _cycle_state(state)
+        if dispose_attempt is not None:
+            _dispose(state, cycle_state, dispose_attempt)
+            return
         if cycle_state.current_lease is not None:
-            if _has_terminal_receipt(cycle_state):
+            if _has_terminal_receipt(cycle_state) or cycle_state.disposed:
                 _begin_and_select(args, state, cycle_state, config, client)
                 return
             if _reconcile(args, state, cycle_state, config, client):
@@ -120,6 +124,9 @@ def _begin_and_select(
     now: datetime | None = None,
 ) -> None:
     if config.park_reason is not None:
+        return
+    if cycle_state.awaiting_disposition:
+        _park(state, cycle_state, "disposition-required")
         return
     lease = cycle_state.begin(config, now or _now(args))
     if lease is None:
@@ -178,14 +185,19 @@ def _reconcile(
     lease = cycle_state.current_lease
     if lease is None:
         return False
+    if cycle_state.observation_calls >= config.observation_call_limit:
+        _fail(state, cycle_state, "observation-exhausted")
+        return False
+    cycle_state.observation_calls += 1
+    _store_cycle_state(state, cycle_state)
+    _persist_before_external_call(args, state)
     try:
-        receipt = _call_before_deadline(
-            args,
-            lease,
+        receipt = _call_within(
+            config.observation_seconds,
             lambda: client.reconcile(config.repository, lease),
         )
     except TimeoutError:
-        _park(state, cycle_state, "timeout")
+        _park(state, cycle_state, "observation-timeout")
         return False
     except Exception:
         _park(state, cycle_state, "reconciliation-unavailable")
@@ -204,7 +216,7 @@ def _accept_receipt(
     if not isinstance(receipt, AdeptReceipt):
         _park(state, cycle_state, "invalid-receipt")
         return False
-    reason = _receipt_reason(cycle_state, lease, receipt, now)
+    reason = _receipt_reason(cycle_state, lease, receipt)
     if reason is not None:
         _park(state, cycle_state, reason)
         return False
@@ -214,8 +226,12 @@ def _accept_receipt(
     cycle_state.record_receipt(receipt.to_mapping())
     if receipt.merge_consumed:
         cycle_state.consume_merge_permit(lease)
-    _store_cycle_state(state, cycle_state)
     print(f"Repair cycle {receipt.state}.")
+    failure = _limit_failure(lease, receipt, now)
+    if failure is not None:
+        _fail(state, cycle_state, failure)
+        return False
+    _store_cycle_state(state, cycle_state)
     return True
 
 
@@ -223,7 +239,6 @@ def _receipt_reason(
     cycle_state: CycleState,
     lease: CycleLease,
     receipt: AdeptReceipt,
-    now: datetime,
 ) -> str | None:
     if not isinstance(receipt.attempt_id, str) or not receipt.attempt_id:
         return "invalid-receipt"
@@ -241,12 +256,17 @@ def _receipt_reason(
         return "invalid-receipt"
     if not isinstance(receipt.cost_usd, Decimal) or not receipt.cost_usd.is_finite() or receipt.cost_usd < 0:
         return "invalid-receipt"
+    if receipt.merge_consumed and not _merge_permit_accepts(cycle_state, lease, receipt):
+        return "merge-permit-exhausted"
+    return None
+
+
+def _limit_failure(lease: CycleLease, receipt: AdeptReceipt, now: datetime) -> str | None:
+    # The receipt has no completion time, so observation time stands in for it.
     if now > lease.deadline:
         return "runtime-exhausted"
     if receipt.calls > lease.call_limit or receipt.cost_usd > lease.cost_cap_usd:
         return "budget-exhausted"
-    if receipt.merge_consumed and not _merge_permit_accepts(cycle_state, lease, receipt):
-        return "merge-permit-exhausted"
     return None
 
 
@@ -284,11 +304,15 @@ def _call_before_deadline(
     remaining_seconds = (lease.deadline - _now(args)).total_seconds()
     if remaining_seconds <= 0:
         raise TimeoutError("repair-cycle runtime exhausted")
+    return _call_within(remaining_seconds, operation)
+
+
+def _call_within(seconds: float, operation: Callable[[], _Result]) -> _Result:
     if threading.current_thread() is not threading.main_thread():
         return operation()
     previous_handler = signal.getsignal(signal.SIGALRM)
     signal.signal(signal.SIGALRM, _deadline_exceeded)
-    signal.setitimer(signal.ITIMER_REAL, remaining_seconds)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
     try:
         return operation()
     finally:
@@ -297,7 +321,7 @@ def _call_before_deadline(
 
 
 def _deadline_exceeded(_signum: int, _frame: object) -> None:
-    raise TimeoutError("repair-cycle runtime exhausted")
+    raise TimeoutError("repair-cycle call bound exceeded")
 
 
 def _valid_authority(proof: object, repository: str) -> bool:
@@ -351,8 +375,27 @@ def _cycle_state(state: Mapping[str, object]) -> CycleState:
         raise CommandError(f"repair-cycle state is invalid: {exc}") from exc
 
 
+def _dispose(
+    state: dict[str, Any],
+    cycle_state: CycleState,
+    attempt_id: str,
+) -> None:
+    try:
+        cycle_state.dispose(attempt_id)
+    except ValueError as exc:
+        raise CommandError(f"repair-cycle cannot dispose attempt: {exc}", exit_code=2) from exc
+    _store_cycle_state(state, cycle_state)
+    print(f"Repair cycle attempt {attempt_id} disposed.")
+
+
 def _park(state: dict[str, Any], cycle_state: CycleState, reason: str) -> None:
     cycle_state.park(reason)
+    _store_cycle_state(state, cycle_state)
+    print(f"Repair cycle parked: {reason}.")
+
+
+def _fail(state: dict[str, Any], cycle_state: CycleState, reason: str) -> None:
+    cycle_state.fail(reason)
     _store_cycle_state(state, cycle_state)
     print(f"Repair cycle parked: {reason}.")
 
