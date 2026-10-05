@@ -13,6 +13,7 @@ from desloppify.app.commands.helpers.state import state_path
 from desloppify.base.discovery.paths import get_project_root
 from desloppify.base.exception_sets import CommandError
 from desloppify.engine._state.persistence import load_state, state_lock
+from desloppify.engine.repair_brief import ParkedBrief, build_brief, render_brief
 from desloppify.engine.repair_manifest import (
     ManifestComparison,
     SourceCheckout,
@@ -157,7 +158,23 @@ def _sync_one(
     elif args.apply:
         _create_once(args, client, candidate)
     else:
+        _preview_create(state, candidate)
+
+
+def _preview_create(state: Mapping[str, Any], candidate: PromotionCandidate) -> None:
+    brief = build_brief(_issues(state)[candidate.issue_id], candidate)
+    if isinstance(brief, ParkedBrief):
+        print(f"Would park {_parked(candidate, brief)}")
+    else:
         print(f"Would create a repair issue for {candidate.issue_id}.")
+
+
+def _parked(candidate: PromotionCandidate, brief: ParkedBrief) -> str:
+    """Name the field and fixed category only; a rejected value is never printed."""
+    return (
+        f"{candidate.issue_id}: brief field {brief.field} cannot be published "
+        f"({brief.reason}); hand the concern off privately."
+    )
 
 
 def _source_current(
@@ -292,9 +309,13 @@ def _create_once(args: argparse.Namespace, client: Any, candidate: PromotionCand
             return
         if not _recheck_locked(args, state, candidate):
             return
+        brief = build_brief(_issues(state)[candidate.issue_id], candidate)
+        if isinstance(brief, ParkedBrief):
+            print(f"Parked {_parked(candidate, brief)}")
+            return
         detail["github_repair_pending"] = _record_base(candidate)
     try:
-        client.create(candidate.repository, candidate)
+        client.create(candidate.repository, *render_brief(brief))
     except (RuntimeError, ValueError):
         print(f"Pending {candidate.issue_id}: create outcome is uncertain.")
         return
