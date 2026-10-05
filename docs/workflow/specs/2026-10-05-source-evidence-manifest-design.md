@@ -52,19 +52,25 @@ changes.
   previous_digest, current_digest)`, first match wins:
   1. either side unknown → not current, `unknown`;
   2. either side `partial` → not current, `coverage-incomplete` (broad
-     invalidation; `changed_paths` is empty because no per-dependency
-     evidence decides it);
+     invalidation);
   3. dependency paths, roles, statuses or blob IDs differ → not current,
      `dependencies-changed`, `changed_paths` sorted;
   4. otherwise current, `unchanged` — a base change that touched no
      dependency (`base_changed` true) keeps eligibility.
+
+  Whenever both sides are manifests, `changed_paths` lists every path whose
+  role, status or blob ID differs or that exists on one side only, so a
+  dependency deleted after a complete manifest is reported by path.
 - **Approvals.** `retain_bound_approvals(detail, comparison)` returns a copy
   of a work-item detail. A record of an approval kind
   (`APPROVAL_KINDS = ("github_repair_revalidated",)`) survives only when the
   comparison is current and the record's `manifest_digest` equals
   `previous_digest`; it is rebound to `current_digest`. Every other approval
   record — including one with no `manifest_digest` — is removed. Other detail
-  keys are untouched.
+  keys are untouched. Today `normalize_record` and scan merge drop
+  `manifest_digest` from that record, so a rebound approval does not survive
+  a rescan: the binding fails closed until #25 replaces the revalidation
+  record shape and preserves the field.
 
 ## Failure model
 
@@ -82,7 +88,8 @@ changes.
     commit, which is what a repair branches from.
   - A manifest with partial coverage can never become current; its cost is
     that such a concern is ineligible until coverage is complete.
-- Covered elsewhere: deriving dependencies, storing manifests, and the
+- Covered elsewhere: deriving dependencies, storing manifests, preserving
+  `manifest_digest` through record normalization and scan merge, and the
   pre-publication and pre-mutation recheck (#25); host adapter (#19).
 
 ### Threat model
@@ -114,7 +121,8 @@ changes.
    removed from the detail.
 5. Missing, symlinked, directory, and invalid-path dependencies are recorded
    with their status and make coverage `partial`; an undeclared-complete list
-   is `partial`; each partial comparison is `coverage-incomplete`.
+   is `partial`; each partial comparison is `coverage-incomplete`, and a
+   dependency deleted after a complete manifest appears in `changed_paths`.
 6. Bad revision, failing git, unknown role, duplicate path, too many
    dependencies, and malformed stored records yield `AnalysisUnknown`, and
    any comparison involving one is not current.

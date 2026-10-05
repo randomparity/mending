@@ -32,8 +32,10 @@ module and ~220 for one test file covering seven Success items.
 | `desloppify/engine/repair_manifest.py` (new) | manifest types, builder, record parser, comparison, approval rebinding |
 | `desloppify/tests/repair_queue/test_manifest.py` (new) | fixture-repository tests for every Success item |
 
-No ownership transition: `repair_queue.py` keeps record normalization; the
-approval kind name is the only shared string.
+No ownership transition: `repair_queue.py` keeps record normalization. The
+approval kind name and its new `manifest_digest` field are shared; existing
+normalization drops that field, so binding fails closed until #25 preserves
+it (spec, Approvals).
 
 ## Task 1 — Manifest type, builder, stored record
 
@@ -132,8 +134,12 @@ def retain_bound_approvals(detail: Mapping[str, Any],
   implementation, sibling, test, decision paths; asserts `changed_paths ==
   (path,)`), `test_unrelated_edit_with_complete_coverage_is_current`
   (`base_changed` true); red: `ImportError: compare_manifests`.
-- Partial and unknown — `focused-test`: `test_partial_coverage_never_current`,
-  `test_unknown_never_current`; red: `ImportError`.
+- Partial and unknown — `focused-test`: the coverage-incomplete assertions in
+  `test_unusable_dependencies_are_recorded_and_partial`,
+  `test_deleted_dependency_is_reported_by_path` (complete manifest, then the
+  implementation file deleted: `coverage-incomplete`, `changed_paths ==
+  ("src/impl.py",)`), and the unknown-pair assertions in
+  `test_unbindable_analysis_is_unknown`; red: `ImportError`.
 - Approvals — `focused-test`:
   `test_source_edit_clears_approval_with_unchanged_prose` (detail keeps the
   same `concern_evidence_digest`; approval removed, other keys kept),
@@ -144,7 +150,8 @@ def retain_bound_approvals(detail: Mapping[str, Any],
 
 1. Write the tests; run focused loop → red.
 2. Implement per the spec's rule order. Digests are `None` for an unknown
-   side. Changed paths: the sorted union of paths whose `(role, status,
+   side. Changed paths (computed whenever both sides are manifests, including
+   for `coverage-incomplete`): the sorted union of paths whose `(role, status,
    object_id)` differ or exist on one side only. `base_changed` compares
    revisions when both are manifests, else false. `retain_bound_approvals`
    copies `detail`; for each kind in `APPROVAL_KINDS` present, keep
