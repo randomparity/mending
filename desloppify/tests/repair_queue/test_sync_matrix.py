@@ -76,10 +76,10 @@ class _GitHub:
     def view(self, repository: str, number: int) -> GitHubIssue:
         return next(issue for issue in self.issues if issue.number == number)
 
-    def create(self, repository: str, candidate) -> None:
+    def create(self, repository: str, title: str, body: str) -> None:
         self.creates += 1
         number = 100 + self.creates
-        self.issues.append(GitHubIssue(number, f"https://example.test/{number}", "open", KEY_BODY))
+        self.issues.append(GitHubIssue(number, f"https://example.test/{number}", "open", body))
 
 
 def _state() -> dict:
@@ -90,12 +90,17 @@ def _state() -> dict:
         "file": "src/impl.py",
         "tier": 2,
         "confidence": "high",
-        "summary": "concern",
+        "summary": "Parser duplicates the loader policy",
         "suppressed": False,
         "detail": {
             "concern_identity": IDENTITY,
             "concern_evidence_digest": EVIDENCE,
             "related_files": ["src/impl.py", "src/sibling.py"],
+            "maintenance_consequence": "Two policies drift",
+            "evidence": ["impl.py:1 re-derives the root"],
+            "proposed_owner": "the loader module",
+            "protected_contracts": ["CLI exit codes"],
+            "verification": "Run the loader tests",
         },
     }
     return {"work_items": {item["id"]: item}}
@@ -191,8 +196,8 @@ def test_unverified_search_hit_is_not_adopted(repo: Path) -> None:
 
 def test_dependency_change_during_create_keeps_pending_then_adopts(repo: Path) -> None:
     class RacingCreate(_GitHub):
-        def create(self, repository: str, candidate) -> None:
-            super().create(repository, candidate)
+        def create(self, repository: str, title: str, body: str) -> None:
+            super().create(repository, title, body)
             _commit(repo, "src/impl.py", "raced = True\n")
 
     client = RacingCreate()

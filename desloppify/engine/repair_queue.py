@@ -137,24 +137,6 @@ def candidate_from_issue(
     return candidate
 
 
-def render_issue(candidate: PromotionCandidate) -> tuple[str, str]:
-    """Render a public body containing structural provenance, never source text."""
-    title = f"Validated repair {candidate.key[:12]}"
-    body = "\n".join(
-        (
-            "## Repair queue record",
-            "",
-            KEY_LINE.format(candidate.key),
-            f"Concern identity digest: `{candidate.identity}`",
-            f"Evidence digest: `{candidate.evidence_digest}`",
-            "Ownership: retained in the local validated concern record.",
-            "Protected contracts: retained in the local validated concern record.",
-            "Verification: retained in the local validated concern record.",
-        )
-    )
-    return title, body
-
-
 def carries_concern_marker(body: str, candidate: PromotionCandidate) -> bool:
     """Whether an issue body carries this concern's key line or current legacy line."""
     expected = {
@@ -218,9 +200,8 @@ class GitHubIssueClient:
         issues = _decode_issues([payload], allow_state=True)
         return issues[0]
 
-    def create(self, repository: str, candidate: PromotionCandidate) -> None:
+    def create(self, repository: str, title: str, body: str) -> None:
         """Attempt one creation; callers must re-search before linking state."""
-        title, body = render_issue(candidate)
         self._call(
             [
                 "gh", "issue", "create", "--repo", repository, "--title", title,
@@ -277,5 +258,4 @@ __all__ = [
     "legacy_marker",
     "matching_record",
     "normalize_record",
-    "render_issue",
 ]
