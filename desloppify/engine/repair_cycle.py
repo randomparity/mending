@@ -136,6 +136,14 @@ class CycleLease:
         }
 
 
+@dataclass(frozen=True)
+class BudgetAdmission:
+    """The lease budget reserved for one host dispatch."""
+
+    cost_usd: Decimal
+    calls: int
+
+
 @dataclass
 class CycleState:
     """The minimal state needed to reconcile one external scheduler attempt."""
@@ -147,6 +155,10 @@ class CycleState:
     observation_calls: int = 0
     attempt_failure: str | None = None
     disposed_attempt: str | None = None
+    consumed_cost_usd: Decimal = Decimal(0)
+    consumed_calls: int = 0
+    reserved_cost_usd: Decimal = Decimal(0)
+    reserved_calls: int = 0
 
     @classmethod
     def empty(cls) -> CycleState:
@@ -172,19 +184,18 @@ class CycleState:
             if not isinstance(merge_day, str):
                 raise ValueError("merge permit day is invalid")
             _parse_day_key(merge_day)
-        observation_calls = mapping.get("observation_calls", 0)
-        if isinstance(observation_calls, bool) or not isinstance(observation_calls, int):
-            raise ValueError("observation call count is invalid")
-        if observation_calls < 0:
-            raise ValueError("observation call count is invalid")
         return cls(
             current_lease=CycleLease.from_mapping(lease_value) if lease_value else None,
             authoritative_receipt=dict(receipt_value) if receipt_value else None,
             parked_reason=parked_reason,
             merge_permit_day=merge_day,
-            observation_calls=observation_calls,
+            observation_calls=_count(mapping, "observation_calls"),
             attempt_failure=_optional_text(mapping, "attempt_failure"),
             disposed_attempt=_optional_text(mapping, "disposed_attempt"),
+            consumed_cost_usd=_cost(mapping, "consumed_cost_usd"),
+            consumed_calls=_count(mapping, "consumed_calls"),
+            reserved_cost_usd=_cost(mapping, "reserved_cost_usd"),
+            reserved_calls=_count(mapping, "reserved_calls"),
         )
 
     def to_mapping(self) -> dict[str, object]:
@@ -197,6 +208,10 @@ class CycleState:
             "observation_calls": self.observation_calls,
             "attempt_failure": self.attempt_failure,
             "disposed_attempt": self.disposed_attempt,
+            "consumed_cost_usd": str(self.consumed_cost_usd),
+            "consumed_calls": self.consumed_calls,
+            "reserved_cost_usd": str(self.reserved_cost_usd),
+            "reserved_calls": self.reserved_calls,
         }
 
     def begin(self, config: CycleConfig, now: datetime, *, attempt_id: str | None = None) -> CycleLease | None:
@@ -209,7 +224,37 @@ class CycleState:
         self.observation_calls = 0
         self.attempt_failure = None
         self.disposed_attempt = None
+        self.consumed_cost_usd = self.reserved_cost_usd = Decimal(0)
+        self.consumed_calls = self.reserved_calls = 0
         return self.current_lease
+
+    def admit(self) -> BudgetAdmission | None:
+        """Reserve the lease's whole remaining budget, or None when nothing remains."""
+        lease = self.current_lease
+        if lease is None:
+            raise ValueError("no current lease")
+        cost = lease.cost_cap_usd - self.consumed_cost_usd - self.reserved_cost_usd
+        calls = lease.call_limit - self.consumed_calls - self.reserved_calls
+        if cost <= 0 or calls <= 0:
+            return None
+        self.reserved_cost_usd += cost
+        self.reserved_calls += calls
+        return BudgetAdmission(cost, calls)
+
+    def settle(self, admission: BudgetAdmission, cost_usd: Decimal | None, calls: int) -> None:
+        """Release a reservation and charge measured usage; unmeasured cost charges it all."""
+        self.reserved_cost_usd -= admission.cost_usd
+        self.reserved_calls -= admission.calls
+        self.consumed_cost_usd += admission.cost_usd if cost_usd is None else cost_usd
+        self.consumed_calls += calls
+
+    @property
+    def budget_exceeded(self) -> bool:
+        """Return whether consumed usage is over the current lease's ceilings."""
+        lease = self.current_lease
+        return lease is not None and (
+            self.consumed_cost_usd > lease.cost_cap_usd or self.consumed_calls > lease.call_limit
+        )
 
     def record_receipt(self, receipt: Mapping[str, object]) -> None:
         """Persist an already-validated receipt for restart reconciliation."""
@@ -304,6 +349,26 @@ def _optional_text(mapping: Mapping[str, object], key: str) -> str | None:
     return value.strip()
 
 
+def _count(mapping: Mapping[str, object], key: str) -> int:
+    value = mapping.get(key, 0)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{key} must be a non-negative integer")
+    return value
+
+
+def _cost(mapping: Mapping[str, object], key: str) -> Decimal:
+    value = mapping.get(key, "0")
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise ValueError(f"{key} must be a decimal string")
+    try:
+        parsed = Decimal(str(value))
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError(f"{key} must be a decimal string") from exc
+    if not parsed.is_finite() or parsed < 0:
+        raise ValueError(f"{key} must be non-negative")
+    return parsed
+
+
 def _optional_cost_cap(mapping: Mapping[str, object]) -> Decimal | None:
     value = mapping.get("cost_cap_usd")
     return None if value is None else _decimal(value, "USD cost cap")
@@ -328,4 +393,11 @@ def _parse_day_key(value: str) -> date:
         raise ValueError("day key is invalid") from exc
 
 
-__all__ = ["CycleConfig", "CycleLease", "CycleState", "DEFAULT_CALL_LIMIT", "DEFAULT_RUNTIME_SECONDS"]
+__all__ = [
+    "BudgetAdmission",
+    "CycleConfig",
+    "CycleLease",
+    "CycleState",
+    "DEFAULT_CALL_LIMIT",
+    "DEFAULT_RUNTIME_SECONDS",
+]

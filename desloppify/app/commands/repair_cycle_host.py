@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import codecs
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess  # nosec B404
@@ -15,13 +17,21 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 from types import FrameType
-from typing import Any
+from typing import IO, Any
 
-from desloppify.engine.repair_cycle import CycleConfig
+from desloppify.engine.repair_cycle import BudgetAdmission, CycleConfig
 
 MARKER_VARIABLE = "MENDING_HOST_SESSION"
+# Background subagents are not streamed, so their calls could not be counted.
+BACKGROUND_TASKS_VARIABLE = "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"
+# Subagent messages are forwarded at every nesting depth from this release.
+_MIN_HOST_VERSION = (2, 1, 275)
+_REQUIRED_OPTIONS = ("--max-budget-usd", "stream-json", "--forward-subagent-text")
+_PROBE_SECONDS = 10.0
+_PROC_ROOT = Path("/proc")
 _DETAIL_CHARS = 2_000
 _POLL_SECONDS = 0.05
 _CANCEL_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
@@ -44,8 +54,10 @@ class HostOutcome:
     """What the adapter established about one host run.
 
     ``state`` is ``parked`` (nothing launched), ``completed``, ``failed``,
-    ``stopped`` (deadline reached, worker tree verified empty), or ``unknown``
-    (worker tree could not be verified empty).
+    ``stopped`` (deadline or call limit reached, worker tree verified empty), or
+    ``unknown`` (worker tree could not be verified empty). ``cost_usd`` is the
+    host-measured cost, or None when the host did not measure it; ``calls``
+    counts streamed model responses.
     """
 
     state: str
@@ -55,6 +67,58 @@ class HostOutcome:
     exit_code: int | None = None
     result: dict[str, Any] | None = None
     detail: str | None = None
+    cost_usd: Decimal | None = None
+    calls: int = 0
+
+
+class _StreamUsage:
+    """Count streamed model responses and keep the result event of a stream-json run."""
+
+    def __init__(self) -> None:
+        self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        self._pending = ""
+        self._message_ids: set[str] = set()
+        self._unidentified = 0
+        self.result: dict[str, Any] | None = None
+
+    def feed(self, data: bytes, *, final: bool = False) -> None:
+        lines = (self._pending + self._decoder.decode(data, final)).split("\n")
+        self._pending = "" if final else lines.pop()
+        for line in lines:
+            self._event(line)
+
+    def _event(self, line: str) -> None:
+        try:
+            event = json.loads(line)
+        except ValueError:
+            return
+        if not isinstance(event, dict):
+            return
+        if event.get("type") == "result":
+            self.result = event
+        elif event.get("type") == "assistant":
+            message = event.get("message")
+            message_id = message.get("id") if isinstance(message, dict) else None
+            if isinstance(message_id, str) and message_id:
+                self._message_ids.add(message_id)
+            else:
+                self._unidentified += 1
+
+    @property
+    def calls(self) -> int:
+        return len(self._message_ids) + self._unidentified
+
+    @property
+    def cost_usd(self) -> Decimal | None:
+        result = self.result
+        # A crash result may report zeroed cost, so it measures nothing.
+        if result is None or result.get("subtype") == "error_during_execution":
+            return None
+        cost = result.get("total_cost_usd")
+        if isinstance(cost, bool) or not isinstance(cost, (int, float)):
+            return None
+        value = Decimal(str(cost))
+        return value if value.is_finite() and value >= 0 else None
 
 
 class ClaudeHostAdapter:
@@ -64,15 +128,16 @@ class ClaudeHostAdapter:
         self._config = config
         self._grace_seconds = grace_seconds
 
-    def run(self, request: HostRequest) -> HostOutcome:
-        """Launch the host for one attempt and establish the state of its worker tree."""
+    def run(self, request: HostRequest, admission: BudgetAdmission) -> HostOutcome:
+        """Launch the host within an admitted budget and establish its worker tree's state."""
         preflight = _preflight(self._config, request, datetime.now(request.deadline.tzinfo))
         if isinstance(preflight, HostOutcome):
             return preflight
         executable, skills_dir, version = preflight
         session_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"mending-attempt:{request.attempt_id}"))
         command = [
-            executable, "-p", "--output-format", "json",
+            executable, "-p", "--output-format", "stream-json", "--verbose",
+            "--forward-subagent-text", "--max-budget-usd", format(admission.cost_usd, "f"),
             "--model", str(self._config.model),
             "--session-id", session_id,
             "--plugin-dir", skills_dir,
@@ -81,33 +146,40 @@ class ClaudeHostAdapter:
             files = Path(scratch)
             (files / "prompt").write_text(_prompt(request))
             with _cancellation_handlers() as cancellation:
-                launched = self._launch(command, request, session_id, files, cancellation)
+                launched = self._launch(
+                    command, request, admission, session_id, files, cancellation
+                )
             if launched is None:
                 return HostOutcome("parked", "host-launch-failed", session_id, version)
-            exit_code, timed_out, emptied = launched
-            stdout = (files / "stdout").read_text(errors="replace")
+            exit_code, stop, emptied, usage = launched
             stderr = (files / "stderr").read_text(errors="replace")
-        if timed_out:
-            state, reason = ("stopped", "timeout") if emptied else ("unknown", "timeout-survivors")
+        if stop is not None:
+            state, reason = ("stopped", stop) if emptied else ("unknown", f"{stop}-survivors")
         elif not emptied:
             state, reason = "unknown", "worker-survivors"
         else:
-            return _outcome_from_exit(exit_code, stdout, stderr, session_id, version)
-        return HostOutcome(state, reason, session_id, version, exit_code)
+            return _outcome_from_result(exit_code, usage, stderr, session_id, version)
+        return HostOutcome(
+            state, reason, session_id, version, exit_code,
+            cost_usd=usage.cost_usd, calls=usage.calls,
+        )
 
     def _launch(
         self,
         command: list[str],
         request: HostRequest,
+        admission: BudgetAdmission,
         session_id: str,
         files: Path,
         cancellation: _Cancellation,
-    ) -> tuple[int | None, bool, bool] | None:
-        """Return (exit code, timed out, tree verified empty), or None when nothing launched."""
+    ) -> tuple[int | None, str | None, bool, _StreamUsage] | None:
+        """Return (exit code, stop reason, tree verified empty, usage), or None if not launched."""
         marker = f"{MARKER_VARIABLE}={session_id}".encode()
+        usage = _StreamUsage()
         with (
             (files / "prompt").open() as stdin,
             (files / "stdout").open("w") as stdout,
+            (files / "stdout").open("rb") as stream,
             (files / "stderr").open("w") as stderr,
         ):
             cancellation.raise_if_requested()
@@ -115,7 +187,11 @@ class ClaudeHostAdapter:
                 proc = subprocess.Popen(  # nosec B603
                     command,
                     cwd=request.repo_root,
-                    env={**os.environ, MARKER_VARIABLE: session_id},
+                    env={
+                        **os.environ,
+                        MARKER_VARIABLE: session_id,
+                        BACKGROUND_TASKS_VARIABLE: "1",
+                    },
                     stdin=stdin,
                     stdout=stdout,
                     stderr=stderr,
@@ -125,18 +201,33 @@ class ClaudeHostAdapter:
                 return None
             try:
                 cancellation.arm()
-                now = datetime.now(request.deadline.tzinfo)
-                remaining = (request.deadline - now).total_seconds()
-                try:
-                    proc.wait(timeout=max(remaining, 0))
-                    timed_out = False
-                except subprocess.TimeoutExpired:
-                    timed_out = True
+                stop = _watch(proc, request.deadline, admission.calls, usage, stream)
                 emptied = _stop_tree(proc, marker, self._grace_seconds)
             except BaseException:
                 _stop_tree(proc, marker, self._grace_seconds)
                 raise
-            return proc.returncode, timed_out, emptied
+            usage.feed(stream.read(), final=True)
+            return proc.returncode, stop, emptied, usage
+
+
+def _watch(
+    proc: subprocess.Popen[bytes],
+    deadline: datetime,
+    call_limit: int,
+    usage: _StreamUsage,
+    stream: IO[bytes],
+) -> str | None:
+    """Follow the host's stream until it exits; return why Mending must stop it, if it must."""
+    while True:
+        exited = proc.poll() is not None
+        usage.feed(stream.read())
+        if exited:
+            return None
+        if usage.calls > call_limit:
+            return "call-limit"
+        if datetime.now(deadline.tzinfo) >= deadline:
+            return "timeout"
+        time.sleep(_POLL_SECONDS)
 
 
 def _preflight(
@@ -158,7 +249,35 @@ def _preflight(
         return HostOutcome("parked", "host-skills-mismatch")
     if now >= request.deadline:
         return HostOutcome("parked", "runtime-exhausted")
-    return os.path.abspath(executable), skills_dir, version
+    executable = os.path.abspath(executable)
+    if not _limits_enforceable(executable):
+        return HostOutcome("parked", "unenforceable-limit")
+    return executable, skills_dir, version
+
+
+def _limits_enforceable(executable: str) -> bool:
+    """Return whether this host and platform can enforce the cost, call, and runtime limits."""
+    if not _PROC_ROOT.is_dir():
+        return False
+    version = _probe(executable, "--version")
+    usage = _probe(executable, "--help")
+    if version is None or usage is None:
+        return False
+    found = re.match(r"\s*(\d+)\.(\d+)\.(\d+)", version)
+    if found is None or tuple(int(part) for part in found.groups()) < _MIN_HOST_VERSION:
+        return False
+    return all(option in usage for option in _REQUIRED_OPTIONS)
+
+
+def _probe(executable: str, flag: str) -> str | None:
+    """Return a model-free probe's output, or None when it fails or times out."""
+    try:
+        done = subprocess.run(  # nosec B603
+            [executable, flag], capture_output=True, text=True, timeout=_PROBE_SECONDS, check=False
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return done.stdout if done.returncode == 0 else None
 
 
 def _manifest(skills_dir: str) -> dict[str, Any] | None:
@@ -236,11 +355,10 @@ def _cancellation_handlers() -> Iterator[_Cancellation]:
 
 def _marked_pids(marker: bytes) -> set[int] | None:
     """Return PIDs whose environment carries the marker; None when /proc is unavailable."""
-    proc_root = Path("/proc")
-    if not proc_root.is_dir():
+    if not _PROC_ROOT.is_dir():
         return None
     found: set[int] = set()
-    for entry in proc_root.iterdir():
+    for entry in _PROC_ROOT.iterdir():
         if not entry.name.isdigit():
             continue
         try:
@@ -299,21 +417,21 @@ def _settled(proc: subprocess.Popen[bytes], marker: bytes, seconds: float) -> bo
         time.sleep(_POLL_SECONDS)
 
 
-def _outcome_from_exit(
-    code: int | None, stdout: str, stderr: str, session_id: str, version: str
+def _outcome_from_result(
+    code: int | None, usage: _StreamUsage, stderr: str, session_id: str, version: str
 ) -> HostOutcome:
-    try:
-        result = json.loads(stdout)
-    except ValueError:
-        result = None
-    detail = stderr[-_DETAIL_CHARS:] or None
-    if not isinstance(result, dict):
-        return HostOutcome(
-            "failed", "invalid-host-output", session_id, version, code, detail=detail
-        )
-    if code == 0 and result.get("is_error") is False:
-        return HostOutcome("completed", None, session_id, version, code, result)
-    return HostOutcome("failed", "host-error", session_id, version, code, result, detail)
+    result = usage.result
+    if result is None:
+        state, reason = "failed", "invalid-host-output"
+    elif code == 0 and result.get("is_error") is False:
+        state, reason = "completed", None
+    else:
+        state, reason = "failed", "host-error"
+    return HostOutcome(
+        state, reason, session_id, version, code, result,
+        None if state == "completed" else stderr[-_DETAIL_CHARS:] or None,
+        cost_usd=usage.cost_usd, calls=usage.calls,
+    )
 
 
 __all__ = ["MARKER_VARIABLE", "ClaudeHostAdapter", "HostOutcome", "HostRequest"]

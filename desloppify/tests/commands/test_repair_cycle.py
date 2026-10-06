@@ -4,8 +4,10 @@ import argparse
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
@@ -13,11 +15,13 @@ from desloppify.app.commands import repair_cycle
 from desloppify.app.commands.repair_cycle import (
     AdeptReceipt,
     AuthorityProof,
+    _dispatch_host,
     cmd_repair_cycle,
 )
+from desloppify.app.commands.repair_cycle_host import HostOutcome, HostRequest
 from desloppify.base.exception_sets import CommandError
 from desloppify.cli import create_parser
-from desloppify.engine.repair_cycle import CycleConfig, CycleState
+from desloppify.engine.repair_cycle import BudgetAdmission, CycleConfig, CycleState
 
 REPOSITORY = "owner/repository"
 NOW = datetime(2026, 9, 13, 9, 0, tzinfo=UTC)
@@ -605,7 +609,16 @@ def test_legacy_state_decodes_and_new_fields_validate() -> None:
     legacy = {
         key: value
         for key, value in cycle_state.to_mapping().items()
-        if key not in {"observation_calls", "attempt_failure", "disposed_attempt"}
+        if key
+        not in {
+            "observation_calls",
+            "attempt_failure",
+            "disposed_attempt",
+            "consumed_cost_usd",
+            "consumed_calls",
+            "reserved_cost_usd",
+            "reserved_calls",
+        }
     }
 
     decoded = CycleState.from_mapping(legacy)
@@ -616,11 +629,195 @@ def test_legacy_state_decodes_and_new_fields_validate() -> None:
         None,
         None,
     )
+    assert (decoded.consumed_cost_usd, decoded.consumed_calls) == (Decimal(0), 0)
+    assert (decoded.reserved_cost_usd, decoded.reserved_calls) == (Decimal(0), 0)
     for field, bad in (
         ("observation_calls", -1),
+        ("consumed_cost_usd", "-0.01"),
+        ("consumed_cost_usd", True),
+        ("reserved_cost_usd", "NaN"),
+        ("reserved_cost_usd", "lots"),
+        ("consumed_calls", -1),
+        ("reserved_calls", True),
+        ("reserved_calls", "2"),
         ("observation_calls", True),
         ("attempt_failure", 3),
         ("disposed_attempt", ""),
     ):
         with pytest.raises(ValueError):
             CycleState.from_mapping({**legacy, field: bad})
+
+
+def _budget_state() -> CycleState:
+    cycle_state = CycleState.empty()
+    cycle_state.begin(CycleConfig.from_mapping(_config(call_limit=10)), NOW, attempt_id="a1")
+    return cycle_state
+
+
+def test_budget_admission_reserves_remainder_and_settles() -> None:
+    cycle_state = _budget_state()
+
+    admission = cycle_state.admit()
+
+    assert admission == BudgetAdmission(Decimal("2.00"), 10)
+    assert (cycle_state.reserved_cost_usd, cycle_state.reserved_calls) == (Decimal("2.00"), 10)
+    assert cycle_state.admit() is None
+    cycle_state.settle(admission, Decimal("0.75"), 3)
+    assert (cycle_state.reserved_cost_usd, cycle_state.reserved_calls) == (Decimal(0), 0)
+    assert (cycle_state.consumed_cost_usd, cycle_state.consumed_calls) == (Decimal("0.75"), 3)
+    assert not cycle_state.budget_exceeded
+    assert cycle_state.admit() == BudgetAdmission(Decimal("1.25"), 7)
+    round_trip = CycleState.from_mapping(json.loads(json.dumps(cycle_state.to_mapping())))
+    assert round_trip == cycle_state
+    cycle_state.fail("budget-exhausted")
+    cycle_state.dispose("a1")
+    assert cycle_state.begin(CycleConfig.from_mapping(_config()), NOW + timedelta(days=1))
+    assert (cycle_state.consumed_cost_usd, cycle_state.consumed_calls) == (Decimal(0), 0)
+    assert (cycle_state.reserved_cost_usd, cycle_state.reserved_calls) == (Decimal(0), 0)
+    with pytest.raises(ValueError, match="no current lease"):
+        CycleState.empty().admit()
+
+
+def test_unmeasured_cost_charges_whole_admission() -> None:
+    cycle_state = _budget_state()
+    admission = cycle_state.admit()
+    assert admission is not None
+
+    cycle_state.settle(admission, None, 11)
+
+    assert (cycle_state.consumed_cost_usd, cycle_state.consumed_calls) == (Decimal("2.00"), 11)
+    assert cycle_state.budget_exceeded
+    assert cycle_state.admit() is None
+
+
+class _FakeHost:
+    def __init__(self, outcome: HostOutcome | None = None, *, error: BaseException | None = None,
+                 on_run=None) -> None:
+        self.outcome = outcome or HostOutcome("completed", cost_usd=Decimal("0.5"), calls=3)
+        self.error = error
+        self.on_run = on_run
+        self.admissions: list[BudgetAdmission] = []
+
+    def run(self, request: HostRequest, admission: BudgetAdmission) -> HostOutcome:
+        self.admissions.append(admission)
+        if self.on_run is not None:
+            self.on_run()
+        if self.error is not None:
+            raise self.error
+        return self.outcome
+
+
+def _leased(state: dict) -> tuple[CycleState, HostRequest]:
+    cycle_state = _budget_state()
+    lease = cycle_state.current_lease
+    assert lease is not None
+    state["repair_cycle"] = cycle_state.to_mapping()
+    request = HostRequest(
+        attempt_id=lease.attempt_id,
+        brief="Fix the flaky parser.",
+        source_revision="0" * 40,
+        authorized_scope="desloppify/parser.py",
+        repo_root=Path("."),
+        deadline=lease.deadline,
+    )
+    return cycle_state, request
+
+
+@pytest.mark.parametrize(
+    ("outcome", "consumed", "failure", "parked"),
+    [
+        (HostOutcome("completed", cost_usd=Decimal("0.5"), calls=3), ("0.5", 3), None, None),
+        (
+            HostOutcome("failed", "host-error", cost_usd=Decimal("2.5"), calls=4),
+            ("2.5", 4),
+            "budget-exhausted",
+            "budget-exhausted",
+        ),
+        (HostOutcome("parked", "unenforceable-limit"), ("0", 0), None, "unenforceable-limit"),
+        (
+            HostOutcome("stopped", "call-limit", calls=11),
+            ("2.00", 11),
+            "budget-exhausted",
+            "budget-exhausted",
+        ),
+        (HostOutcome("unknown", "timeout-survivors", calls=2), ("2.00", 10), None, None),
+    ],
+)
+def test_dispatch_budget_outcomes(outcome, consumed, failure, parked) -> None:
+    state = _state()
+    cycle_state, request = _leased(state)
+    host = _FakeHost(outcome)
+
+    assert _dispatch_host(_args(state, _Client()), state, cycle_state, host, request) == outcome
+
+    assert host.admissions == [BudgetAdmission(Decimal("2.00"), 10)]
+    recorded = state["repair_cycle"]
+    assert (Decimal(recorded["consumed_cost_usd"]), recorded["consumed_calls"]) == (
+        Decimal(consumed[0]),
+        consumed[1],
+    )
+    assert (Decimal(recorded["reserved_cost_usd"]), recorded["reserved_calls"]) == (0, 0)
+    assert (recorded["attempt_failure"], recorded["parked_reason"]) == (failure, parked)
+
+
+def test_dispatch_refuses_without_admission() -> None:
+    state = _state()
+    cycle_state, request = _leased(state)
+    host = _FakeHost()
+    late = _args(state, _Client(), now=request.deadline)
+    assert _dispatch_host(late, state, cycle_state, host, request) is None
+    assert state["repair_cycle"]["attempt_failure"] == "runtime-exhausted"
+    assert cycle_state.reserved_calls == 0
+
+    state = _state()
+    cycle_state, request = _leased(state)
+    cycle_state.consumed_calls = 10
+    assert _dispatch_host(_args(state, _Client()), state, cycle_state, host, request) is None
+    assert state["repair_cycle"]["attempt_failure"] == "budget-exhausted"
+    assert host.admissions == []
+
+    for mismatched in (
+        replace(request, attempt_id="other"),
+        replace(request, deadline=request.deadline + timedelta(seconds=1)),
+    ):
+        with pytest.raises(ValueError, match="current lease"):
+            _dispatch_host(_args(state, _Client()), state, cycle_state, host, mismatched)
+
+
+def test_dispatch_persists_reservation_before_launch(tmp_path) -> None:
+    state_path = tmp_path / "state.json"
+    args = _args(None, _Client(), state=str(state_path))
+    seen: list[dict] = []
+
+    def read_disk() -> None:
+        seen.append(json.loads(state_path.read_text())["repair_cycle"])
+
+    with repair_cycle._locked_state(args) as state:
+        cycle_state, request = _leased(state)
+        _dispatch_host(args, state, cycle_state, _FakeHost(on_run=read_disk), request)
+
+    assert (seen[0]["reserved_cost_usd"], seen[0]["reserved_calls"]) == ("2.00", 10)
+    settled = json.loads(state_path.read_text())["repair_cycle"]
+    assert (settled["reserved_calls"], settled["consumed_calls"]) == (0, 3)
+    assert settled["consumed_cost_usd"] == "0.5"
+
+
+def test_interrupted_dispatch_keeps_reservation(tmp_path) -> None:
+    state_path = tmp_path / "state.json"
+    args = _args(None, _Client(), state=str(state_path))
+
+    with pytest.raises(KeyboardInterrupt), repair_cycle._locked_state(args) as state:
+        cycle_state, request = _leased(state)
+        _dispatch_host(args, state, cycle_state, _FakeHost(error=KeyboardInterrupt()), request)
+
+    host = _FakeHost()
+    after_deadline = _args(None, _Client(), state=str(state_path), now=request.deadline)
+    with repair_cycle._locked_state(after_deadline) as state:
+        restarted = repair_cycle._cycle_state(state)
+        assert (restarted.reserved_cost_usd, restarted.reserved_calls) == (Decimal("2.00"), 10)
+        assert _dispatch_host(after_deadline, state, restarted, host, request) is None
+
+    assert host.admissions == []
+    recorded = json.loads(state_path.read_text())["repair_cycle"]
+    assert recorded["attempt_failure"] == "unsettled-reservation"
+    assert recorded["reserved_calls"] == 10
