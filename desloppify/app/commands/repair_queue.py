@@ -234,9 +234,10 @@ def _select(
     blockers = _pending_repairs(state, args.repository)
     for issue_id, pending in blockers:
         if isinstance(pending, Mapping):
+            key = pending.get("key", pending.get("marker"))
             print(
                 f"No repair selected: repair publication for {issue_id} is unresolved; check"
-                f" GitHub, then run repair-queue recover {pending.get('key', pending.get('marker'))}."
+                f" GitHub, then run repair-queue recover {key}."
             )
         else:
             print(
@@ -264,7 +265,9 @@ def _select(
         _record_selection(args, state, "no-op", "selected candidate changed before create", None)
 
 
-def _safe(args: argparse.Namespace, state: Mapping[str, Any], candidate: PromotionCandidate) -> bool:
+def _safe(
+    args: argparse.Namespace, state: Mapping[str, Any], candidate: PromotionCandidate
+) -> bool:
     """A selectable candidate is still current and its brief can be published."""
     if _candidate_by_id(state, candidate.issue_id, candidate.repository) != candidate:
         print(f"Skipped {candidate.issue_id}: result is stale.")
@@ -301,10 +304,10 @@ def _record_selection(
     # is nothing to record, so never take the lock for them.
     if not args.apply or not _issues(state):
         return
-    with _locked_state(args) as state:
-        records = state.get("repair_queue_selection")
+    with _locked_state(args) as locked:
+        records = locked.get("repair_queue_selection")
         if not isinstance(records, dict):
-            records = state["repair_queue_selection"] = {}
+            records = locked["repair_queue_selection"] = {}
         records[args.repository] = {
             "outcome": outcome,
             "reason": reason,

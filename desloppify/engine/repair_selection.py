@@ -8,7 +8,9 @@ from typing import Any
 from desloppify.engine.repair_queue import PromotionCandidate, matching_record
 
 
-def rank_key(issue: Mapping[str, Any], candidate: PromotionCandidate) -> tuple[int, int, int, int, str]:
+def rank_key(
+    issue: Mapping[str, Any], candidate: PromotionCandidate
+) -> tuple[int, int, int, int, str]:
     """Risk, verification feasibility, evidence, benefit, then key; the lowest ranks first."""
     record = matching_record(issue["detail"], "github_repair_revalidated", candidate) or {}
     citations = [
