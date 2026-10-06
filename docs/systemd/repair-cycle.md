@@ -12,8 +12,23 @@ window, and limits.
 Perform these steps only after the pilot and approval above. Install
 `desloppify` at `/usr/local/bin/desloppify`. Create the dedicated
 unprivileged `mending` account and make it the owner of the one target checkout
-at `/var/lib/mending/repository`, and keep that checkout current with its
-default branch: the cycle scans and rechecks it as it is and never fetches.
+at `/var/lib/mending/repository`, cloned with an `origin` remote and left on
+that remote's default branch. Before each refresh the cycle brings the checkout
+current: it asks `origin` which branch its `HEAD` names (not the checkout's
+tracking configuration), fetches that branch, and fast-forwards the checkout,
+all within the configured runtime and with git hooks and `core.fsmonitor`
+disabled. It does not commit, reset, stash, or switch branches, and moves
+nothing on a checkout with uncommitted changes to tracked files, on another
+branch or a detached `HEAD`, ahead of or diverged from `origin`, or one it
+cannot fetch or fast-forward; each of those parks the run as
+`checkout-not-current` before the scan, and the journal says which. The other settings in the checkout's git
+configuration still apply, and the host can write that configuration like the
+rest of the checkout.
+The unit needs network access to `origin`. For a private repository, give
+`mending` a read-only credential git uses without asking (the cycle sets
+`GIT_TERMINAL_PROMPT=0` and drops inherited `GIT_*` variables, so configure it
+in git configuration, not the environment file), stored outside `/home`,
+which the unit hides; a read-only deploy key is enough.
 The scan also writes its working files under `.desloppify/` in the checkout,
 which the target repository should ignore; confirm it commits no
 `.desloppify/` files, because a committed `.desloppify/config.json` with
@@ -140,12 +155,13 @@ run the cycle as root, and keep a manual pilot's configuration in a directory
 owned by another account.
 
 Each run does, in order: observe a recorded attempt that is not settled, and
-stop there; refresh with `desloppify scan`; revalidate and publish with
+stop there; bring the checkout current and refresh with `desloppify scan`; revalidate and publish with
 `repair-queue sync --apply`, both bounded by the configured runtime; select and authorize one published repair; then
 dispatch it once to the Claude Code host, which runs the Adept skills and stops
 at a draft pull request. A second run that starts while one is running prints
 `Repair cycle already running.` and exits. A failed refresh or publication
-parks as `refresh-failed` or `publication-failed` before selection.
+parks as `refresh-failed` or `publication-failed` before selection; a checkout
+that cannot be brought current parks as `checkout-not-current` before the scan.
 
 The command enforces the selected runtime while each authority or selection
 call is running, and the host adapter enforces it, the call limit, and the USD

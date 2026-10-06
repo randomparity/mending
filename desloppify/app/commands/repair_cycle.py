@@ -11,6 +11,7 @@ import signal
 import subprocess  # nosec B404
 import sys
 import threading
+import time
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import replace
@@ -165,6 +166,10 @@ def _refresh(args: argparse.Namespace, config: CycleConfig) -> str | None:
     supplied = getattr(args, "refresh", None)
     if callable(supplied):
         return cast("str | None", supplied())
+    stale = _bring_current(_repo_root(args), config.runtime_seconds)
+    if stale is not None:
+        print(f"Repair cycle checkout not current: {stale}")
+        return "checkout-not-current"
     # -P keeps a checkout package from shadowing the installed desloppify.
     argv = [
         sys.executable, "-P", "-m", "desloppify", "scan", "--no-badge",
@@ -178,6 +183,43 @@ def _refresh(args: argparse.Namespace, config: CycleConfig) -> str | None:
         print(f"Repair cycle refresh failed: {exc}")
         return "refresh-failed"
     return None if done.returncode == 0 else "refresh-failed"
+
+
+def _bring_current(root: Path, seconds: float) -> str | None:
+    """Fast-forward a clean checkout to its ``origin`` default branch; else why it is stale.
+
+    The remote's own HEAD names the default branch, not the checkout's tracking
+    configuration. A dirty, detached, diverged, or ahead checkout is left as it is.
+    """
+    deadline = time.monotonic() + seconds
+    # The host can write the checkout's git configuration and hooks; run neither.
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    env["GIT_TERMINAL_PROMPT"] = "0"
+
+    def git(*command: str) -> str:
+        return subprocess.run(  # nosec B603 B607 - fixed argv, no shell.
+            ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
+             "-C", str(root), *command],
+            capture_output=True, text=True, env=env, check=True,
+            timeout=deadline - time.monotonic(),
+        ).stdout
+
+    try:
+        if git("status", "--porcelain", "--untracked-files=no"):
+            return "uncommitted changes"
+        default = git("ls-remote", "--symref", "origin", "HEAD").partition("\t")[0]
+        branch = git("rev-parse", "--symbolic-full-name", "HEAD").strip()
+        if not default.startswith("ref: refs/heads/") or branch != default[5:]:
+            return f"on {branch}, not {default[5:] or 'an advertised default branch'}"
+        git("fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "origin", branch)
+        git("merge", "--quiet", "--ff-only", "FETCH_HEAD")
+        head, fetched = git("rev-parse", "HEAD", "FETCH_HEAD").split()
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or "").strip().splitlines() or [f"exit {exc.returncode}"]
+        return f"git {exc.cmd[7]} failed: {detail[-1]}"
+    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        return f"git failed: {exc}"
+    return None if head == fetched else "ahead of origin"
 
 
 def _publish(args: argparse.Namespace, config: CycleConfig) -> str | None:
