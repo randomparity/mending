@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import http.client
 import ssl
 import urllib.error
 import urllib.parse
@@ -80,6 +81,13 @@ class _SourceRedirectHandler(urllib.request.HTTPRedirectHandler):
     http_error_301 = http_error_303 = http_error_307 = http_error_308 = http_error_302
 
 
+def _truncated_error(filename: str) -> CommandError:
+    return CommandError(
+        f"Download of {filename} ended before its declared length; refused.\n"
+        "The connection closed early; retry: desloppify update-skill"
+    )
+
+
 def _download(filename: str) -> str:
     """Download a file from this repository's docs directory on GitHub (ADR 0011)."""
     url = f"{_RAW_BASE}/{filename}"
@@ -91,9 +99,11 @@ def _download(filename: str) -> str:
         with opener.open(url, timeout=15) as resp:  # nosec B310
             _check_source_url(url, resp.geturl(), filename)
             body = resp.read(_MAX_DOWNLOAD_BYTES + 1)
-            # A bounded read() returns a short body instead of raising IncompleteRead;
-            # a nonzero remaining Content-Length is how truncation shows up.
+            # Truncation shows up two ways: a Content-Length body leaves a nonzero
+            # remaining length, while a chunked body cut mid-chunk raises IncompleteRead.
             truncated = bool(resp.length)
+    except http.client.IncompleteRead as exc:
+        raise _truncated_error(filename) from exc
     except urllib.error.URLError as exc:
         if "CERTIFICATE_VERIFY_FAILED" in str(exc):
             raise CommandError(
@@ -109,10 +119,7 @@ def _download(filename: str) -> str:
             "desloppify update-skill"
         )
     if truncated:
-        raise CommandError(
-            f"Download of {filename} ended before its declared length; refused.\n"
-            "The connection closed early; retry: desloppify update-skill"
-        )
+        raise _truncated_error(filename)
     return body.decode("utf-8")
 
 

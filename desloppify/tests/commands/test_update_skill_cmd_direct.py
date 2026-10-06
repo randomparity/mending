@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import email.message
+import http.client
 import io
 import urllib.request
 import urllib.response
@@ -206,6 +207,27 @@ def test_download_rejects_body_shorter_than_declared_length(monkeypatch) -> None
     message = str(excinfo.value)
     assert "Download of SKILL.md ended before its declared length" in message
     assert "desloppify update-skill" in message
+
+
+def test_download_rejects_chunked_body_cut_short_mid_chunk(monkeypatch) -> None:
+    class _Sock:
+        def makefile(self, *_args, **_kwargs):
+            return io.BytesIO(
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n64\r\npartial"
+            )
+
+    raw = http.client.HTTPResponse(_Sock())
+    raw.begin()
+    raw.geturl = lambda: f"{update_skill_cmd_mod._RAW_BASE}/SKILL.md"
+    _fake_opener(monkeypatch, raw)
+
+    with pytest.raises(CommandError) as excinfo:
+        update_skill_cmd_mod._download("SKILL.md")
+    message = str(excinfo.value)
+    assert "Download of SKILL.md ended before its declared length" in message
+    assert "desloppify update-skill" in message
+    assert update_skill_cmd_mod._RAW_BASE not in message
+    assert isinstance(excinfo.value.__cause__, http.client.IncompleteRead)
 
 
 def test_download_accepts_body_that_satisfied_declared_length(monkeypatch) -> None:
