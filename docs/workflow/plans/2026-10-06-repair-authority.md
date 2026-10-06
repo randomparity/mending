@@ -8,9 +8,10 @@ reuses repair-queue's source comparison, and records the bound revision on
 the attempt. Spec: `docs/workflow/specs/2026-10-06-repair-authority-design.md`;
 ADR 0015. Stack: Python 3.11+, pytest, mypy, ruff, import-linter.
 
-Expected implementation size: 230–300 changed lines (M) — new engine module
-(~110), command wiring (~60), state/dispose (~25), parser and docs (~20),
-test fixture rework and new cases (~120 net).
+Expected implementation size: 850–1000 changed lines (M) — engine module
+(~195), command wiring (~240), state and disposal (~45), parser and docs
+(~55), tests (~460, mostly fixtures every existing case now needs); above the
+M band because the shared fixtures change, not because scope grew.
 
 ## Global Constraints
 
@@ -59,20 +60,20 @@ class AuthorityBinding: repository: str; key: str; reviewed_brief_version: str
     cost_cap_usd: Decimal; runtime_seconds: int
 def authority_from_mapping(repository: str, value: object) -> Authority | None
 def check_authority(authority: Authority | None, binding: AuthorityBinding,
-                    now: datetime, bound_revision: str | None = None) -> str | None
+                    now: datetime, bound: bool = False) -> str | None
 ```
 
 Verification:
 
 - Contract: each `check_authority` reason and its order. Mode: focused-test —
   `test_check_authority_reasons` parametrized over missing, revoked (flag,
-  revision change, removed approval), mismatch (version, digest, repository),
+  removed approval when bound), revision change when bound (approved), mismatch (version, digest, repository),
   expired, scope (action, file), limits (calls, cost, runtime), and approve.
   Red: `ModuleNotFoundError: desloppify.engine.repair_authority`. Green: the
   focused command passes.
 - Contract: decoding. Mode: focused-test — `test_authority_decoding` covers
   absent → `None`, `schema: 2` and action `merge` → `UnsupportedAuthority`,
-  naive `expires_at` and empty `files` → `ValueError`.
+  naive `expires_at`, empty `files`, and a duplicate key → `ValueError`.
 
 Steps: write both tests; run the focused command and see the import error;
 implement the module (decode with the `_required_text`-style helpers local
@@ -98,7 +99,8 @@ Verification:
 - Contract: active-attempt disposal. Mode: focused-test —
   `test_dispose_refuses_an_active_attempt_without_confirmation`: receipt
   `active` raises `CommandError` mentioning `--confirm-stopped`; with
-  `confirm_stopped=True` it disposes; a dispatch at `intent` also refuses.
+  `confirm_stopped=True` it disposes; a dispatch at `intent` or `unknown`,
+  or with outcome `unknown`, also refuses.
   Red: disposal succeeds. Green: focused command.
 - Contract: persisted `authority` round-trips; legacy state without it loads;
   a non-string value raises. Mode: focused-test — extend
@@ -114,46 +116,47 @@ Commit `feat(repair-cycle): bind authority state and guard active disposal`.
 
 Files: `desloppify/app/commands/repair_cycle.py`, tests, docs.
 
-Interfaces: `_authorize(args, state, cycle_state, config, now) -> AuthorityBinding | str`;
+Interfaces: `_authorize(args, state, cycle_state, config, now, *, select=False)
+-> tuple[AuthorityBinding, dict[str, str]] | str`;
 `_dispatch_host(args, state, cycle_state, config, adapter, request)`;
 `AdeptCycleClient.select(config, lease, binding: AuthorityBinding)`.
 
-`_authorize` order: issue id from `cycle_state.authority["issue_id"]` or the
-`selected` record in `state["repair_queue_selection"][config.repository]`;
-`candidate_from_issue(issue, config.repository)` and
-`reviewed_version(issue, candidate)` → else `selected-repair-unavailable`;
-bound key differs → `authority-mismatch`; `source_comparison` not current →
-`source-unreadable` if `keep` else `source-not-current`; `--config` path or
-its parent writable (`os.access(..., os.W_OK)`) without `config_data` →
-`authority-untrusted`; `authority_from_mapping` → `authority-unsupported` /
-`authority-invalid`; binding files are the revalidated manifest's
-dependency paths; return `check_authority(...)` or the binding.
+`_authorize` follows the spec's order exactly (unbound, trust, decode, work
+item via `_selected_issue(state, repository, authority)`, bound key, source,
+`check_authority`); binding files are the revalidated manifest's dependency
+paths. `_begin_and_select` authorizes with `select=True` before `begin`.
 
 Verification:
 
 - Contract: every command-level reason parks before `client.select` with
-  `selections == 0`. Mode: focused-test — `test_selection_parks_without_authority`
-  parametrized over no selection record, untrusted config file (mode 0o644 in
-  `tmp_path`, skipped as root), invalid block, unsupported schema, missing
-  approval, changed source (fake source returning another blob), unreadable
-  source (`AnalysisUnknown`). Red: selection proceeds. Green: focused command.
-- Contract: a read-only config file (0o444 file, 0o555 directory) is trusted.
-  Mode: focused-test — `test_read_only_config_is_trusted`.
-- Contract: selection records `{issue_id, key, revision}` before
-  `client.select` and passes the binding. Mode: focused-test — rework
-  `test_lease_is_persisted_before_authority_verification`.
-- Contract: dispatch refuses after revocation or with nothing bound, without
-  admission or launch. Mode: focused-test — `test_dispatch_rechecks_authority`
-  (revision bumped; `authority` cleared) asserts `adapter.runs == 0` and the
-  reason.
-- Contract: resume of an active attempt fails on revocation and leaves a
-  terminal one alone. Mode: focused-test — `test_resume_fails_revoked_active_attempt`.
+  `selections == 0` and no bound record. Mode: focused-test —
+  `test_selection_parks_without_authority` parametrized over no link, a
+  closed link, invalid block, unsupported schema, missing approval,
+  mismatch, revoked, expired, scope, limits, unreadable source
+  (`AnalysisUnknown`), and a failing check. Red: selection proceeds.
+- Contract: trust by ownership and writability. Mode: focused-test —
+  `test_only_a_foreign_read_only_config_grants_authority` monkeypatches
+  `repair_cycle.os.geteuid` and `repair_cycle.os.access` (owned file, writable
+  file, parent, ancestor → untrusted; foreign read-only → selected), plus a
+  missing file → untrusted.
+- Contract: selection prefers an approved published repair, records
+  `{issue_id, key, revision}` before `client.select`, and passes the binding.
+  Mode: focused-test — `test_selection_binds_authority_before_client_selection`,
+  `test_selection_prefers_an_approved_published_repair`.
+- Contract: dispatch refuses when unbound, revoked, removed, or expired,
+  without admission or lookup. Mode: focused-test —
+  `test_dispatch_rechecks_authority`, `test_dispatch_rechecks_source`.
+- Contract: resume of an active attempt fails on revocation, a changed brief,
+  a different bound key, or no binding. Mode: focused-test —
+  `test_resume_rechecks_an_active_attempt` and its siblings.
 - Contract: docs. Mode: task-test-not-applicable — operator prose in
   `docs/systemd/repair-cycle.md` has no executable consumer.
 
-Steps: update the shared fixtures first (`_state()` holds a revalidated,
-selected concern item; `_config()` holds a matching approval; `_args` adds
-`source` and `check` fakes as in `test_repair_queue.py`) and confirm the
-existing suite still fails only where `AuthorityProof` is referenced; write
+Steps: update the shared fixtures first (`_state()` holds a revalidated
+concern item with an open `github_repair` link; `_config()` holds a matching
+approval; `_args` adds `source` and `check` fakes from `test_repair_queue.py`;
+`_leased` binds the attempt). Expect red at every `AuthorityProof` reference
+and a `TypeError` at each of the 13 `_dispatch_host` calls until they pass
+`CONFIG`; an attempt test with an `active` receipt also needs a binding; write
 the new tests; implement; rerun the focused command, then the guardrails;
 commit `feat(repair-cycle): check trusted authority at selection, dispatch, and resume`.
