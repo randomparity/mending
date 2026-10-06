@@ -61,6 +61,15 @@ class HostReferences:
 
 
 @dataclass(frozen=True)
+class PullRequest:
+    """One recorded pull request: whether it is open, and the paths it changes."""
+
+    url: str
+    open: bool
+    files: frozenset[str]
+
+
+@dataclass(frozen=True)
 class HostRequest:
     """An already selected, reviewed repair handed to the host."""
 
@@ -225,6 +234,19 @@ class ClaudeHostAdapter:
             ),
         )
 
+    def pull_requests(self, urls: tuple[str, ...]) -> tuple[PullRequest, ...]:
+        """Read each recorded pull request of the configured repository.
+
+        The URLs come from the state file, which the host can write, so each must
+        be a pull request URL of this repository before it reaches ``gh``.
+        """
+        pattern = re.compile(
+            rf"https://github\.com/{re.escape(self.repository)}/pull/[0-9]+", re.IGNORECASE
+        )
+        if bad := [url for url in urls if not pattern.fullmatch(url)]:
+            raise HostLookupError(f"not a pull request of {self.repository}: {bad[0][:200]!r}")
+        return tuple(_pull_request(url) for url in urls)
+
     def _launch(
         self,
         command: list[str],
@@ -372,6 +394,21 @@ def _tagged(kind: str, repository: str, tag: str) -> tuple[str, ...]:
         and isinstance(entry.get("body"), str)
         and tag in entry["body"].splitlines()
     )
+
+
+def _pull_request(url: str) -> PullRequest:
+    output = _output("gh pr view", ["gh", "pr", "view", url, "--json", "state,files"])
+    try:
+        found = json.loads(output)
+    except ValueError as exc:
+        raise HostLookupError("gh pr view returned invalid JSON") from exc
+    state = found.get("state") if isinstance(found, dict) else None
+    files = found.get("files") if isinstance(found, dict) else None
+    if not isinstance(state, str) or not isinstance(files, list) or not all(
+        isinstance(entry, dict) and isinstance(entry.get("path"), str) for entry in files
+    ):
+        raise HostLookupError("gh pr view returned an unexpected shape")
+    return PullRequest(url, state == "OPEN", frozenset(entry["path"] for entry in files))
 
 
 def _output(label: str, argv: list[str]) -> str:
@@ -545,5 +582,6 @@ __all__ = [
     "HostOutcome",
     "HostReferences",
     "HostRequest",
+    "PullRequest",
     "host_session_id",
 ]
