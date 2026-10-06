@@ -426,7 +426,10 @@ if mode == "garbage":
     sys.exit(0)
 with open(os.environ["FAKE_GH_RECORD"], "a") as fh:
     fh.write(" ".join(sys.argv[1:]) + "\\n")
-print(os.environ["FAKE_GH_" + kind.upper()])
+key = kind.upper()
+if kind == "api":
+    key += "_FILES" if sys.argv[-1].split("?")[0].endswith("/files") else "_PULL"
+print(os.environ["FAKE_GH_" + key])
 """
 
 
@@ -500,29 +503,84 @@ def test_lookup_without_gh_or_git_repository_fails_closed(lookup, tmp_path, monk
         lookup["adapter"].references("a1", "owner/repository", lookup["repo"], ())
 
 
-def test_pull_requests_read_state_and_files(lookup, monkeypatch):
+def _files(*names: str, renamed_from: dict[str, str] | None = None) -> list[dict]:
+    renamed_from = renamed_from or {}
+    return [
+        {"filename": name, "status": "renamed", "previous_filename": renamed_from[name]}
+        if name in renamed_from else {"filename": name, "status": "modified"}
+        for name in names
+    ]
+
+
+def _serve_pull(monkeypatch, state: str, count: int, pages: list[list[dict]]) -> None:
+    monkeypatch.setenv("FAKE_GH_API_PULL", json.dumps({"state": state, "changed_files": count}))
+    monkeypatch.setenv("FAKE_GH_API_FILES", json.dumps(pages))
+
+
+def test_pull_requests_read_state_and_every_changed_path(lookup, monkeypatch):
     adapter = lookup["adapter"]
     url = "https://github.com/owner/repository/pull/7"
-    monkeypatch.setenv("FAKE_GH_PR", json.dumps(
-        {"state": "MERGED", "files": [{"path": "a.py"}, {"path": "tests/test_a.py"}]}
-    ))
+    first = _files(*(f"src/m{i}.py" for i in range(100)))
+    second = _files("src/new.py", renamed_from={"src/new.py": "secret/old.py"})
+    _serve_pull(monkeypatch, "closed", 101, [first, second])
 
-    assert adapter.pull_requests((url,)) == (
-        PullRequest(url, False, frozenset({"a.py", "tests/test_a.py"})),
-    )
-    monkeypatch.setenv("FAKE_GH_PR", json.dumps({"state": "OPEN", "files": []}))
+    (pr,) = adapter.pull_requests((url,))
+
+    assert pr.url == url and pr.open is False
+    assert pr.files == frozenset({entry["filename"] for entry in first} | {
+        "src/new.py", "secret/old.py",
+    })
+    _serve_pull(monkeypatch, "open", 0, [[]])
     renamed = "https://github.com/Owner/Repository/pull/8"
     assert adapter.pull_requests((renamed,)) == (PullRequest(renamed, True, frozenset()),)
-    calls = lookup["log"].read_text().splitlines()
-    assert calls == [f"pr view {url} --json state,files", f"pr view {renamed} --json state,files"]
+    assert lookup["log"].read_text().splitlines() == [
+        "api repos/owner/repository/pulls/7",
+        "api --paginate --slurp repos/owner/repository/pulls/7/files?per_page=100",
+        "api repos/owner/repository/pulls/8",
+        "api --paginate --slurp repos/owner/repository/pulls/8/files?per_page=100",
+    ]
 
 
-@pytest.mark.parametrize("payload", ['{"state": 1, "files": []}', '{"state": "OPEN"}',
-                                     '{"state": "OPEN", "files": [{"path": 3}]}', "[]"])
-def test_pull_requests_reject_malformed_output(lookup, monkeypatch, payload):
-    monkeypatch.setenv("FAKE_GH_PR", payload)
-    with pytest.raises(HostLookupError, match="gh pr view"):
+@pytest.mark.parametrize("count", [101, 99, 3001])
+def test_pull_requests_refuse_a_file_list_that_misses_changed_files(lookup, monkeypatch, count):
+    _serve_pull(monkeypatch, "open", count, [_files(*(f"f{i}" for i in range(100)))])
+    with pytest.raises(HostLookupError, match=f"listed 100 of {count} changed files"):
         lookup["adapter"].pull_requests(("https://github.com/owner/repository/pull/7",))
+
+
+def test_pull_requests_refuse_a_list_at_the_api_cap(lookup, monkeypatch):
+    # GitHub lists at most 3000 files, so a full list cannot show nothing was cut off.
+    pages = [[{"filename": f"{page}/{i}"} for i in range(100)] for page in range(30)]
+    _serve_pull(monkeypatch, "closed", 3000, pages)
+    with pytest.raises(HostLookupError, match="cannot list all 3000 changed files"):
+        lookup["adapter"].pull_requests(("https://github.com/owner/repository/pull/7",))
+
+
+@pytest.mark.parametrize(("pull", "pages"), [
+    ({"state": 1, "changed_files": 0}, [[]]),
+    ({"state": "open"}, [[]]),
+    ({"state": "open", "changed_files": "1"}, [_files("a")]),
+    ({"state": "open", "changed_files": True}, [_files("a")]),
+    ([], [[]]),
+    ({"state": "open", "changed_files": 1}, _files("a")),
+    ({"state": "open", "changed_files": 1}, {"filename": "a"}),
+    ({"state": "open", "changed_files": 1}, [[{"filename": 3}]]),
+    ({"state": "open", "changed_files": 1}, [["a"]]),
+    ({"state": "open", "changed_files": 1}, [[{"filename": "a", "previous_filename": 3}]]),
+])
+def test_pull_requests_reject_malformed_output(lookup, monkeypatch, pull, pages):
+    monkeypatch.setenv("FAKE_GH_API_PULL", json.dumps(pull))
+    monkeypatch.setenv("FAKE_GH_API_FILES", json.dumps(pages))
+    with pytest.raises(HostLookupError, match="gh api"):
+        lookup["adapter"].pull_requests(("https://github.com/owner/repository/pull/7",))
+
+
+def test_pull_requests_fail_closed_when_gh_fails(lookup, monkeypatch):
+    for mode, message in (("fail", "gh api exited 1: denied"),
+                          ("garbage", "gh api returned invalid JSON")):
+        monkeypatch.setenv("FAKE_GH_MODE", mode)
+        with pytest.raises(HostLookupError, match=message):
+            lookup["adapter"].pull_requests(("https://github.com/owner/repository/pull/7",))
 
 
 @pytest.mark.parametrize("url", [

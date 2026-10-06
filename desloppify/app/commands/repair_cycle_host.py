@@ -40,6 +40,7 @@ _CANCEL_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
 _LOOKUP_SECONDS = 10.0
 _LOOKUP_LIMIT = "100"
 _LOOKUP_DETAIL_CHARS = 200
+_PR_FILE_CAP = 3000  # GitHub's REST API lists at most this many files of a pull request
 
 
 def host_session_id(attempt_id: str) -> str:
@@ -62,7 +63,10 @@ class HostReferences:
 
 @dataclass(frozen=True)
 class PullRequest:
-    """One recorded pull request: whether it is open, and the paths it changes."""
+    """One recorded pull request: whether it is open, and the paths it changes.
+
+    ``files`` holds every changed path, including the old path of a renamed file.
+    """
 
     url: str
     open: bool
@@ -245,7 +249,7 @@ class ClaudeHostAdapter:
         )
         if bad := [url for url in urls if not pattern.fullmatch(url)]:
             raise HostLookupError(f"not a pull request of {self.repository}: {bad[0][:200]!r}")
-        return tuple(_pull_request(url) for url in urls)
+        return tuple(_pull_request(self.repository, url) for url in urls)
 
     def _launch(
         self,
@@ -395,19 +399,49 @@ def _tagged(kind: str, repository: str, tag: str) -> tuple[str, ...]:
     )
 
 
-def _pull_request(url: str) -> PullRequest:
-    output = _output("gh pr view", ["gh", "pr", "view", url, "--json", "state,files"])
-    try:
-        found = json.loads(output)
-    except ValueError as exc:
-        raise HostLookupError("gh pr view returned invalid JSON") from exc
+def _pull_request(repository: str, url: str) -> PullRequest:
+    """Read a pull request's state and every path it changes, renames' old paths included.
+
+    The file list must account for the pull request's whole changed-file count; a
+    list that falls short, or reaches the API's file cap, fails closed.
+    """
+    endpoint = f"repos/{repository}/pulls/{url.rsplit('/', 1)[1]}"
+    found = _api_json(["gh", "api", endpoint])
+    pages = _api_json(["gh", "api", "--paginate", "--slurp", f"{endpoint}/files?per_page=100"])
+    if not isinstance(pages, list) or not all(isinstance(page, list) for page in pages):
+        raise HostLookupError("gh api returned an unexpected file list")
+    entries = [entry for page in pages for entry in page]
     state = found.get("state") if isinstance(found, dict) else None
-    files = found.get("files") if isinstance(found, dict) else None
-    if not isinstance(state, str) or not isinstance(files, list) or not all(
-        isinstance(entry, dict) and isinstance(entry.get("path"), str) for entry in files
+    count = found.get("changed_files") if isinstance(found, dict) else None
+    if (
+        not isinstance(state, str)
+        or not isinstance(count, int)
+        or isinstance(count, bool)
+        or not all(_file_entry(entry) for entry in entries)
     ):
-        raise HostLookupError("gh pr view returned an unexpected shape")
-    return PullRequest(url, state == "OPEN", frozenset(entry["path"] for entry in files))
+        raise HostLookupError("gh api returned an unexpected pull request shape")
+    if len(entries) != count:
+        raise HostLookupError(f"gh api listed {len(entries)} of {count} changed files")
+    if count >= _PR_FILE_CAP:
+        raise HostLookupError(f"gh api cannot list all {count} changed files")
+    paths = {entry["filename"] for entry in entries}
+    paths.update(entry["previous_filename"] for entry in entries if entry.get("previous_filename"))
+    return PullRequest(url, state == "open", frozenset(paths))
+
+
+def _file_entry(entry: object) -> bool:
+    return (
+        isinstance(entry, dict)
+        and isinstance(entry.get("filename"), str)
+        and isinstance(entry.get("previous_filename", ""), (str, type(None)))
+    )
+
+
+def _api_json(argv: list[str]) -> object:
+    try:
+        return json.loads(_output("gh api", argv))
+    except ValueError as exc:
+        raise HostLookupError("gh api returned invalid JSON") from exc
 
 
 def _output(label: str, argv: list[str]) -> str:
