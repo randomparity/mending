@@ -70,8 +70,10 @@ proposals instead of repairs. A repair issue published before this change, or
 before a reclassification, is not withdrawn; the dispatch-time recheck
 (#19/#26) and selection (#22) own that. A renamed file gives a duplicate pair
 a new identity. A finding key is computable from public source (file path
-and function names), so sync adopts a finding-key match only through its
-own pending create; any other match parks the item for a human. A concern
+and function names), so sync adopts a finding-key match only while its own
+create is pending; any other match parks the item for a human. Inside that
+window a third-party issue carrying the key can still be the one adopted,
+because adoption checks the body line, not the author. A concern
 key stays unguessable until its repair brief publishes it. A lane flip while the other lane holds a record
 parks the item until a human reconciles it. `candidate_from_issue` keeps its
 meaning, a current small-repair candidate, so any caller of it never sees a
