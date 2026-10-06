@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import argparse
 import copy
+import json
 from types import SimpleNamespace
+
+import pytest
 
 from desloppify.app.commands.repair_queue import _create_once, cmd_repair_queue
 from desloppify.engine.repair_brief import reviewed_version
@@ -348,3 +351,21 @@ def test_material_change_reports_changed_and_wording_change_does_not(capsys) -> 
     assert narrow["detail"]["github_repair"]["evidence_digest"] == "c" * 64
     assert f"Changed {narrow['id']}" in capsys.readouterr().out
     assert len(client.creates) == 1
+
+
+@pytest.mark.parametrize(
+    "content",
+    [{"version": 2, "work_items": {}}, {"version": 2, "work_items": {"a": {"id": "b"}}}],
+    ids=["empty", "invalid-invariants"],
+)
+def test_sync_leaves_a_state_file_without_work_items_untouched(tmp_path, content) -> None:
+    state_file = tmp_path / "state.json"
+    original = json.dumps(content).encode()
+    state_file.write_bytes(original)
+    args = _args({}, _GitHub())
+    args.state_data, args.state = None, str(state_file)
+
+    cmd_repair_queue(args)
+
+    assert state_file.read_bytes() == original
+    assert not state_file.with_suffix(".json.bak").exists()

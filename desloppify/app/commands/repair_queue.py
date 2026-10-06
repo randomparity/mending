@@ -299,9 +299,9 @@ def _record_selection(
     reason: str,
     issue_id: str | None,
 ) -> None:
-    # load_state falls back to an empty state when the file fails its invariants, and a
-    # locked write would then replace that file and its backup; with no work items there
-    # is nothing to record, so never take the lock for them.
+    # ADR 0014: a state with no work items records no selection. A state file that failed
+    # to load also reads as empty here; state_lock would refuse to save over it, so skipping
+    # the lock keeps a no-op sync from failing on it.
     if not args.apply or not _issues(state):
         return
     with _locked_state(args) as locked:
