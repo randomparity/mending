@@ -479,6 +479,7 @@ def remote(tmp_path, monkeypatch) -> dict[str, Path]:
     for name in [name for name in os.environ if name.startswith("GIT_")]:
         monkeypatch.delenv(name)
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     monkeypatch.setenv("HOME", str(tmp_path))  # the developer's global git config stays out
     upstream, publisher = tmp_path / "upstream.git", tmp_path / "publisher"
     _git(tmp_path, "init", "-q", "--bare", "-b", "main", str(upstream))

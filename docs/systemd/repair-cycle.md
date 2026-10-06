@@ -24,7 +24,9 @@ branch or a detached `HEAD`, ahead of or diverged from `origin`, or one it
 cannot fetch or fast-forward; each of those parks the run as
 `checkout-not-current` before the scan, and the journal says which. It also
 parks rather than start the fast-forward with under 30 seconds of the runtime
-left. Disabling hooks and `core.fsmonitor` is not an isolation boundary: the
+left. A git call stopped at the runtime can still leave a lock file or a
+partly updated tree; later runs then park as `checkout-not-current` until you
+inspect and repair the checkout. Disabling hooks and `core.fsmonitor` is not an isolation boundary: the
 other settings in the checkout's git configuration still apply, and the host
 can write that configuration like the rest of the checkout. The cycle fetches
 from whichever `origin` URL it names, and its filter drivers, `core.sshCommand`,
