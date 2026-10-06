@@ -138,27 +138,35 @@ class _Response:
         return self._body if amt is None else self._body[:amt]
 
 
-def _fake_opener(monkeypatch, response: _Response) -> list[str]:
+def _fake_opener(monkeypatch, response: _Response) -> tuple[list[str], list[object]]:
     requested: list[str] = []
+    handlers: list[object] = []
 
     class _Opener:
         def open(self, url, **_kwargs):
             requested.append(url)
             return response
 
-    monkeypatch.setattr(
-        update_skill_cmd_mod.urllib.request, "build_opener", lambda *_handlers: _Opener()
-    )
-    return requested
+    def _build_opener(*given):
+        handlers.extend(given)
+        return _Opener()
+
+    monkeypatch.setattr(update_skill_cmd_mod.urllib.request, "build_opener", _build_opener)
+    return requested, handlers
 
 
 def test_download_fetches_from_this_repository_docs(monkeypatch) -> None:
-    requested = _fake_opener(monkeypatch, _Response())
+    context = update_skill_cmd_mod.ssl.create_default_context()
+    monkeypatch.setattr(update_skill_cmd_mod, "_ssl_context", lambda: context)
+    requested, handlers = _fake_opener(monkeypatch, _Response())
 
     assert update_skill_cmd_mod._download("SKILL.md") == "skill text"
     assert requested == [
         "https://raw.githubusercontent.com/randomparity/mending/main/docs/SKILL.md"
     ]
+    https = [h for h in handlers if isinstance(h, urllib.request.HTTPSHandler)]
+    assert [h._context for h in https] == [context]
+    assert any(isinstance(h, update_skill_cmd_mod._SourceRedirectHandler) for h in handlers)
 
 
 def test_download_accepts_body_at_the_size_limit(monkeypatch) -> None:
