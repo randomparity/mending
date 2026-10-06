@@ -8,16 +8,15 @@ follow redirects to any host. The text is written into agent instruction files.
 ## Scope
 
 Change only `_download` and its tests. Open the URL through an opener built from an HTTPS handler
-(existing SSL context) and a redirect handler. Its `http_error_30x` validates the `Location`
-(or `URI`) header, joined against the request URL, before delegating to the stdlib, whose own
-scheme pre-check would otherwise echo the target in an `HTTPError`. It raises `CommandError`
-unless the target has scheme `https`, hostname `raw.githubusercontent.com` (parsed from
-`_RAW_BASE`), and no explicit port. Comparison is exact on `urlsplit(...).hostname`, so `…githubusercontent.com.evil`,
-`user@` tricks and `http://` fail. After opening, apply the same check to `resp.geturl()`. Read
-at most `_MAX_DOWNLOAD_BYTES + 1` bytes (256 KiB; largest doc today is ~14 KB) and raise
-`CommandError` above the limit, or when `resp.length` shows the body ended short of its declared
-length (a bounded `read` does not raise `IncompleteRead`). Error text names the file, the expected host or limit, and a fix;
-it never echoes the redirect target. Excluded: checksums/signatures, proxy and certificate handling.
+(existing SSL context) and a redirect handler whose `http_error_30x` validates the `Location`
+(or `URI`) header, joined against the request URL, before delegating to the stdlib (whose own
+scheme check echoes the target in an `HTTPError`). It raises `CommandError` unless the target
+has scheme `https`, hostname `raw.githubusercontent.com` (from `_RAW_BASE`), no port and no
+userinfo; the hostname match is exact. The same check applies to `resp.geturl()`. Read at most
+`_MAX_DOWNLOAD_BYTES + 1` bytes (256 KiB; largest doc ~14 KB); raise `CommandError` above the
+limit, or when `resp.length` shows the body ended short (a bounded `read` does not raise
+`IncompleteRead`). Error text names the file, the expected host or limit, and a fix, never the
+redirect target. Excluded: checksums/signatures, proxy and certificate handling.
 
 ### Failure model
 
