@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import ssl
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from desloppify.app.skill_docs import (
@@ -22,6 +23,8 @@ from desloppify.base.discovery.paths import get_project_root
 from desloppify.base.output.terminal import colorize
 
 _RAW_BASE = "https://raw.githubusercontent.com/randomparity/mending/main/docs"
+# Bounds the bytes written into agent instruction files; docs/SKILL.md is ~14 KB.
+_MAX_DOWNLOAD_BYTES = 256 * 1024
 
 
 def _ssl_context() -> ssl.SSLContext:
@@ -33,13 +36,64 @@ def _ssl_context() -> ssl.SSLContext:
         return ssl.create_default_context()
 
 
+def _check_source_url(base: str, target: str, filename: str) -> None:
+    """Raise unless *target* (resolved against *base*) is https on the ``_RAW_BASE`` host.
+
+    The message never includes *target*: it comes from the server and may carry
+    arbitrary text or terminal escapes.
+    """
+    expected_host = urllib.parse.urlsplit(_RAW_BASE).hostname
+    try:
+        parts = urllib.parse.urlsplit(urllib.parse.urljoin(base, target))
+        same_origin = (
+            parts.scheme == "https"
+            and parts.hostname == expected_host
+            and parts.port is None
+            and parts.username is None
+        )
+    except ValueError:
+        same_origin = False
+    if not same_origin:
+        raise CommandError(
+            f"Download of {filename} was redirected away from https://{expected_host}; "
+            "refused.\nCheck the network path to GitHub, then retry: desloppify update-skill"
+        )
+
+
+class _SourceRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Follow redirects only within the ``_RAW_BASE`` origin.
+
+    Validates before delegating: the stdlib's own scheme check raises an
+    ``HTTPError`` whose message echoes the redirect target.
+    """
+
+    def __init__(self, filename: str) -> None:
+        self._filename = filename
+
+    def http_error_302(self, req, fp, code, msg, headers):
+        for name in ("location", "uri"):
+            if name in headers:
+                _check_source_url(req.full_url, headers[name], self._filename)
+                break
+        return super().http_error_302(req, fp, code, msg, headers)
+
+    http_error_301 = http_error_303 = http_error_307 = http_error_308 = http_error_302
+
+
 def _download(filename: str) -> str:
     """Download a file from this repository's docs directory on GitHub (ADR 0011)."""
     url = f"{_RAW_BASE}/{filename}"
+    opener = urllib.request.build_opener(
+        urllib.request.HTTPSHandler(context=_ssl_context()),
+        _SourceRedirectHandler(filename),
+    )
     try:
-        ctx = _ssl_context()
-        with urllib.request.urlopen(url, timeout=15, context=ctx) as resp:  # nosec B310
-            return resp.read().decode("utf-8")
+        with opener.open(url, timeout=15) as resp:  # nosec B310
+            _check_source_url(url, resp.geturl(), filename)
+            body = resp.read(_MAX_DOWNLOAD_BYTES + 1)
+            # A bounded read() returns a short body instead of raising IncompleteRead;
+            # a nonzero remaining Content-Length is how truncation shows up.
+            truncated = bool(resp.length)
     except urllib.error.URLError as exc:
         if "CERTIFICATE_VERIFY_FAILED" in str(exc):
             raise CommandError(
@@ -48,6 +102,18 @@ def _download(filename: str) -> str:
                 "Or run: /Applications/Python\\ 3.*/Install\\ Certificates.command"
             ) from exc
         raise
+    if len(body) > _MAX_DOWNLOAD_BYTES:
+        raise CommandError(
+            f"Download of {filename} exceeded {_MAX_DOWNLOAD_BYTES} bytes; refused.\n"
+            "The skill source returned an unexpected response; retry later: "
+            "desloppify update-skill"
+        )
+    if truncated:
+        raise CommandError(
+            f"Download of {filename} ended before its declared length; refused.\n"
+            "The connection closed early; retry: desloppify update-skill"
+        )
+    return body.decode("utf-8")
 
 
 def _build_section(skill_content: str, overlay_content: str | None) -> str:

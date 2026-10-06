@@ -3,9 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import email.message
+import io
+import urllib.request
+import urllib.response
 from pathlib import Path
 
+import pytest
+
 import desloppify.app.commands.update_skill.cmd as update_skill_cmd_mod
+from desloppify.base.exception_sets import CommandError
 
 
 def test_update_skill_helper_functions_cover_frontmatter_resolution_and_replace() -> None:
@@ -113,26 +120,176 @@ def test_cmd_update_skill_handles_missing_and_unknown_interfaces(monkeypatch, ca
     assert "Unknown interface 'unknown_thing'." in out
 
 
-def test_download_fetches_from_this_repository_docs(monkeypatch) -> None:
+class _Response:
+    def __init__(
+        self, body: bytes = b"skill text", url: str | None = None, length: int | None = None
+    ) -> None:
+        self._body = body
+        self._url = url
+        self.length = length
+        self.read_sizes: list[int | None] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def geturl(self) -> str:
+        return self._url or f"{update_skill_cmd_mod._RAW_BASE}/SKILL.md"
+
+    def read(self, amt: int | None = None) -> bytes:
+        self.read_sizes.append(amt)
+        chunk = self._body if amt is None else self._body[:amt]
+        if self.length is not None:  # http.client.HTTPResponse counts down what remains
+            self.length -= len(chunk)
+        return chunk
+
+
+def _fake_opener(monkeypatch, response: _Response) -> tuple[list[str], list[object]]:
     requested: list[str] = []
+    handlers: list[object] = []
 
-    class _Response:
-        def __enter__(self):
-            return self
+    class _Opener:
+        def open(self, url, **_kwargs):
+            requested.append(url)
+            return response
 
-        def __exit__(self, *_exc):
-            return False
+    def _build_opener(*given):
+        handlers.extend(given)
+        return _Opener()
 
-        def read(self) -> bytes:
-            return b"skill text"
+    monkeypatch.setattr(update_skill_cmd_mod.urllib.request, "build_opener", _build_opener)
+    return requested, handlers
 
-    def _urlopen(url, **_kwargs):
-        requested.append(url)
-        return _Response()
 
-    monkeypatch.setattr(update_skill_cmd_mod.urllib.request, "urlopen", _urlopen)
+def test_download_fetches_from_this_repository_docs(monkeypatch) -> None:
+    context = update_skill_cmd_mod.ssl.create_default_context()
+    monkeypatch.setattr(update_skill_cmd_mod, "_ssl_context", lambda: context)
+    requested, handlers = _fake_opener(monkeypatch, _Response())
 
     assert update_skill_cmd_mod._download("SKILL.md") == "skill text"
     assert requested == [
         "https://raw.githubusercontent.com/randomparity/mending/main/docs/SKILL.md"
     ]
+    https = [h for h in handlers if isinstance(h, urllib.request.HTTPSHandler)]
+    assert [h._context for h in https] == [context]
+    assert any(isinstance(h, update_skill_cmd_mod._SourceRedirectHandler) for h in handlers)
+
+
+def test_download_accepts_body_at_the_size_limit(monkeypatch) -> None:
+    limit = update_skill_cmd_mod._MAX_DOWNLOAD_BYTES
+    _fake_opener(monkeypatch, _Response(b"x" * limit))
+
+    assert len(update_skill_cmd_mod._download("SKILL.md")) == limit
+
+
+def test_download_rejects_body_over_the_size_limit(monkeypatch) -> None:
+    limit = update_skill_cmd_mod._MAX_DOWNLOAD_BYTES
+    response = _Response(b"x" * (limit + 1))
+    _fake_opener(monkeypatch, response)
+
+    with pytest.raises(CommandError) as excinfo:
+        update_skill_cmd_mod._download("SKILL.md")
+    assert response.read_sizes == [limit + 1]
+    message = str(excinfo.value)
+    assert "Download of SKILL.md" in message
+    assert str(limit) in message
+    assert "desloppify update-skill" in message
+
+
+def test_download_rejects_body_shorter_than_declared_length(monkeypatch) -> None:
+    _fake_opener(monkeypatch, _Response(b"partial", length=100))
+
+    with pytest.raises(CommandError) as excinfo:
+        update_skill_cmd_mod._download("SKILL.md")
+    message = str(excinfo.value)
+    assert "Download of SKILL.md ended before its declared length" in message
+    assert "desloppify update-skill" in message
+
+
+def test_download_accepts_body_that_satisfied_declared_length(monkeypatch) -> None:
+    _fake_opener(monkeypatch, _Response(b"skill text", length=len(b"skill text")))
+
+    assert update_skill_cmd_mod._download("SKILL.md") == "skill text"
+
+
+def test_download_rejects_final_url_on_another_host(monkeypatch) -> None:
+    _fake_opener(monkeypatch, _Response(url="https://evil.example/SKILL.md"))
+
+    with pytest.raises(CommandError) as excinfo:
+        update_skill_cmd_mod._download("SKILL.md")
+    assert "evil.example" not in str(excinfo.value)
+
+
+def _redirect(target: str, header: str = "Location"):
+    class _Parent:
+        def open(self, new_request, **_kwargs):
+            return new_request
+
+    handler = update_skill_cmd_mod._SourceRedirectHandler("SKILL.md")
+    handler.parent = _Parent()
+    request = urllib.request.Request(f"{update_skill_cmd_mod._RAW_BASE}/SKILL.md")
+    request.timeout = 15  # set by OpenerDirector.open in real use
+    headers = email.message.Message()
+    headers[header] = target
+    return handler.http_error_302(request, io.BytesIO(b""), 302, "Found", headers)
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "https://evil.example/SKILL.md",
+        "https://raw.githubusercontent.com.evil.example/SKILL.md",
+        "https://raw.githubusercontent.com@evil.example/SKILL.md",
+        "https://user@raw.githubusercontent.com/SKILL.md",
+        "http://raw.githubusercontent.com/SKILL.md",
+        "https://raw.githubusercontent.com:8443/SKILL.md",
+        "https://raw.githubusercontent.com:bad/SKILL.md",
+        "//evil.example/SKILL.md",
+        "file:///etc/passwd",
+        "data:text/plain,\x1b[31mowned",
+    ],
+)
+def test_redirect_handler_rejects_targets_off_the_source_host(target: str) -> None:
+    with pytest.raises(CommandError) as excinfo:
+        _redirect(target)
+    message = str(excinfo.value)
+    assert "Download of SKILL.md" in message
+    assert "raw.githubusercontent.com" in message
+    assert "desloppify update-skill" in message
+    assert target not in message
+    assert "evil" not in message
+
+
+def test_redirect_handler_checks_uri_header_when_location_is_absent() -> None:
+    with pytest.raises(CommandError):
+        _redirect("https://evil.example/SKILL.md", header="URI")
+
+
+def test_redirect_handler_follows_same_host_https_redirect() -> None:
+    new_request = _redirect("/randomparity/mending/other/docs/SKILL.md")
+
+    assert new_request.full_url == (
+        "https://raw.githubusercontent.com/randomparity/mending/other/docs/SKILL.md"
+    )
+
+
+def test_download_rejects_cross_host_redirect_through_real_opener(monkeypatch) -> None:
+    opened: list[str] = []
+
+    class _RedirectingHandler(urllib.request.HTTPSHandler):
+        def https_open(self, req):
+            opened.append(req.full_url)
+            headers = email.message.Message()
+            headers["Location"] = "https://evil.example/SKILL.md"
+            response = urllib.response.addinfourl(io.BytesIO(b""), headers, req.full_url, 302)
+            response.msg = "Found"
+            return response
+
+    monkeypatch.setattr(update_skill_cmd_mod.urllib.request, "HTTPSHandler", _RedirectingHandler)
+
+    with pytest.raises(CommandError) as excinfo:
+        update_skill_cmd_mod._download("SKILL.md")
+    assert "evil.example" not in str(excinfo.value)
+    assert opened == [f"{update_skill_cmd_mod._RAW_BASE}/SKILL.md"]
