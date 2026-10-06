@@ -20,7 +20,8 @@ cases onto the fake host).
 - No new dependency. Decimal for money; timezone-aware datetimes only.
 - Park/fail reasons: the ADR 0015 set plus exactly `refresh-failed`,
   `publication-failed`, `window-attempt-complete`, `host-failed`,
-  `no-pull-request`, `pull-request-lookup-unavailable`; existing
+  `no-pull-request`, `pull-request-lookup-unavailable`, `attempt-active` (an
+  unsettled attempt found at the second gate); existing
   `runtime-exhausted`, `budget-exhausted`, `dispatch-outcome-unknown`,
   `observation-exhausted`, `observation-timeout`, `disposition-required`.
   The removed `daily-attempt-complete`, `selection-unavailable`,
