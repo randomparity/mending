@@ -80,7 +80,10 @@ repair starts. `observation_call_limit` (default 3) and `observation_minutes`
 published repair by its stable key and the `reviewed_brief_version` and
 `evidence_digest` of its current brief. Copy them from the published repair
 issue you reviewed: its Provenance block shows the pair the issue was created
-with, as `reviewed-brief-version` and `evidence-digest`. Rewording the problem
+with, as `reviewed-brief-version` and `evidence-digest`. The account that
+creates the issue may also be able to edit it, so use an issue body that GitHub
+does not mark as edited, or whose edit history names only authors you trust.
+Rewording the problem
 (the issue title) moves neither value. Before approving, confirm that the pair
 still matches the repair's `github_repair` link record after a
 `repair-queue sync --apply`, which rewrites the record and prints `Changed ...`
@@ -92,7 +95,7 @@ first link write after an uncertain create can store a different pair without
 printing it. If they differ, the brief changed after the issue was published:
 do not approve that pair against the published text. An issue published before
 the Provenance block carried `reviewed-brief-version` shows no reviewed version,
-so for it the pair rests on the host-writable record alone. The cycle runs
+so for it the pair can be read only from the host-writable record. The cycle runs
 `scan` and `repair-queue sync --apply` itself with its own `--state` file; do
 not run either by hand against that file while the unit is active.
 `files` is the whole set of paths the repair may change: the brief's evidence
