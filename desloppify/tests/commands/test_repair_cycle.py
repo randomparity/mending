@@ -1221,9 +1221,36 @@ def test_only_a_foreign_read_only_config_grants_authority(
     assert state["repair_cycle"]["parked_reason"] == reason
 
 
-def test_missing_config_is_untrusted(tmp_path) -> None:
-    missing = argparse.Namespace(config=str(tmp_path / "gone.json"), config_data=None)
-    assert repair_cycle._trusted_config(missing) is False
+def test_missing_or_symlinked_config_is_untrusted(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(repair_cycle.os, "geteuid", lambda: os.getuid() + 1)
+    monkeypatch.setattr(repair_cycle.os, "access", lambda _entry, _mode: False)
+    target = (tmp_path / "repair-cycle.json").resolve()
+    target.write_text("{}")
+    link = tmp_path / "link.json"
+    link.symlink_to(target)
+
+    def trusted(path: Path) -> bool:
+        return repair_cycle._trusted_config(argparse.Namespace(config=str(path), config_data=None))
+
+    assert trusted(target) is True
+    assert trusted(link) is False
+    assert trusted(tmp_path / "gone.json") is False
+
+
+def test_dispatch_authority_check_is_time_bounded(monkeypatch) -> None:
+    state = _state()
+    cycle_state, request = _leased(state)
+    host = _FakeHost()
+
+    def overdue(*_args, **_kwargs):
+        raise TimeoutError("repair-cycle call bound exceeded")
+
+    monkeypatch.setattr(repair_cycle, "source_comparison", overdue)
+    args = _args(state, _Client())
+    assert _dispatch_host(args, state, cycle_state, CONFIG, host, request) is None
+
+    assert host.admissions == []
+    assert state["repair_cycle"]["parked_reason"] == "timeout"
 
 
 @pytest.mark.parametrize(

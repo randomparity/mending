@@ -62,11 +62,13 @@ published repair by its stable key and the `reviewed_brief_version` and
 `evidence_digest` stored on its `github_repair` link record in the state file.
 It allows the files of the brief's evidence manifest, the `repair` action
 (the only one supported), limits at or above the cycle's own, and an expiry.
-A selection binds the attempt to the approved repair and the `revision`. Before
+A selection binds the attempt to the approved repair and records the
+`revision` for audit. Before
 dispatch, and whenever a recorded attempt is observed still active, the cycle
 checks again: it recomputes the brief version, rechecks the source files and
-their evidence, and re-reads the approval. To revoke, set `"revoked": true`,
-remove the approval, or change `revision`; a revocation stops dispatch and
+their evidence, and re-reads the approval. To revoke, set `"revoked": true`
+or remove the approval; changing `revision` alone revokes nothing. A
+revocation stops dispatch and
 fails an active attempt, which then needs a disposition. A changed brief or
 evidence version voids its approval the same way, and an active attempt also
 fails when its source files change in the checkout (including when its own
@@ -77,8 +79,9 @@ named reason (`authority-missing`, `authority-revoked`, `authority-expired`,
 `source-not-current`, `source-unreadable`, or `selected-repair-unavailable`).
 
 The configuration grants authority only when the account running the cycle
-neither owns nor can write it, or any directory above it; otherwise every run
-parks as `authority-untrusted`. The root-owned files above meet this. Never
+neither owns nor can write it, or any directory above it, and `--config` is
+not a symbolic link or under one; otherwise every run parks as
+`authority-untrusted`. The root-owned files above meet this. Never
 run the cycle as root, and keep a manual pilot's configuration in a directory
 owned by another account.
 

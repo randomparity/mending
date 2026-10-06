@@ -345,11 +345,15 @@ def _trusted_config(args: argparse.Namespace) -> bool:
 
     The coding host runs as this account (ADR 0010), so an owned file could be
     made writable again; every ancestor directory is checked because a writable
-    one lets the file be replaced.
+    one lets the file be replaced. A symlinked path is refused, so the checked
+    file is the one that was read.
     """
     if isinstance(getattr(args, "config_data", None), Mapping):
         return True
-    path = Path(str(getattr(args, "config", ""))).resolve()
+    named = Path(os.path.abspath(str(getattr(args, "config", ""))))
+    path = named.resolve()
+    if path != named:
+        return False
     account = os.geteuid()
     for entry in (path, *path.parents):
         try:
@@ -416,7 +420,13 @@ def _dispatch_host(
     if _now(args) >= lease.deadline:
         _fail(state, cycle_state, "runtime-exhausted")
         return None
-    authorized = _authorize(args, state, cycle_state, config, _now(args))
+    try:
+        authorized = _call_before_deadline(
+            args, lease, lambda: _authorize(args, state, cycle_state, config, _now(args))
+        )
+    except TimeoutError:
+        _park(state, cycle_state, "timeout")
+        return None
     if isinstance(authorized, str):
         _park(state, cycle_state, authorized)
         return None
