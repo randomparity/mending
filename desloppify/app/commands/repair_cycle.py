@@ -219,7 +219,7 @@ def _bring_current(root: Path, seconds: float) -> str | None:
         git("fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "origin", branch)
         if deadline - time.monotonic() < _FAST_FORWARD_FLOOR_SECONDS:
             return "too little runtime left to fast-forward"
-        git("merge", "--quiet", "--ff-only", "FETCH_HEAD")
+        git("merge", "--quiet", "--ff-only", "--no-overwrite-ignore", "FETCH_HEAD")
         head, fetched = git("rev-parse", "HEAD", "FETCH_HEAD").split()
     except subprocess.CalledProcessError as exc:
         lines = [line for line in (exc.stderr or "").splitlines() if line and not

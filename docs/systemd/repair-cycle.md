@@ -18,7 +18,8 @@ current: it asks `origin` which branch its `HEAD` names (not the checkout's
 tracking configuration), fetches that branch, and fast-forwards the checkout,
 all within the configured runtime and with git hooks and `core.fsmonitor`
 disabled. It does not commit, reset, stash, or switch branches, and moves
-nothing on a checkout with uncommitted changes to tracked files, on another
+nothing on a checkout with uncommitted changes to tracked files, with an
+ignored or untracked file the fast-forward would overwrite, on another
 branch or a detached `HEAD`, ahead of or diverged from `origin`, or one it
 cannot fetch or fast-forward; each of those parks the run as
 `checkout-not-current` before the scan, and the journal says which. It also
@@ -40,7 +41,10 @@ the checkout's own configuration takes precedence over `/etc/gitconfig`).
 The scan also writes its working files under `.desloppify/` in the checkout,
 which the target repository should ignore; confirm it commits no
 `.desloppify/` files, because a committed `.desloppify/config.json` with
-`trust_plugins` makes every refresh run the checkout's plugins.
+`trust_plugins` makes every refresh run the checkout's plugins. Because each
+run fast-forwards to the default branch, that confirmation holds only until
+the next commit there: anyone who can push to it can add such a file, and the
+next run executes it as `mending`.
 Create `/var/lib/mending/repository-worktrees` (where the Adept skills put the
 repair worktree) and `/var/lib/mending/claude` (the Claude Code configuration
 directory, holding the account's credentials and session files), both owned

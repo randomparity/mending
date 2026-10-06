@@ -540,6 +540,23 @@ def test_a_checkout_that_cannot_be_fast_forwarded_is_left_as_it_is(
         assert (checkout / "a.py").read_text() == "a = 'local work'\n"
 
 
+def test_an_ignored_local_file_upstream_starts_tracking_is_kept(remote) -> None:
+    publisher, checkout = remote["publisher"], remote["checkout"]
+    _commit(publisher, ".gitignore", ".env\n")
+    _git(publisher, "push", "-q", "origin", "main")
+    assert repair_cycle._bring_current(checkout, 60) is None
+    (checkout / ".env").write_text("operator secret\n")
+    (publisher / ".env").write_text("upstream\n")
+    _git(publisher, "add", "--force", ".env")
+    _git(publisher, "commit", "-q", "-m", "track .env")
+    _git(publisher, "push", "-q", "origin", "main")
+    before = _git(checkout, "rev-parse", "HEAD")
+
+    assert repair_cycle._bring_current(checkout, 60).startswith("git merge failed")
+    assert _git(checkout, "rev-parse", "HEAD") == before
+    assert (checkout / ".env").read_text() == "operator secret\n"
+
+
 def test_a_fast_forward_never_starts_near_the_deadline(remote, monkeypatch) -> None:
     checkout = remote["checkout"]
     before = _git(checkout, "rev-parse", "HEAD")
