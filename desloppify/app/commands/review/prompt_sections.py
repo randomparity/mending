@@ -559,6 +559,17 @@ def render_scan_evidence_note() -> str:
     )
 
 
+def render_evidence_citation_note() -> str:
+    return (
+        "Evidence format for issues[] (confirmed concerns above all):\n"
+        "Give each `evidence` item as a `PATH:LINE[-LINE]` citation (repo-relative path, "
+        "for example `src/app.py:12-18`) followed by what that code shows, quoting each "
+        "identifier you rely on in backticks. Cite only lines you read, and quote only "
+        "identifiers that appear in the cited file. Evidence with no resolvable "
+        "citation is never promoted to repair work.\n\n"
+    )
+
+
 def render_task_requirements(*, issues_cap: int, dim_set: set[str]) -> str:
     dim_focus = render_dimension_focus(dim_set)
     lines = [
