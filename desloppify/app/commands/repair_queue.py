@@ -6,6 +6,7 @@ import argparse
 from collections import Counter
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -14,8 +15,8 @@ from desloppify.base.discovery.paths import get_project_root
 from desloppify.base.exception_sets import CommandError
 from desloppify.engine._state.persistence import load_state, state_lock
 from desloppify.engine.repair_brief import ParkedBrief, build_brief, render_brief
+from desloppify.engine.repair_check import CheckResult, check_concern
 from desloppify.engine.repair_manifest import (
-    ManifestComparison,
     SourceCheckout,
     SourceManifest,
     compare_manifests,
@@ -52,6 +53,7 @@ def cmd_repair_queue(args: argparse.Namespace) -> None:
 def _revalidate(args: argparse.Namespace, client: Any) -> None:
     _require_apply(args, "revalidate")
     repository = client.resolve_repository(args.repository)
+    refused: CheckResult | None = None
     with _locked_state(args) as state:
         issue = _issues(state).get(args.issue_id)
         candidate = candidate_from_issue(issue or {}, repository, require_revalidation=False)
@@ -64,11 +66,24 @@ def _revalidate(args: argparse.Namespace, client: Any) -> None:
                 "file and related files must be committed regular files, as repository-relative "
                 "paths, under --source-root, the repository top level"
             )
-        issue["detail"]["github_repair_revalidated"] = {
-            **_record_base(candidate),
-            "manifest": manifest.as_record(),
-            "manifest_digest": manifest.digest,
-        }
+        check = _check(args, issue, manifest)
+        if check.outcome != "pass":
+            refused = check
+            issue["detail"].pop("github_repair_revalidated", None)
+        else:
+            issue["detail"]["github_repair_revalidated"] = {
+                **_record_base(candidate),
+                "manifest": manifest.as_record(),
+                "manifest_digest": manifest.digest,
+                "check": check.as_record(),
+                "check_digest": check.digest,
+            }
+    if refused is not None:
+        raise CommandError(
+            f"verification check did not pass ({refused.outcome}: {refused.reason}); the "
+            "concern evidence must cite recorded files as PATH:LINE whose lines and quoted "
+            "identifiers still hold"
+        )
     print(f"Revalidated {args.issue_id} for {repository}.")
 
 
@@ -198,21 +213,57 @@ def _recheck_locked(
 ) -> bool:
     """Inside a state-lock transaction: proceed only on current source evidence."""
     issue = _issues(state)[candidate.issue_id]
-    comparison = _comparison(args, issue)
-    if comparison.current:
+    recheck = _comparison(args, issue)
+    if recheck.current:
         return True
-    if comparison.current_digest is None:
-        print(f"Skipped {candidate.issue_id}: source could not be read; revalidation kept.")
+    if recheck.keep:
+        print(
+            f"Skipped {candidate.issue_id}: source or its check could not be read "
+            f"({recheck.reason}); revalidation kept."
+        )
         return False
     issue["detail"].pop("github_repair_revalidated", None)
-    print(f"Skipped {candidate.issue_id}: source evidence is not current ({comparison.reason}).")
+    print(f"Skipped {candidate.issue_id}: source evidence is not current ({recheck.reason}).")
     return False
 
 
-def _comparison(args: argparse.Namespace, issue: Mapping[str, Any]) -> ManifestComparison:
+@dataclass(frozen=True)
+class _Recheck:
+    """Whether stored evidence is current; ``keep`` means unreadable, not changed."""
+
+    current: bool
+    reason: str
+    keep: bool
+
+
+_CHECK_REASONS = {"fail": "check-failed", "unknown": "check-unknown"}
+
+
+def _comparison(args: argparse.Namespace, issue: Mapping[str, Any]) -> _Recheck:
+    """Compare the stored manifest, then re-run the check on the rebuilt one."""
     record = issue["detail"].get("github_repair_revalidated")
-    stored = manifest_from_record(record.get("manifest") if isinstance(record, Mapping) else None)
-    return compare_manifests(stored, _source(args).manifest_for(issue))
+    record = record if isinstance(record, Mapping) else {}
+    rebuilt = _source(args).manifest_for(issue)
+    comparison = compare_manifests(manifest_from_record(record.get("manifest")), rebuilt)
+    if not comparison.current or not isinstance(rebuilt, SourceManifest):
+        return _Recheck(False, comparison.reason, comparison.current_digest is None)
+    check = _check(args, issue, rebuilt)
+    if check.transient:
+        return _Recheck(False, check.reason, True)
+    if check.digest != record.get("check_digest"):
+        return _Recheck(False, _CHECK_REASONS.get(check.outcome, "check-changed"), False)
+    return _Recheck(True, "unchanged", False)
+
+
+def _check(
+    args: argparse.Namespace, issue: Mapping[str, Any], manifest: SourceManifest
+) -> CheckResult:
+    """Run the evidence check; tests inject results through ``args.check``."""
+    supplied = getattr(args, "check", None)
+    if supplied is not None:
+        result: CheckResult = supplied(issue, manifest)
+        return result
+    return check_concern(_source(args).root, manifest, issue)
 
 
 def _source(args: argparse.Namespace) -> Any:
