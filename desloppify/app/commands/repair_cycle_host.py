@@ -40,6 +40,7 @@ _CANCEL_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
 _LOOKUP_SECONDS = 10.0
 _LOOKUP_LIMIT = "100"
 _LOOKUP_DETAIL_CHARS = 200
+_PR_FILE_CAP = 3000  # GitHub's REST API lists at most this many files of a pull request
 
 
 def host_session_id(attempt_id: str) -> str:
@@ -402,8 +403,8 @@ def _tagged(kind: str, repository: str, tag: str) -> tuple[str, ...]:
 def _pull_request(repository: str, url: str) -> PullRequest:
     """Read a pull request's state and every path it changes, renames' old paths included.
 
-    The file list must account for the pull request's whole changed-file count;
-    one it cannot fully list (the API returns at most 3000 files) fails closed.
+    The file list must account for the pull request's whole changed-file count; a
+    list that falls short, or reaches the API's file cap, fails closed.
     """
     endpoint = f"repos/{repository}/pulls/{url.rsplit('/', 1)[1]}"
     found = _api_json(["gh", "api", endpoint])
@@ -422,6 +423,8 @@ def _pull_request(repository: str, url: str) -> PullRequest:
         raise HostLookupError("gh api returned an unexpected pull request shape")
     if len(entries) != count:
         raise HostLookupError(f"gh api listed {len(entries)} of {count} changed files")
+    if count >= _PR_FILE_CAP:
+        raise HostLookupError(f"gh api cannot list all {count} changed files")
     paths = {entry["filename"] for entry in entries}
     paths.update(entry["previous_filename"] for entry in entries if entry.get("previous_filename"))
     return PullRequest(url, state == "open", frozenset(paths))

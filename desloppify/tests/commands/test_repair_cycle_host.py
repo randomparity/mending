@@ -548,6 +548,14 @@ def test_pull_requests_refuse_a_file_list_that_misses_changed_files(lookup, monk
         lookup["adapter"].pull_requests(("https://github.com/owner/repository/pull/7",))
 
 
+def test_pull_requests_refuse_a_list_at_the_api_cap(lookup, monkeypatch):
+    # GitHub lists at most 3000 files, so a full list cannot show nothing was cut off.
+    pages = [[{"filename": f"{page}/{i}"} for i in range(100)] for page in range(30)]
+    _serve_pull(monkeypatch, "closed", 3000, pages)
+    with pytest.raises(HostLookupError, match="cannot list all 3000 changed files"):
+        lookup["adapter"].pull_requests(("https://github.com/owner/repository/pull/7",))
+
+
 @pytest.mark.parametrize(("pull", "pages"), [
     ({"state": 1, "changed_files": 0}, [[]]),
     ({"state": "open"}, [[]]),
