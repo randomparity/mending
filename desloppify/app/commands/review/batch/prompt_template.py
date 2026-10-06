@@ -22,6 +22,7 @@ from ..prompt_sections import (
     render_historical_focus,
     render_judgment_findings_section,
     render_mechanical_concern_signals,
+    render_evidence_citation_note,
     render_scan_evidence_note,
     render_scope_enums,
     render_scoring_frame,
@@ -108,7 +109,7 @@ def _render_output_schema(context: PromptBatchContext, batch_index: int) -> str:
         '    "identifier": "short_id",\n'
         '    "summary": "one-line defect summary",\n'
         '    "related_files": ["relative/path.py"],\n'
-        '    "evidence": ["specific code observation"],\n'
+        '    "evidence": ["`path/to/file.py:12-18` observation quoting `identifier`"],\n'
         '    "suggestion": "concrete fix recommendation",\n'
         '    "confidence": "high|medium|low",\n'
         '    "impact_scope": "local|module|subsystem|codebase",\n'
@@ -169,6 +170,7 @@ def render_batch_prompt(
             dimension_contexts if isinstance(dimension_contexts, dict) else {},
         ),
         render_scan_evidence_note(),
+        render_evidence_citation_note(),
         render_historical_focus(batch),
         render_dimension_deferral_context(batch),
         render_mechanical_concern_signals(batch),

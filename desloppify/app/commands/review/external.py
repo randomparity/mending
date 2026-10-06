@@ -39,6 +39,7 @@ from .prompt_sections import (
     render_historical_focus,
     render_judgment_findings_section,
     render_mechanical_concern_signals,
+    render_evidence_citation_note,
     render_scan_evidence_note,
     render_scope_enums,
     render_scoring_frame,
@@ -274,7 +275,7 @@ def _build_claude_launch_prompt(
         '    "identifier": "short_id",\n'
         '    "summary": "one-line defect summary",\n'
         '    "related_files": ["relative/path.py"],\n'
-        '    "evidence": ["specific code observation"],\n'
+        '    "evidence": ["`path/to/file.py:12-18` observation quoting `identifier`"],\n'
         '    "suggestion": "concrete fix recommendation",\n'
         '    "confidence": "high|medium|low",\n'
         '    "impact_scope": "local|module|subsystem|codebase",\n'
@@ -325,6 +326,7 @@ def _build_claude_launch_prompt(
         constraints_text,
         render_scoring_frame(),
         render_scan_evidence_note(),
+        render_evidence_citation_note(),
         render_task_requirements(issues_cap=combined_cap, dim_set=all_dims),
         render_scope_enums(),
         output_schema,

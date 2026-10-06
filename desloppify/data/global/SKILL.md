@@ -8,7 +8,7 @@ description: >
 ---
 
 <!-- desloppify-begin -->
-<!-- desloppify-skill-version: 8 -->
+<!-- desloppify-skill-version: 9 -->
 
 # Desloppify
 
@@ -162,13 +162,15 @@ Return machine-readable JSON for review imports. For `--external-submit`, includ
       "identifier": "short_id",
       "summary": "one-line defect summary",
       "related_files": ["relative/path/to/file.py"],
-      "evidence": ["specific code observation"],
+      "evidence": ["`path/to/file.py:12-18` observation quoting `identifier`"],
       "suggestion": "concrete fix recommendation",
       "confidence": "high|medium|low"
     }
   ]
 }
 ```
+
+Give each `evidence` item as a `PATH:LINE[-LINE]` citation plus what the cited lines show, quoting each identifier you rely on in backticks (bare code identifiers copied from the cited lines, in files you also list in `related_files`); evidence with no resolvable citation is never promoted to repair work.
 
 `findings` MUST match `query.system_prompt` exactly (including `related_files`, `evidence`, and `suggestion`). Use `"findings": []` when no defects found. Import is fail-closed: invalid findings abort unless `--allow-partial` is passed. Assessment scores are auto-applied from trusted internal or cloud session imports. Legacy `--attested-external` remains supported.
 

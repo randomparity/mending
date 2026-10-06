@@ -161,3 +161,41 @@ def test_exploded_batch_uses_public_dimension_prompt_contract() -> None:
     assert context.dimension_prompts == {
         "mid_level_elegance": {"description": "explicit rubric"}
     }
+
+
+def test_batch_and_external_prompts_request_cited_evidence() -> None:
+    from pathlib import Path
+
+    from desloppify.app.commands.review import external as external_mod
+    from desloppify.app.commands.review.batch.prompt_template import render_batch_prompt
+    from desloppify.app.commands.review.prompt_sections import (
+        render_evidence_citation_note,
+    )
+
+    note = render_evidence_citation_note()
+    assert "`PATH:LINE[-LINE]` citation" in note
+    assert "in backticks" in note
+
+    batch = {
+        "name": "design_coherence",
+        "dimensions": ["design_coherence"],
+        "why": "test",
+        "files_to_read": ["src/seed.py"],
+    }
+    batch_prompt = render_batch_prompt(
+        repo_root=Path("/repo"),
+        packet_path=Path("/repo/.desloppify/review_packets/p.json"),
+        batch_index=0,
+        batch=batch,
+    )
+    external_prompt = external_mod._build_claude_launch_prompt(
+        session_id="s1",
+        token="t1",
+        blind_path=Path("/tmp/blind.json"),
+        template_path=Path("/tmp/template.json"),
+        output_path=Path("/tmp/output.json"),
+        packet={"dimensions": ["design_coherence"], "investigation_batches": [batch]},
+    )
+    for prompt in (batch_prompt, external_prompt):
+        assert note in prompt
+        assert '"evidence": ["`path/to/file.py:12-18` observation' in prompt
