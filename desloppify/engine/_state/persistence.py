@@ -19,7 +19,7 @@ try:
 except ImportError:
     fcntl = None  # type: ignore[assignment]
 
-from desloppify.base.exception_sets import PLAN_LOAD_EXCEPTIONS
+from desloppify.base.exception_sets import PLAN_LOAD_EXCEPTIONS, CommandError
 __all__ = [
     "load_state",
     "save_state",
@@ -158,7 +158,17 @@ def _saved_plan_load_status(state_path: Path) -> PlanLoadStatus:
 
 def load_state(path: Path | None = None) -> StateModel:
     """Load state from disk, or return empty state on missing/corruption."""
-    state_path = path or _default_state_file()
+    state, _fallback_reason = _load_state_reporting_fallback(path or _default_state_file())
+    return state
+
+
+def _load_state_reporting_fallback(state_path: Path) -> tuple[StateModel, str | None]:
+    """Load state and say why an existing file was replaced by a fresh state.
+
+    The reason is ``None`` when the file loaded, a backup was recovered, or no
+    state file exists yet (first run). A missing file whose ``.json.corrupted``
+    copy exists is not a first run: an earlier load moved the original aside.
+    """
     if not state_path.exists():
         plan_path = plan_path_for_state(state_path)
         if plan_path.exists():
@@ -166,7 +176,15 @@ def load_state(path: Path | None = None) -> StateModel:
                 f"  ⚠ State file missing ({state_path.name}); attempting recovery from {plan_path.name}.",
                 file=sys.stderr,
             )
-        return _reconstruct_from_saved_plan_if_available(state_path, empty_state())
+        corrupted_path = state_path.with_suffix(".json.corrupted")
+        reason = None
+        if corrupted_path.exists():
+            reason = (
+                f"it is missing and an earlier load moved an undecodable copy to "
+                f"{corrupted_path}. Repair it and move it back to {state_path.name}, "
+                "delete it to start fresh, or rerun `desloppify scan` to rebuild state"
+            )
+        return _reconstruct_from_saved_plan_if_available(state_path, empty_state()), reason
 
     try:
         data = _load_json(state_path)
@@ -191,10 +209,11 @@ def load_state(path: Path | None = None) -> StateModel:
                     file=sys.stderr,
                 )
                 normalized_backup = _normalize_loaded_state(backup_data)
-                return _reconstruct_from_saved_plan_if_available(
+                recovered = _reconstruct_from_saved_plan_if_available(
                     state_path,
                     normalized_backup,
                 )
+                return recovered, None
             except (
                 json.JSONDecodeError,
                 UnicodeDecodeError,
@@ -218,19 +237,27 @@ def load_state(path: Path | None = None) -> StateModel:
             ex,
         )
         print(f"  ⚠ State file corrupted ({ex}). Starting fresh.", file=sys.stderr)
-        rename_failed = False
+        corrupted_path = state_path.with_suffix(".json.corrupted")
+        reason = (
+            f"it could not be decoded ({ex}) and no usable backup was found; "
+            f"the original was moved to {corrupted_path}. Repair it and move it back "
+            f"to {state_path.name}, or rerun `desloppify scan` to rebuild state"
+        )
         try:
-            state_path.rename(state_path.with_suffix(".json.corrupted"))
+            state_path.rename(corrupted_path)
         except OSError as rename_ex:
-            rename_failed = True
             logger.debug(
                 "Failed to rename corrupted state file %s: %s", state_path, rename_ex
             )
-        if rename_failed:
             logger.debug(
                 "Corrupted state file retained at original path: %s", state_path
             )
-        return _reconstruct_from_saved_plan_if_available(state_path, empty_state())
+            reason = (
+                f"it could not be decoded ({ex}) and no usable backup was found; "
+                "the original was left in place. Repair or remove it, "
+                "or rerun `desloppify scan` to rebuild state"
+            )
+        return _reconstruct_from_saved_plan_if_available(state_path, empty_state()), reason
 
     version = data.get("version", 1)
     if version > CURRENT_VERSION:
@@ -243,7 +270,7 @@ def load_state(path: Path | None = None) -> StateModel:
 
     try:
         normalized = _normalize_loaded_state(data)
-        return _reconstruct_from_saved_plan_if_available(state_path, normalized)
+        return _reconstruct_from_saved_plan_if_available(state_path, normalized), None
     except (ValueError, TypeError, AttributeError) as normalize_ex:
         logger.warning(
             "State invariants invalid for %s; falling back to empty state: %s",
@@ -254,7 +281,17 @@ def load_state(path: Path | None = None) -> StateModel:
             f"  ⚠ State invariants invalid ({normalize_ex}). Starting fresh.",
             file=sys.stderr,
         )
-        return _reconstruct_from_saved_plan_if_available(state_path, empty_state())
+        backup = state_path.with_suffix(".json.bak")
+        recovery = (
+            f"Restore {backup} over it, repair it"
+            if backup.exists()
+            else "Repair or remove it"
+        )
+        reason = (
+            f"its state invariants are invalid ({normalize_ex}); the file was left in place. "
+            f"{recovery}, or rerun `desloppify scan` to rebuild state"
+        )
+        return _reconstruct_from_saved_plan_if_available(state_path, empty_state()), reason
 
 
 def _coerce_integrity_target(value: object) -> float | None:
@@ -334,6 +371,12 @@ def state_lock(
     Acquires an exclusive file lock, reloads state from disk (to pick up the
     latest version), yields it for mutation, then saves on clean exit.
 
+    Raises ``CommandError`` instead of yielding when the state file could not
+    be loaded, so a fresh fallback state never overwrites it (or, on the next
+    save, its backup). That includes a missing file whose undecodable original
+    an earlier ``load_state`` moved to ``.json.corrupted``. A first run, with
+    no state file and no ``.json.corrupted`` copy, stays writable.
+
     Usage::
 
         with state_lock(state_file) as state:
@@ -362,7 +405,11 @@ def state_lock(
                 time.sleep(0.1)
 
         # Reload state inside the lock to get the latest version.
-        state = load_state(state_path)
+        state, fallback_reason = _load_state_reporting_fallback(state_path)
+        if fallback_reason is not None:
+            raise CommandError(
+                f"Refusing to save state over {state_path}: {fallback_reason}."
+            )
         yield state
         save_state(
             state,
