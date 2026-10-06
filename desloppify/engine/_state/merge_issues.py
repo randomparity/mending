@@ -18,8 +18,9 @@ from desloppify.engine._state.issue_semantics import (
     is_assessment_request,
 )
 from desloppify.engine.repair_queue import (
+    LINK_KINDS,
     RepairRecordError,
-    concern_hashes,
+    item_hashes,
     normalize_record,
 )
 
@@ -64,21 +65,23 @@ def find_suspect_detectors(
     return suspect
 
 
-_REPAIR_RECORD_KINDS = ("github_repair", "github_repair_pending", "github_repair_revalidated")
+_REPAIR_RECORD_KINDS = (*LINK_KINDS, "github_repair_revalidated")
 
 
-def _preserve_repair_metadata(previous_detail: object, detail: dict) -> None:
-    """Keep queue records while concern identity is unchanged; evidence may move.
+def _preserve_repair_metadata(previous_issue: Mapping[str, Any], issue: Mapping[str, Any]) -> None:
+    """Keep queue records while a routed item's identity is unchanged; evidence may move.
 
-    Links and pending attempts survive an evidence change in stable-key shape;
-    an unrecognized record is kept verbatim so sync parks on it. Revalidation is
-    kept only while the evidence digest is unchanged.
+    Links and pending attempts of both lanes survive an evidence change in
+    stable-key shape; an unrecognized record is kept verbatim so sync parks on
+    it. Revalidation is kept only while the evidence version is unchanged.
     """
+    previous_detail, detail = previous_issue.get("detail"), issue["detail"]
     if not isinstance(previous_detail, Mapping):
         return
-    previous, current = concern_hashes(previous_detail), concern_hashes(detail)
-    if previous is None or current is None or previous[0] != current[0]:
+    previous, current = item_hashes(previous_issue), item_hashes(issue)
+    if previous is None or current is None or previous[:2] != current[:2]:
         return
+    route, identity, evidence = previous
     for kind in _REPAIR_RECORD_KINDS:
         record = previous_detail.get(kind)
         if record is None:
@@ -86,7 +89,7 @@ def _preserve_repair_metadata(previous_detail: object, detail: dict) -> None:
         repository = record.get("repository") if isinstance(record, Mapping) else None
         try:
             normalized = (
-                normalize_record(kind, record, repository, *previous)
+                normalize_record(kind, record, repository, identity, evidence, route=route)
                 if isinstance(repository, str)
                 else None
             )
@@ -292,8 +295,7 @@ def upsert_issues(
         previous = existing[issue_id]
         detail = dict(issue.get("detail", {}))
         previous_detail = previous.get("detail")
-        if detector == "concerns":
-            _preserve_repair_metadata(previous_detail, detail)
+        _preserve_repair_metadata(previous, {**issue, "detail": detail})
         if (
             detector == "concerns"
             and isinstance(previous_detail, dict)

@@ -52,7 +52,10 @@ def _issue(*, revalidated: bool = True) -> dict:
             "evidence_digest": EVIDENCE,
             **BOUND,
         }
-    return {"id": "concerns::item", "detector": "concerns", "status": "open", "detail": detail}
+    return {
+        "id": "concerns::item", "detector": "concerns", "status": "open", "confidence": "high",
+        "detail": detail,
+    }
 
 
 def _normalize(kind: str, record: object, evidence: str = EVIDENCE):

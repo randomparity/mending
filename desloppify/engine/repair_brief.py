@@ -14,12 +14,19 @@ import unicodedata
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from hashlib import sha256
-from typing import Any
+from typing import Any, ClassVar
 
 from desloppify.engine.repair_manifest import SourceManifest, manifest_from_record
-from desloppify.engine.repair_queue import KEY_LINE, PromotionCandidate
+from desloppify.engine.repair_queue import (
+    FINDING_KEY_LINE,
+    KEY_LINE,
+    PROPOSAL_LINE,
+    PromotionCandidate,
+    concern_failures,
+)
 
 BRIEF_SCHEMA = "desloppify-repair-brief:v1"
+PROPOSAL_SCHEMA = "desloppify-proposal-brief:v1"
 MAX_TEXT = 1000
 MAX_ITEMS = 20
 # Below GitHub's 65536-character body limit and Linux's 131072-byte argv string limit.
@@ -27,6 +34,15 @@ MAX_BODY_BYTES = 60000
 MAX_TITLE = 120
 CONFIDENCE = frozenset({"high", "medium", "low"})
 ASSERTIONS_HEADING = "## Reviewer assertions (not verified against source)"
+FINDING_HEADING = "## Detector finding (anchors checked against source; guidance is fixed text)"
+_FINDING_GUIDANCE = {
+    "consequence": "Two identical function bodies in one file must be changed together;"
+    " a fix applied to one silently misses the other.",
+    "fix": "Keep one implementation and make the other name delegate to it or remove it.",
+    "contracts": ["Every existing caller of either function keeps its current behavior."],
+    "verification": "The project's existing tests pass, and a fresh desloppify scan no longer"
+    " reports this duplicate pair.",
+}
 _UNSAFE_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co"})
 _REJECTIONS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
@@ -88,6 +104,8 @@ class ParkedBrief:
 class RepairBrief:
     """A sanitized, source-bound repair brief (schema ``BRIEF_SCHEMA``)."""
 
+    schema: ClassVar[str] = BRIEF_SCHEMA
+
     key: str
     identity: str
     evidence_digest: str
@@ -102,13 +120,23 @@ class RepairBrief:
     contracts: tuple[str, ...]
     verification: str
     confidence: str
+    route: str = "concern"
 
     @property
     def version(self) -> str:
         """SHA-256 of the canonical brief record; a wording change moves it, never the key."""
-        record = {"schema": BRIEF_SCHEMA, **asdict(self)}
+        record = {"schema": self.schema, **asdict(self)}
         canonical = json.dumps(record, sort_keys=True, separators=(",", ":"))
         return sha256(canonical.encode()).hexdigest()
+
+
+@dataclass(frozen=True)
+class ProposalBrief(RepairBrief):
+    """A non-dispatchable architecture proposal (schema ``PROPOSAL_SCHEMA``)."""
+
+    schema: ClassVar[str] = PROPOSAL_SCHEMA
+
+    questions: tuple[str, ...] = ()
 
 
 def build_brief(
@@ -117,24 +145,33 @@ def build_brief(
     """Validate and sanitize every field; any missing or unsafe value parks the brief."""
     raw_detail = issue.get("detail")
     detail: Mapping[str, Any] = raw_detail if isinstance(raw_detail, Mapping) else {}
-    suggestion = detail.get("suggestion")
+    source = (
+        _finding_source(issue, detail) if candidate.route == "finding" else _concern_source(detail)
+    )
+    suggestion = source["fix"]
     try:
         manifest = _manifest(detail)
-        brief = RepairBrief(
-            key=candidate.key,
-            identity=candidate.identity,
-            evidence_digest=candidate.evidence_digest,
-            manifest_digest=manifest.digest,
-            revision=manifest.revision,
-            problem=_text("problem", issue.get("summary")),
-            consequence=_text("consequence", detail.get("maintenance_consequence")),
-            evidence=_items("evidence", detail.get("evidence")),
-            affected=tuple((_text("affected", d.path), d.role) for d in manifest.dependencies),
-            owner=_text("owner", detail.get("proposed_owner")),
-            fix=None if _blank(suggestion) else _text("fix", suggestion),
-            contracts=_items("contracts", detail.get("protected_contracts")),
-            verification=_text("verification", detail.get("verification")),
-            confidence=_confidence(issue.get("confidence")),
+        fields = {
+            "key": candidate.key,
+            "identity": candidate.identity,
+            "evidence_digest": candidate.evidence_digest,
+            "manifest_digest": manifest.digest,
+            "revision": manifest.revision,
+            "problem": _text("problem", issue.get("summary")),
+            "consequence": _text("consequence", source["consequence"]),
+            "evidence": _items("evidence", source["evidence"]),
+            "affected": tuple((_text("affected", d.path), d.role) for d in manifest.dependencies),
+            "owner": _text("owner", source["owner"]),
+            "fix": None if _blank(suggestion) else _text("fix", suggestion),
+            "contracts": _items("contracts", source["contracts"]),
+            "verification": _text("verification", source["verification"]),
+            "confidence": _confidence(issue.get("confidence")),
+            "route": candidate.route,
+        }
+        brief: RepairBrief = (
+            ProposalBrief(**fields, questions=_items("questions", list(concern_failures(issue))))
+            if candidate.kind == "proposal"
+            else RepairBrief(**fields)
         )
     except _Rejected as exc:
         return ParkedBrief(exc.field, exc.reason)
@@ -143,11 +180,33 @@ def build_brief(
     return brief
 
 
+def _concern_source(detail: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "consequence": detail.get("maintenance_consequence"),
+        "evidence": detail.get("evidence"),
+        "owner": detail.get("proposed_owner"),
+        "fix": detail.get("suggestion"),
+        "contracts": detail.get("protected_contracts"),
+        "verification": detail.get("verification"),
+    }
+
+
+def _finding_source(issue: Mapping[str, Any], detail: Mapping[str, Any]) -> dict[str, Any]:
+    """Fixed guidance plus the anchors; the item's relative file, never ``fn_*.file``."""
+    path = issue.get("file")
+    evidence = []
+    for key in ("fn_a", "fn_b"):
+        function = detail.get(key)
+        if isinstance(function, Mapping):
+            name, line, loc = function.get("name"), function.get("line"), function.get("loc")
+            evidence.append(f"{path}:{line} `{name}` ({loc} lines)")
+    return {**_FINDING_GUIDANCE, "evidence": evidence, "owner": path}
+
+
 def render_brief(brief: RepairBrief) -> tuple[str, str]:
     """Return the public title and body; body source values render as inert code spans."""
-    title = f"Repair: {brief.problem}"
-    if len(title) > MAX_TITLE:
-        title = title[: MAX_TITLE - 3].rstrip() + "..."
+    if isinstance(brief, ProposalBrief):
+        return _title("Proposal: ", brief.problem), "\n".join(_proposal_lines(brief))
     fix = ["", f"Suggested fix: {_code(brief.fix)}"] if brief.fix else []
     lines = [
         "## Source-bound",
@@ -156,26 +215,18 @@ def render_brief(brief: RepairBrief) -> tuple[str, str]:
         "",
         "Allowed scope: changes to these files.",
         "",
-        *(f"- {_code(path)} ({role})" for path, role in brief.affected),
+        *_affected(brief),
         "",
         "Excluded scope: changes to any other file, and any change to a protected contract.",
         "",
-        ASSERTIONS_HEADING,
+        FINDING_HEADING if brief.route == "finding" else ASSERTIONS_HEADING,
         "",
-        f"Problem: {_code(brief.problem)}",
-        "",
-        f"Maintenance consequence: {_code(brief.consequence)}",
-        "",
-        "Evidence:",
-        "",
-        *(f"- {_code(item)}" for item in brief.evidence),
+        *_observed(brief),
         "",
         f"Proposed owner: {_code(brief.owner)}",
         *fix,
         "",
-        "Protected contracts:",
-        "",
-        *(f"- {_code(item)}" for item in brief.contracts),
+        *_contracts(brief),
         "",
         f"Required verification: {_code(brief.verification)}",
         "",
@@ -189,21 +240,110 @@ def render_brief(brief: RepairBrief) -> tuple[str, str]:
         "The proposed change is in place within the allowed scope, the required verification"
         " passes, and every protected contract still holds.",
         "",
+        *_provenance(brief),
+    ]
+    return _title("Repair: ", brief.problem), "\n".join(lines)
+
+
+def _proposal_lines(brief: ProposalBrief) -> list[str]:
+    suggestion = (
+        [
+            f"- Apply the reviewer's suggestion: {_code(brief.fix)}. Trade-off: one change"
+            " across the affected files, which exceeds the small-repair bound.",
+        ]
+        if brief.fix
+        else []
+    )
+    return [
+        "## Architecture proposal: human decision required",
+        "",
+        "This proposal is not ready for repair and must not be dispatched. Approving it"
+        " leads only to a separately scoped, revalidated execution decision.",
+        "",
+        f"Source revision: `{brief.revision}`",
+        "",
+        "Affected files (observed):",
+        "",
+        *_affected(brief),
+        "",
+        ASSERTIONS_HEADING,
+        "",
+        *_observed(brief),
+        "",
+        "## Alternatives and trade-offs",
+        "",
+        *suggestion,
+        "- Split the work into separately scoped small repairs, each in one directory and"
+        " at most three files. Trade-off: more issues to track; each is independently"
+        " verifiable.",
+        "- Keep the current structure and dismiss the concern. Trade-off: no change risk;"
+        " the maintenance consequence remains.",
+        "",
+        "## Expected ownership and contracts",
+        "",
+        f"Proposed owner: {_code(brief.owner)}",
+        "",
+        *_contracts(brief),
+        "",
+        f"Required verification for any approved change: {_code(brief.verification)}",
+        "",
+        "## Open questions",
+        "",
+        *(f"- {_code(question)}" for question in brief.questions),
+        "",
+        "## Decision needed",
+        "",
+        f"Review confidence: {brief.confidence}. Choose one alternative or reject this"
+        " proposal, and record the decision on this issue. A chosen change must be scoped"
+        " and revalidated as its own repair before any execution.",
+        "",
+        *_provenance(brief),
+    ]
+
+
+def _title(prefix: str, problem: str) -> str:
+    title = f"{prefix}{problem}"
+    return title if len(title) <= MAX_TITLE else title[: MAX_TITLE - 3].rstrip() + "..."
+
+
+def _affected(brief: RepairBrief) -> list[str]:
+    return [f"- {_code(path)} ({role})" for path, role in brief.affected]
+
+
+def _observed(brief: RepairBrief) -> list[str]:
+    return [
+        f"Problem: {_code(brief.problem)}",
+        "",
+        f"Maintenance consequence: {_code(brief.consequence)}",
+        "",
+        "Evidence:",
+        "",
+        *(f"- {_code(item)}" for item in brief.evidence),
+    ]
+
+
+def _contracts(brief: RepairBrief) -> list[str]:
+    return ["Protected contracts:", "", *(f"- {_code(item)}" for item in brief.contracts)]
+
+
+def _provenance(brief: RepairBrief) -> list[str]:
+    lane = "proposal" if isinstance(brief, ProposalBrief) else brief.route
+    line = {"proposal": PROPOSAL_LINE, "finding": FINDING_KEY_LINE}.get(lane, KEY_LINE)
+    return [
         "## Provenance",
         "",
-        KEY_LINE.format(brief.key),
+        line.format(brief.key),
         "",
         "```text",
-        f"schema: {BRIEF_SCHEMA}",
-        f"concern-key: {brief.key}",
-        f"concern-identity: {brief.identity}",
+        f"schema: {brief.schema}",
+        f"{lane}-key: {brief.key}",
+        f"{brief.route}-identity: {brief.identity}",
         f"evidence-digest: {brief.evidence_digest}",
         f"manifest-digest: {brief.manifest_digest}",
         f"source-revision: {brief.revision}",
         f"brief-version: {brief.version}",
         "```",
     ]
-    return title, "\n".join(lines)
 
 
 def _manifest(detail: Mapping[str, Any]) -> SourceManifest:
@@ -279,7 +419,10 @@ def _code(text: str) -> str:
 __all__ = [
     "ASSERTIONS_HEADING",
     "BRIEF_SCHEMA",
+    "FINDING_HEADING",
+    "PROPOSAL_SCHEMA",
     "ParkedBrief",
+    "ProposalBrief",
     "RepairBrief",
     "build_brief",
     "render_brief",

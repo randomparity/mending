@@ -76,7 +76,7 @@ class _GitHub:
     def view(self, repository: str, number: int) -> GitHubIssue:
         return next(issue for issue in self.issues if issue.number == number)
 
-    def create(self, repository: str, title: str, body: str) -> None:
+    def create(self, repository: str, title: str, body: str, **_kwargs: object) -> None:
         self.creates += 1
         number = 100 + self.creates
         self.issues.append(GitHubIssue(number, f"https://example.test/{number}", "open", body))
@@ -196,7 +196,7 @@ def test_unverified_search_hit_is_not_adopted(repo: Path) -> None:
 
 def test_dependency_change_during_create_keeps_pending_then_adopts(repo: Path) -> None:
     class RacingCreate(_GitHub):
-        def create(self, repository: str, title: str, body: str) -> None:
+        def create(self, repository: str, title: str, body: str, **_kwargs: object) -> None:
             super().create(repository, title, body)
             _commit(repo, "src/impl.py", "raced = True\n")
 
