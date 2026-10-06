@@ -244,8 +244,9 @@ def classify(
 def candidate_from_issue(
     issue: Mapping[str, Any], repository: str, *, require_revalidation: bool = True
 ) -> PromotionCandidate | None:
-    """Return the classified candidate, or ``None`` when the item is ineligible."""
-    return classify(issue, repository, require_revalidation=require_revalidation).candidate
+    """Return a small-repair candidate only; a proposal is never a repair candidate."""
+    result = classify(issue, repository, require_revalidation=require_revalidation)
+    return result.candidate if result.kind == "small_repair" else None
 
 
 def concern_failures(issue: Mapping[str, Any]) -> tuple[str, ...]:

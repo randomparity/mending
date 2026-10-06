@@ -18,6 +18,7 @@ from desloppify.engine.repair_queue import (
     REPAIR_LANE,
     GitHubIssueClient,
     RepairRecordError,
+    candidate_from_issue,
     carries_concern_marker,
     classify,
     concern_failures,
@@ -108,6 +109,7 @@ def test_cross_boundary_uncertain_concern_is_a_proposal() -> None:
         "files span 2 directories", "review confidence is not high",
     )
     assert result.candidate is not None and lane_for(result.candidate) == PROPOSAL_LANE
+    assert candidate_from_issue(issue, REPOSITORY) is None
 
 
 def test_concern_scope_and_verification_predicates() -> None:

@@ -14,11 +14,13 @@ both routes.
 
 Tech stack: Python 3.11+, pytest, `gh`/`git` via fixed argv.
 
-Expected implementation size: 550–750 changed lines (M) — about 300
-production lines (classification and finding identity ~110, lanes/records
-~40, check ~30, brief ~90, command ~40, merge ~15) and 250–400 test lines
-(classification fixtures, finding check, proposal brief, command lanes, merge,
-fixture confidence updates).
+Expected implementation size: 1,050–1,250 changed lines (M) — about 680
+production lines (classification and finding identity ~270, check ~65 with
+the span check, brief ~220 including the proposal renderer's fixed text and
+the shared section helpers, command ~100, merge ~25) and about 550 test lines.
+Corrected after the build: the first estimate (550–750) undercounted the
+brief renderer, the command's lane edits, and the review-added span check,
+peer and recover lanes; no work was added beyond the reviewed design.
 
 ## Global Constraints
 
@@ -64,7 +66,7 @@ REPAIR_LANE = Lane("github_repair", "github_repair_pending", True)
 PROPOSAL_LANE = Lane("github_proposal", "github_proposal_pending", False)
 
 def classify(issue, repository, *, require_revalidation=True) -> Classification
-def candidate_from_issue(issue, repository, *, require_revalidation=True) -> PromotionCandidate | None
+def candidate_from_issue(issue, repository, *, require_revalidation=True) -> PromotionCandidate | None  # small_repair only
 def concern_failures(issue: Mapping[str, Any]) -> tuple[str, ...]
 def item_hashes(issue: Mapping[str, Any]) -> tuple[str, str, str] | None  # (route, identity, evidence)
 def record_key(route: str, repository: str, identity: str) -> str
@@ -222,7 +224,8 @@ fields (`_sync_one`, `_adopt_if_unique`, `_create_once`, `_write_link`,
 `lane.link`), skip an item holding its other lane's record, make
 `_has_record`, `_peer_records`, and `_pending_matches` iterate both lanes
 using `item_hashes`/`record_key`, make `_recover` pop the matched lane's
-pending kind, choose `check_finding`
+pending kind, list sync candidates through `classify(...).candidate` (proposals
+included) while `candidate_from_issue` stays small-repair-only, choose `check_finding`
 for non-concern items in `_check`, pass `ready=lane.ready` to `create`, print
 `Would publish a proposal issue` for proposals, and raise
 `work item is not eligible for revalidation (<reason>)` in `_revalidate`. In

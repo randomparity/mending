@@ -19,7 +19,8 @@ decision.
 **Classification.** `classify(issue, repository, *, require_revalidation=True)`
 returns `Classification(kind, reason, candidate)` with `kind` one of
 `small_repair`, `proposal`, `ineligible`; `candidate` is `None` exactly when
-`ineligible`. `candidate_from_issue` returns `classify(...).candidate`.
+`ineligible`. `candidate_from_issue` keeps its meaning and returns the
+candidate only for `small_repair`; sync reads both kinds through `classify`.
 Routes, chosen by `detector` on an open item with a string `id` and mapping
 `detail`:
 
@@ -104,8 +105,8 @@ Out of scope: selection (#22), dispatch (#19), brief schema (#20).
 3. **Accepted failure classes** — a renamed file gives a dupe pair a new
    identity (bounded: one extra issue; old one stays linked by number);
    a repair issue published before reclassification to proposal stays open
-   until #22/#19 recheck (bounded only once that recheck calls `classify` and
-   requires `small_repair`, as ADR 0013 directs); a lane flip while the other
+   until #22/#19 recheck (bounded: `candidate_from_issue` already rejects a
+   proposal); a lane flip while the other
    lane holds a record parks the item with no create until a human
    reconciles it (bounded: no duplicate issue); predicate
    thresholds may misroute borderline concerns to proposal (cost: human reads

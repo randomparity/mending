@@ -69,9 +69,9 @@ before a reclassification, is not withdrawn; the dispatch-time recheck
 a new identity. A proposal blocks automatic repair creation for the same
 concern, because its body holds the concern identity that repair search
 finds as an unverified hit. A lane flip while the other lane holds a record
-parks the item until a human reconciles it. `candidate_from_issue` now
-returns proposal candidates too, so the dispatch-time recheck (#19/#26) must
-call `classify` and require `small_repair`, not only re-run the check.
+parks the item until a human reconciles it. `candidate_from_issue` keeps its
+meaning, a current small-repair candidate, so any caller of it never sees a
+proposal; sync reads both kinds through `classify`.
 Proposal publication is not rate-limited; #22 owns selection. Scan merge now
 preserves queue records for findings too.
 

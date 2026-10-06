@@ -27,7 +27,6 @@ from desloppify.engine.repair_queue import (
     GitHubIssueClient,
     PromotionCandidate,
     RepairRecordError,
-    candidate_from_issue,
     carries_concern_marker,
     classify,
     item_hashes,
@@ -450,7 +449,7 @@ def _expected_record(
 
 
 def _candidates(state: Mapping[str, Any], repository: str) -> list[PromotionCandidate]:
-    found = (candidate_from_issue(issue, repository) for issue in _issues(state).values())
+    found = (classify(issue, repository).candidate for issue in _issues(state).values())
     return [candidate for candidate in found if candidate is not None]
 
 
@@ -491,7 +490,7 @@ def _key_claimed_elsewhere(state: Mapping[str, Any], candidate: PromotionCandida
 
 def _candidate_by_id(state: Mapping[str, Any], issue_id: str, repository: str) -> PromotionCandidate | None:
     issue = _issues(state).get(issue_id)
-    return candidate_from_issue(issue or {}, repository)
+    return classify(issue or {}, repository).candidate
 
 
 def _issues(state: Mapping[str, Any]) -> dict[str, Any]:
