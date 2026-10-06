@@ -15,7 +15,8 @@ unless the target has scheme `https`, hostname `raw.githubusercontent.com` (pars
 `_RAW_BASE`), and no explicit port. Comparison is exact on `urlsplit(...).hostname`, so `…githubusercontent.com.evil`,
 `user@` tricks and `http://` fail. After opening, apply the same check to `resp.geturl()`. Read
 at most `_MAX_DOWNLOAD_BYTES + 1` bytes (256 KiB; largest doc today is ~14 KB) and raise
-`CommandError` above the limit. Error text names the file, the expected host or limit, and a fix;
+`CommandError` above the limit, or when `resp.length` shows the body ended short of its declared
+length (a bounded `read` does not raise `IncompleteRead`). Error text names the file, the expected host or limit, and a fix;
 it never echoes the redirect target. Excluded: checksums/signatures, proxy and certificate handling.
 
 ### Failure model
@@ -44,6 +45,7 @@ it never echoes the redirect target. Excluded: checksums/signatures, proxy and c
 3. A final `geturl()` on another host raises `CommandError`.
 4. Messages name the operation (download), the file, and a fix, and omit the redirect target;
    this holds for `file:`/`data:` targets too.
+5. A body shorter than its declared `Content-Length` raises `CommandError`.
 
 ## Validation
 
@@ -53,4 +55,5 @@ it never echoes the redirect target. Excluded: checksums/signatures, proxy and c
   plus one test driving `_download` through a fake HTTPS handler returning a 302.
 - Criterion 3: focused-test — fake opener whose response reports a foreign `geturl()`.
 - Criterion 4: focused-test — assert operation, file and fix present, target absent.
+- Criterion 5: focused-test — fake response with remaining `length`.
 - Download URL contract (ADR 0011): focused-test — existing fetch test, updated to the opener seam.

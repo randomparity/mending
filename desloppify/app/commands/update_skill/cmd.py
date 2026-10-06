@@ -91,6 +91,9 @@ def _download(filename: str) -> str:
         with opener.open(url, timeout=15) as resp:  # nosec B310
             _check_source_url(url, resp.geturl(), filename)
             body = resp.read(_MAX_DOWNLOAD_BYTES + 1)
+            # A bounded read() returns a short body instead of raising IncompleteRead;
+            # a nonzero remaining Content-Length is how truncation shows up.
+            truncated = bool(resp.length)
     except urllib.error.URLError as exc:
         if "CERTIFICATE_VERIFY_FAILED" in str(exc):
             raise CommandError(
@@ -104,6 +107,11 @@ def _download(filename: str) -> str:
             f"Download of {filename} exceeded {_MAX_DOWNLOAD_BYTES} bytes; refused.\n"
             "The skill source returned an unexpected response; retry later: "
             "desloppify update-skill"
+        )
+    if truncated:
+        raise CommandError(
+            f"Download of {filename} ended before its declared length; refused.\n"
+            "The connection closed early; retry: desloppify update-skill"
         )
     return body.decode("utf-8")
 

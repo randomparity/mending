@@ -121,9 +121,12 @@ def test_cmd_update_skill_handles_missing_and_unknown_interfaces(monkeypatch, ca
 
 
 class _Response:
-    def __init__(self, body: bytes = b"skill text", url: str | None = None) -> None:
+    def __init__(
+        self, body: bytes = b"skill text", url: str | None = None, length: int | None = None
+    ) -> None:
         self._body = body
         self._url = url
+        self.length = length
         self.read_sizes: list[int | None] = []
 
     def __enter__(self):
@@ -190,6 +193,22 @@ def test_download_rejects_body_over_the_size_limit(monkeypatch) -> None:
     assert "Download of SKILL.md" in message
     assert str(limit) in message
     assert "desloppify update-skill" in message
+
+
+def test_download_rejects_body_shorter_than_declared_length(monkeypatch) -> None:
+    _fake_opener(monkeypatch, _Response(b"partial", length=100))
+
+    with pytest.raises(CommandError) as excinfo:
+        update_skill_cmd_mod._download("SKILL.md")
+    message = str(excinfo.value)
+    assert "Download of SKILL.md ended before its declared length" in message
+    assert "desloppify update-skill" in message
+
+
+def test_download_accepts_body_that_satisfied_declared_length(monkeypatch) -> None:
+    _fake_opener(monkeypatch, _Response(b"skill text", length=0))
+
+    assert update_skill_cmd_mod._download("SKILL.md") == "skill text"
 
 
 def test_download_rejects_final_url_on_another_host(monkeypatch) -> None:
