@@ -68,6 +68,9 @@ from desloppify.engine.repair_selection import rank_key
 _Result = TypeVar("_Result")
 # Discovery-only runs: nothing published is selectable, or nothing selectable is approved.
 _NO_OP_REASONS = frozenset({"selected-repair-unavailable", "authority-missing"})
+# A fast-forward killed mid-checkout can leave a half-updated tree; never start one closer
+# to the deadline than this.
+_FAST_FORWARD_FLOOR_SECONDS = 30
 
 
 def cmd_repair_cycle(args: argparse.Namespace) -> None:
@@ -192,8 +195,8 @@ def _bring_current(root: Path, seconds: float) -> str | None:
     configuration. A dirty, detached, diverged, or ahead checkout is left as it is.
     """
     deadline = time.monotonic() + seconds
-    # The host can write the checkout's hooks and fsmonitor setting, so neither runs; the
-    # checkout's other git configuration, its origin URL included, still applies (guide).
+    # Hooks and fsmonitor never run, but the checkout's other git configuration, which the
+    # host can write, still applies and can run commands (filters, ssh, credentials; guide).
     env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     env["GIT_TERMINAL_PROMPT"] = "0"
 
@@ -214,6 +217,8 @@ def _bring_current(root: Path, seconds: float) -> str | None:
         if not default.startswith("refs/heads/") or branch != default:
             return f"on {branch}, not {default or 'an advertised default branch'}"
         git("fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "origin", branch)
+        if deadline - time.monotonic() < _FAST_FORWARD_FLOOR_SECONDS:
+            return "too little runtime left to fast-forward"
         git("merge", "--quiet", "--ff-only", "FETCH_HEAD")
         head, fetched = git("rev-parse", "HEAD", "FETCH_HEAD").split()
     except subprocess.CalledProcessError as exc:

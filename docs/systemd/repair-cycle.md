@@ -21,10 +21,13 @@ disabled. It does not commit, reset, stash, or switch branches, and moves
 nothing on a checkout with uncommitted changes to tracked files, on another
 branch or a detached `HEAD`, ahead of or diverged from `origin`, or one it
 cannot fetch or fast-forward; each of those parks the run as
-`checkout-not-current` before the scan, and the journal says which. The other
-settings in the checkout's git configuration still apply, including the
-`origin` URL, and the host can write that configuration like the rest of the
-checkout: the cycle fetches from whichever remote it names.
+`checkout-not-current` before the scan, and the journal says which. It also
+parks rather than start the fast-forward with under 30 seconds of the runtime
+left. Disabling hooks and `core.fsmonitor` is not an isolation boundary: the
+other settings in the checkout's git configuration still apply, and the host
+can write that configuration like the rest of the checkout. The cycle fetches
+from whichever `origin` URL it names, and its filter drivers, `core.sshCommand`,
+and credential helpers run as `mending` during the fetch and fast-forward.
 The unit needs network access to `origin`. For a private repository, give
 `mending` a read-only credential git uses without asking (the cycle sets
 `GIT_TERMINAL_PROMPT=0` and drops inherited `GIT_*` variables, so configure it
@@ -32,7 +35,8 @@ in git configuration, not the environment file), stored outside `/home`,
 which the unit hides; a read-only deploy key is enough. Over SSH, also record
 the remote's host key in a `known_hosts` file the account reads, because the
 unit cannot accept an unknown key, and name the key and that file in
-`core.sshCommand` in `/etc/gitconfig` or the account's own git configuration.
+`core.sshCommand` in `/etc/gitconfig` (the unit hides a home under `/home`, and
+the checkout's own configuration takes precedence over `/etc/gitconfig`).
 The scan also writes its working files under `.desloppify/` in the checkout,
 which the target repository should ignore; confirm it commits no
 `.desloppify/` files, because a committed `.desloppify/config.json` with
@@ -160,7 +164,7 @@ owned by another account.
 
 Each run does, in order: observe a recorded attempt that is not settled, and
 stop there; bring the checkout current and refresh with `desloppify scan`; revalidate and publish with
-`repair-queue sync --apply`, both bounded by the configured runtime; select and authorize one published repair; then
+`repair-queue sync --apply`, each of the three bounded by the configured runtime; select and authorize one published repair; then
 dispatch it once to the Claude Code host, which runs the Adept skills and stops
 at a draft pull request. A second run that starts while one is running prints
 `Repair cycle already running.` and exits. A failed refresh or publication

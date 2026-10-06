@@ -540,6 +540,16 @@ def test_a_checkout_that_cannot_be_fast_forwarded_is_left_as_it_is(
         assert (checkout / "a.py").read_text() == "a = 'local work'\n"
 
 
+def test_a_fast_forward_never_starts_near_the_deadline(remote, monkeypatch) -> None:
+    checkout = remote["checkout"]
+    before = _git(checkout, "rev-parse", "HEAD")
+    _publish(remote)
+    monkeypatch.setattr(repair_cycle, "_FAST_FORWARD_FLOOR_SECONDS", 61)
+
+    assert repair_cycle._bring_current(checkout, 60) == "too little runtime left to fast-forward"
+    assert _git(checkout, "rev-parse", "HEAD") == before
+
+
 def test_the_remote_names_the_default_branch(remote) -> None:
     upstream, checkout = remote["upstream"], remote["checkout"]
     _git(remote["publisher"], "push", "-q", "origin", "main:trunk")
