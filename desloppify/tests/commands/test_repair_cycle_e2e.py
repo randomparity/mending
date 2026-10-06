@@ -270,6 +270,13 @@ def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_World]:
         with contextlib.suppress(ProcessLookupError):
             os.kill(pid, signal.SIGKILL)
     assert survivors == [], "a process started by this test outlived it"
+    # Every row: no duplicate worker, repair issue, or pull request.
+    attempts = [launch["attempt"] for launch in built.launches()]
+    tags = [line for pr in built.github()["prs"] for line in pr["body"].splitlines()
+            if line.startswith("Mending-Attempt:")]
+    assert len(attempts) == len(set(attempts)), "an attempt launched its host twice"
+    assert built.creates("issue") <= 1, "a second repair issue was created"
+    assert len(tags) == len(set(tags)), "an attempt opened two pull requests"
 
 
 @pytest.fixture
@@ -403,6 +410,7 @@ def test_approval_expiry_stops_a_running_host(world, short_grace, late_clock) ->
     assert world.cycle()["dispatch"]["outcome"] == "stopped"
     assert len(world.spawned()) == 1
     assert world.processes() == []
+    assert len(world.launches()) == 1
 
 
 def test_approval_expiring_during_the_host_probes_never_launches(world, late_clock) -> None:
@@ -494,6 +502,7 @@ def test_a_nested_model_process_is_stopped_but_not_counted(world) -> None:
     assert "Repair cycle active: pull request open." in world.run()
 
     assert world.cycle()["consumed_calls"] == 2
+    assert (len(world.launches()), world.creates("pr")) == (1, 1)
     assert (world.root / "nested.jsonl").read_text().count('"assistant"') == 50
     assert len(world.spawned()) == 1
     assert world.processes() == []
