@@ -50,7 +50,8 @@ is at `intent` or `unknown` or has outcome `unknown`.
   -> (AuthorityBinding, bound record) | str`: unbound and not `select` →
   `authority-missing`. Trust check (`authority-untrusted` when the resolved
   `--config` file or any ancestor is owned by `os.geteuid()` or writable per
-  `os.access`, or cannot be stat'ed; in-process `config_data` is trusted),
+  `os.access`, or cannot be stat'ed, or the absolute path differs from its
+  resolved form; in-process `config_data` is trusted),
   then decoding (`authority-unsupported` / `authority-invalid`). The work
   item is the bound one, or under `select` the minimum over open small
   repairs whose `github_repair` link is not `closed` of (no approval for its
@@ -58,7 +59,9 @@ is at `intent` or `unknown` or has outcome `unknown`.
   `selected-repair-unavailable`; a bound key that differs →
   `authority-mismatch`. `source_comparison` (renamed from
   `repair_queue._comparison`): not current → `source-unreadable` when it
-  says keep, else `source-not-current`. Then `check_authority`.
+  says keep, else `source-not-current`. Then `check_authority`, with the
+  configured limits at selection and the lease's (remaining runtime)
+  afterwards; no cost cap → `missing-cost-cap`.
 - `_begin_and_select` runs `_authorize(select=True)` within the runtime bound
   before `begin`; a refusal or timeout parks with no new lease. Success sets
   `cycle_state.authority`, persists, and `_select` passes the binding to

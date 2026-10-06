@@ -19,7 +19,8 @@ cycle (ADR 0010), so anything that account can write, the model can write.
 - **Source.** Authority is the `authority` object of the repair-cycle
   configuration file: `schema` (1), `revision`, and `approvals`. The file and
   every directory above it must be neither owned nor writable by the account
-  running the cycle, since an owner can make a file writable again; otherwise
+  running the cycle, since an owner can make a file writable again, and the
+  path must hold no symlink or `..` component; otherwise
   every check parks as `authority-untrusted`. Nothing else grants authority:
   no client, issue, model output, state-file field, or proof string.
 - **Approval.** One approval names a stable concern `key`, its
@@ -35,7 +36,8 @@ cycle (ADR 0010), so anything that account can write, the model can write.
   `desloppify/engine/repair_authority.py` compares an approval with the
   binding built from the current work item: its recomputed reviewed-brief
   version, evidence digest, manifest files, the `repair` action, and the
-  configured limits. `repair-cycle` calls it at selection, before host
+  attempt's limits (configured at selection, the lease's afterwards).
+  `repair-cycle` calls it at selection, before host
   dispatch, and on resume of an attempt reported active; each call first
   reruns repair-queue's source comparison (ADR 0008) on that work item.
 - **Distinct reasons.** `authority-untrusted`, `authority-invalid`,
