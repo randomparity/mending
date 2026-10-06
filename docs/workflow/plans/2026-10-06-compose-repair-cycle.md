@@ -162,7 +162,7 @@ because `args.host` is ignored and the stub raises):
   `parked_reason` in the file;
 - the production refresh argv: monkeypatch `repair_cycle.subprocess.run` to
   record `(argv, cwd)` and return `CompletedProcess(argv, 0)`; assert argv
-  `[sys.executable, "-m", "desloppify", "scan", "--state", str(abs_state)]`;
+  `[sys.executable, "-P", "-m", "desloppify", "scan", "--no-badge", "--state", str(abs_state)]`;
 - the existing `_dispatch_host` budget, intent, replay, and authority tests
   migrated to the new signature (the request now comes from the binding;
   assert `host.requests[0].authorized_scope` names `src/impl.py`).
@@ -177,7 +177,7 @@ Steps:
    returns the gate reason; `_no_op(state, cs, reason)` clears `parked_reason`
    and prints `Repair cycle no-op: {reason}.`
 2. `_refresh(args, config) -> str | None`: `args.refresh()` when supplied;
-   otherwise `subprocess.run([sys.executable, "-m", "desloppify", "scan", "--state",
+   otherwise `subprocess.run([sys.executable, "-P", "-m", "desloppify", "scan", "--no-badge", "--state",
    str(state_path(args).resolve())], cwd=repo_root, timeout=config.runtime_seconds,
    check=False)` (`# nosec B603`), omitting the two `--state` tokens only when
    `state_path(args)` is None; nonzero, `OSError`, or `TimeoutExpired` →

@@ -185,7 +185,8 @@ contract wording stays as #16 left it.
 - **Actors.** The coding host's model (same account; untrusted for authority);
   GitHub content authors. Trust sits in the root-owned config (ADR 0015).
 - **Checkout and host settings.** The checkout is untrusted input to the
-  refresh: `scan` runs with `-P`, so checkout files are never imported. The
+  refresh: `scan` runs with `-P`, so the checkout's Python modules are never
+  imported. The
   Claude configuration directory is writable by the host account, so the
   host's permission rules belong in Claude Code's root-owned managed settings,
   not in that directory (guide).
@@ -193,7 +194,9 @@ contract wording stays as #16 left it.
   (case-insensitive owner/name) before use, argv only, no shell. PR files are checked against the trusted
   approval, not the state copy. Subprocesses use fixed argv and bounded time.
 - **Out of scope.** A same-account host tampering with state (accepted
-  above); a compromised `gh` or `claude` binary.
+  above); `scan`'s language tools running checkout-resolved executables (for
+  example `node_modules/.bin/tsc`, `cargo check`), which adds nothing to the
+  host's own execution of checkout code under the same account; a compromised `gh` or `claude` binary.
 
 ## Success
 
