@@ -13,7 +13,16 @@ DEFAULT_RUNTIME_SECONDS = 90 * 60
 DEFAULT_CALL_LIMIT = 100
 DEFAULT_OBSERVATION_CALL_LIMIT = 3
 DEFAULT_OBSERVATION_MINUTES = 5
-_DISPATCH_PHASES = frozenset({"intent", "returned", "unknown"})
+DEFAULT_WINDOW_MINUTES = 24 * 60
+_DISPATCH_PHASES = frozenset({"intent", "returned", "unknown", "settled"})
+_WINDOW_EPOCH = datetime(2000, 1, 1)
+
+
+def window_start(now: datetime, minutes: int) -> str:
+    """Key the window holding ``now``: its host-local wall-clock start (ADR 0016)."""
+    elapsed = int((now.replace(tzinfo=None) - _WINDOW_EPOCH).total_seconds() // 60)
+    start = _WINDOW_EPOCH + timedelta(minutes=elapsed - elapsed % minutes)
+    return start.isoformat(timespec="minutes")
 
 
 @dataclass(frozen=True)
@@ -31,6 +40,7 @@ class CycleConfig:
     adept_skills_version: str | None = None
     observation_call_limit: int = DEFAULT_OBSERVATION_CALL_LIMIT
     observation_seconds: int = DEFAULT_OBSERVATION_MINUTES * 60
+    window_minutes: int = DEFAULT_WINDOW_MINUTES
     # Decoded only by the authority check (ADR 0015), so a bad block never blocks observation.
     authority: object = None
 
@@ -56,6 +66,7 @@ class CycleConfig:
             ),
             observation_seconds=60
             * _positive_int(mapping, "observation_minutes", default=DEFAULT_OBSERVATION_MINUTES),
+            window_minutes=_positive_int(mapping, "window_minutes", default=DEFAULT_WINDOW_MINUTES),
             authority=deepcopy(mapping.get("authority")),
         )
 
@@ -76,16 +87,18 @@ class CycleLease:
     """A persisted, correlated scheduler attempt created before external I/O."""
 
     attempt_id: str
-    day_key: str
+    window_start: str
     deadline: datetime
     call_limit: int
     cost_cap_usd: Decimal
-    merge_permit: bool
 
     def __post_init__(self) -> None:
         if not self.attempt_id:
             raise ValueError("attempt ID is required")
-        _parse_day_key(self.day_key)
+        try:
+            datetime.fromisoformat(self.window_start)
+        except ValueError as exc:
+            raise ValueError("window start is invalid") from exc
         if self.deadline.tzinfo is None:
             raise ValueError("deadline must include a timezone")
         if self.call_limit < 1:
@@ -102,16 +115,18 @@ class CycleLease:
             raise ValueError("host-local time must include a timezone")
         return cls(
             attempt_id=attempt_id or uuid4().hex,
-            day_key=now.date().isoformat(),
+            window_start=window_start(now, config.window_minutes),
             deadline=now + timedelta(seconds=config.runtime_seconds),
             call_limit=config.call_limit,
             cost_cap_usd=config.cost_cap_usd,
-            merge_permit=True,
         )
 
     @classmethod
     def from_mapping(cls, mapping: Mapping[str, object]) -> CycleLease:
-        """Decode one previously persisted lease."""
+        """Decode one persisted lease; a legacy ``day_key`` is that day's 00:00 window.
+
+        A legacy ``merge_permit`` is ignored: it authorizes nothing (ADR 0016).
+        """
         deadline = mapping.get("deadline")
         cost_cap = _decimal(mapping.get("cost_cap_usd"), "USD cost cap")
         if not isinstance(deadline, str):
@@ -120,24 +135,26 @@ class CycleLease:
             parsed_deadline = datetime.fromisoformat(deadline)
         except ValueError as exc:
             raise ValueError("deadline is invalid") from exc
+        if "window_start" in mapping:
+            window = _required_text(mapping, "window_start")
+        else:
+            window = f"{_parse_day_key(_required_text(mapping, 'day_key')).isoformat()}T00:00"
         return cls(
             attempt_id=_required_text(mapping, "attempt_id"),
-            day_key=_required_text(mapping, "day_key"),
+            window_start=window,
             deadline=parsed_deadline,
             call_limit=_positive_int(mapping, "call_limit"),
             cost_cap_usd=cost_cap,
-            merge_permit=_bool(mapping, "merge_permit"),
         )
 
     def to_mapping(self) -> dict[str, object]:
         """Return JSON-safe local scheduler facts only."""
         return {
             "attempt_id": self.attempt_id,
-            "day_key": self.day_key,
+            "window_start": self.window_start,
             "deadline": self.deadline.isoformat(),
             "call_limit": self.call_limit,
             "cost_cap_usd": str(self.cost_cap_usd),
-            "merge_permit": self.merge_permit,
         }
 
 
@@ -154,8 +171,9 @@ class DispatchRecord:
     """A host dispatch for the current attempt: its intent, then what it left behind.
 
     ``phase`` is ``intent`` (persisted before launch), ``returned`` (the adapter
-    returned an outcome), or ``unknown`` (a lease persisted before dispatch
-    records existed, whose dispatch may or may not have happened).
+    returned an outcome), ``unknown`` (a lease persisted before dispatch
+    records existed, whose dispatch may or may not have happened), or
+    ``settled`` (every pull request it left is merged or closed).
     """
 
     attempt_id: str
@@ -228,7 +246,6 @@ class CycleState:
     current_lease: CycleLease | None = None
     authoritative_receipt: dict[str, object] | None = None
     parked_reason: str | None = None
-    merge_permit_day: str | None = None
     observation_calls: int = 0
     attempt_failure: str | None = None
     disposed_attempt: str | None = None
@@ -253,23 +270,17 @@ class CycleState:
         lease_value = mapping.get("current_lease")
         receipt_value = mapping.get("authoritative_receipt")
         parked_reason = mapping.get("parked_reason")
-        merge_day = mapping.get("merge_permit_day")
         if lease_value is not None and not isinstance(lease_value, Mapping):
             raise ValueError("current lease is invalid")
         if receipt_value is not None and not isinstance(receipt_value, Mapping):
             raise ValueError("authoritative receipt is invalid")
         if parked_reason is not None and not isinstance(parked_reason, str):
             raise ValueError("parked reason is invalid")
-        if merge_day is not None:
-            if not isinstance(merge_day, str):
-                raise ValueError("merge permit day is invalid")
-            _parse_day_key(merge_day)
         lease = CycleLease.from_mapping(lease_value) if lease_value else None
         return cls(
             current_lease=lease,
             authoritative_receipt=dict(receipt_value) if receipt_value else None,
             parked_reason=parked_reason,
-            merge_permit_day=merge_day,
             observation_calls=_count(mapping, "observation_calls"),
             attempt_failure=_optional_text(mapping, "attempt_failure"),
             disposed_attempt=_optional_text(mapping, "disposed_attempt"),
@@ -288,7 +299,6 @@ class CycleState:
             "current_lease": self.current_lease.to_mapping() if self.current_lease else None,
             "authoritative_receipt": self.authoritative_receipt,
             "parked_reason": self.parked_reason,
-            "merge_permit_day": self.merge_permit_day,
             "observation_calls": self.observation_calls,
             "attempt_failure": self.attempt_failure,
             "disposed_attempt": self.disposed_attempt,
@@ -302,8 +312,9 @@ class CycleState:
         }
 
     def begin(self, config: CycleConfig, now: datetime, *, attempt_id: str | None = None) -> CycleLease | None:
-        """Persist a new daily lease only when no active or same-day attempt exists."""
-        if self.current_lease is not None and not self._may_replace_lease(now.date()):
+        """Persist a new lease only when the attempt is settled and from an earlier window."""
+        window = window_start(now, config.window_minutes)
+        if self.current_lease is not None and not self._may_replace_lease(window):
             return None
         if self.current_lease is not None:
             self.attempt_history.append(self._archive(self.current_lease))
@@ -416,33 +427,39 @@ class CycleState:
 
     @property
     def reported_active(self) -> bool:
-        """Return whether the last report left the attempt running or its dispatch unsettled."""
+        """Return whether a worker or an open pull request may still belong to the attempt."""
         receipt = self.authoritative_receipt or {}
         dispatch = self.dispatch
-        return receipt.get("state") == "active" or (
-            dispatch is not None
-            and (dispatch.phase in {"intent", "unknown"} or dispatch.outcome == "unknown")
+        if receipt.get("state") == "active":
+            return True
+        if dispatch is None or dispatch.phase == "settled":
+            return False
+        return (
+            dispatch.phase != "returned"
+            or dispatch.outcome in {"unknown", "completed"}
+            or bool(dispatch.pull_requests)
         )
 
-    def merge_permit_available(self, now: datetime) -> bool:
-        """Return whether the host-local day has not consumed its merge permit."""
-        return self.merge_permit_day != now.date().isoformat()
-
-    def consume_merge_permit(self, lease: CycleLease) -> None:
-        """Consume the lease's local-day permit after a validated merge receipt."""
-        if self.current_lease != lease:
-            raise ValueError("lease is not current")
-        self.merge_permit_day = lease.day_key
-
-    def _may_replace_lease(self, today: date) -> bool:
-        if self.current_lease is None or self.current_lease.day_key == today.isoformat():
-            return False
-        if self.awaiting_disposition:
-            return False
-        if self.disposed:
+    @property
+    def settled(self) -> bool:
+        """Return whether nothing of the current attempt can still be running or open."""
+        if self.current_lease is None or self.disposed:
             return True
         receipt = self.authoritative_receipt or {}
-        return receipt.get("state") == "terminal"
+        if receipt.get("state") == "terminal":
+            return True
+        if self.dispatch is not None:
+            return self.dispatch.phase == "settled"
+        return not (self.reported_active or self.reserved_calls or self.reserved_cost_usd)
+
+    def _may_replace_lease(self, window: str) -> bool:
+        lease = self.current_lease
+        return (
+            lease is not None
+            and lease.window_start != window
+            and self.settled
+            and not self.awaiting_disposition
+        )
 
 
 def _bool(mapping: Mapping[str, object], key: str, *, default: bool | None = None) -> bool:

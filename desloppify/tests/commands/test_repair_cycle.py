@@ -406,7 +406,7 @@ def test_next_day_replaces_a_recorded_terminal_lease() -> None:
 
     assert client.reconciliations == 0
     assert client.selections == 1
-    assert state["repair_cycle"]["current_lease"]["day_key"] == "2026-09-14"
+    assert state["repair_cycle"]["current_lease"]["window_start"] == "2026-09-14T00:00"
 
 
 def test_disabled_configuration_reconciles_an_existing_lease() -> None:
@@ -425,13 +425,12 @@ def test_disabled_configuration_reconciles_an_existing_lease() -> None:
     assert state["repair_cycle"]["authoritative_receipt"]["state"] == "terminal"
 
 
-def test_only_an_exact_replayed_merge_receipt_reuses_a_daily_permit() -> None:
+def test_a_merge_receipt_never_consumes_a_permit() -> None:
     state = _state()
-    config = CycleConfig.from_mapping(_config())
-    cycle_state = CycleState.empty()
-    lease = cycle_state.begin(config, NOW, attempt_id="recorded-attempt")
-    assert lease is not None
-    initial_receipt = AdeptReceipt(
+    lease = _recorded_attempt(state)
+    state["repair_cycle"]["authority"] = BOUND
+    client = _Client()
+    client.receipt = AdeptReceipt(
         attempt_id=lease.attempt_id,
         state="active",
         reference="pr:7",
@@ -440,29 +439,10 @@ def test_only_an_exact_replayed_merge_receipt_reuses_a_daily_permit() -> None:
         cost_usd=Decimal("0.25"),
         currency="USD",
     )
-    cycle_state.record_receipt(initial_receipt.to_mapping())
-    cycle_state.consume_merge_permit(lease)
-    cycle_state.authority = BOUND
-    state["repair_cycle"] = cycle_state.to_mapping()
-
-    client = _Client()
-    client.receipt = initial_receipt
-    cmd_repair_cycle(_args(state, client))
-
-    assert state["repair_cycle"]["parked_reason"] is None
-
-    client.receipt = AdeptReceipt(
-        attempt_id=lease.attempt_id,
-        state="active",
-        reference="pr:8",
-        merge_consumed=True,
-        calls=1,
-        cost_usd=Decimal("0.25"),
-        currency="USD",
-    )
     cmd_repair_cycle(_args(state, client))
 
     assert state["repair_cycle"]["parked_reason"] == "merge-permit-exhausted"
+    assert "merge_permit_day" not in state["repair_cycle"]
 
 
 def _recorded_attempt(state: dict, **config: object):

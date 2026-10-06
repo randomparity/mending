@@ -41,6 +41,7 @@ from desloppify.engine.repair_cycle import (
     CycleLease,
     CycleState,
     DispatchRecord,
+    window_start,
 )
 from desloppify.engine.repair_manifest import SourceManifest, manifest_from_record
 from desloppify.engine.repair_queue import (
@@ -147,7 +148,7 @@ def _begin_and_select(
         return
     now = now or _now(args)
     lease = cycle_state.current_lease
-    if lease is not None and lease.day_key == now.date().isoformat():
+    if lease is not None and lease.window_start == window_start(now, config.window_minutes):
         _park(state, cycle_state, "daily-attempt-complete")
         return
     # Authorized before the lease exists, so a refusal leaves no attempt to reconcile.
@@ -416,8 +417,6 @@ def _accept_receipt(
         _park(state, cycle_state, "unknown-receipt")
         return False
     cycle_state.record_receipt(receipt.to_mapping())
-    if receipt.merge_consumed:
-        cycle_state.consume_merge_permit(lease)
     print(f"Repair cycle {receipt.state}.")
     failure = _limit_failure(lease, receipt, now)
     if failure is not None:
@@ -595,14 +594,7 @@ def _merge_permit_accepts(
     lease: CycleLease,
     receipt: AdeptReceipt,
 ) -> bool:
-    if not lease.merge_permit:
-        return False
-    if cycle_state.merge_permit_day is None:
-        return True
-    return (
-        cycle_state.merge_permit_day == lease.day_key
-        and cycle_state.authoritative_receipt == receipt.to_mapping()
-    )
+    return False  # ADR 0016: no merge permit authorizes anything
 
 
 def _has_terminal_receipt(cycle_state: CycleState) -> bool:
