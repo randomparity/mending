@@ -140,7 +140,10 @@ class _Response:
 
     def read(self, amt: int | None = None) -> bytes:
         self.read_sizes.append(amt)
-        return self._body if amt is None else self._body[:amt]
+        chunk = self._body if amt is None else self._body[:amt]
+        if self.length is not None:  # http.client.HTTPResponse counts down what remains
+            self.length -= len(chunk)
+        return chunk
 
 
 def _fake_opener(monkeypatch, response: _Response) -> tuple[list[str], list[object]]:
@@ -206,7 +209,7 @@ def test_download_rejects_body_shorter_than_declared_length(monkeypatch) -> None
 
 
 def test_download_accepts_body_that_satisfied_declared_length(monkeypatch) -> None:
-    _fake_opener(monkeypatch, _Response(b"skill text", length=0))
+    _fake_opener(monkeypatch, _Response(b"skill text", length=len(b"skill text")))
 
     assert update_skill_cmd_mod._download("SKILL.md") == "skill text"
 
