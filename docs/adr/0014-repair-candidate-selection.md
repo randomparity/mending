@@ -60,7 +60,9 @@ sync no longer reaches (reclassified to proposal, revalidation dropped,
 ambiguous key) keeps its earlier version, so #26 recomputes it from the
 current work item rather than trusting the stored value alone. Problem and consequence rewording, renderer text, and re-revalidation at
 a new commit with the same blobs do not move the version. A concern's
-consequence still moves its evidence digest. Benefit is measured only by
+consequence still moves its evidence digest. A state with no work items
+records no selection, because `load_state` cannot tell it from a damaged file
+that fell back to an empty state, and writing would replace that file. Benefit is measured only by
 cited lines, which is weak for single-line concern citations. Proposals stay
 unbounded. PR state is not read here; #19 observes it.
 

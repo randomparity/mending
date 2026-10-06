@@ -58,7 +58,7 @@ including closed and human-edited ones, which are never recreated. It then publi
 new small repair, ranked by fewer files, mechanical verification, more
 source-checked evidence, and more cited lines, never by score. With `--apply`
 it records the selection, or a no-op when nothing is safe or an earlier
-create is still unresolved. Linked issues store a reviewed-brief version that
+create is still unresolved (a state with no work items records nothing). Linked issues store a reviewed-brief version that
 moves only when evidence or a material brief field changes.
 
 ```bash

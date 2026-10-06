@@ -4,8 +4,9 @@ from __future__ import annotations
 
 _SYNC_HELP = (
     "Reconcile linked issues, then publish at most one ranked small repair (a"
-    " high-confidence concern of at most 3 files in one directory, or an exact"
-    " same-file duplicate pair); records a no-op when none is safe. Proposals"
+    " high-confidence concern with a verification plan and at most 3 files in one"
+    " directory, or an exact same-file duplicate pair); records a no-op when none"
+    " is safe. Proposals"
     " publish without status:ready and are never dispatched."
 )
 
