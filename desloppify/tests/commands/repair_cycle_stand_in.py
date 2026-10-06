@@ -4,9 +4,8 @@ Run as ``python repair_cycle_stand_in.py claude|gh ARGS...``; stdlib only, so
 it starts fast and never imports the code under test. Everything it reads and
 records lives in the directory named by ``STAND_IN_WORLD``:
 
-- ``world.json``: the fake GitHub (repository, issues, pull requests, the
-  account ``gh`` is signed in as) and the log of every ``gh`` argv, read and
-  written under an exclusive ``flock``;
+- ``world.json``: the fake GitHub (repository, issues, pull requests) and the
+  log of every ``gh`` argv, read and written under an exclusive ``flock``;
 - ``host.json``: the scripted steps of a ``claude -p`` run;
 - ``launches.jsonl`` and ``pids.jsonl``: each launch and each spawned process.
 """
@@ -84,7 +83,7 @@ def _gh(argv: list[str]) -> int:
             head_repo = os.environ.get("STAND_IN_HEAD_REPO") or options["--repo"]
             items.append({"number": number, "url": url, "state": "OPEN",
                           "title": options["--title"], "body": options["--body"], "files": files,
-                          "author": {"login": world.get("login", LOGIN)},
+                          "author": {"login": LOGIN},
                           "head": {"ref": options.get("--head"), "repo": head_repo}})
             output = url
         else:
@@ -98,7 +97,7 @@ def _api(world: dict, endpoint: str) -> object:
     """Answer the REST reads: the signed-in user, pull requests by head, or one pull request."""
     path, _, query = endpoint.partition("?")
     if path == "user":
-        return {"login": world.get("login", LOGIN)}
+        return {"login": LOGIN}
     if path == f"repos/{world['repository']}/pulls":
         owner, _, ref = dict(pair.split("=", 1) for pair in query.split("&"))["head"].partition(":")
         return [[
