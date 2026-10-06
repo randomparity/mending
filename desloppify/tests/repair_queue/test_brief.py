@@ -338,12 +338,12 @@ def test_proposal_with_unsafe_fix_parks() -> None:
 
 def _dupe_issue() -> dict:
     issue = {
-        "id": "dupes::src/impl.py::alpha::src/impl.py::beta", "detector": "dupes",
+        "id": "dupes::src/impl.py::save::src/impl.py::save", "detector": "dupes",
         "status": "open", "file": "src/impl.py", "confidence": "high",
-        "summary": "Exact dupe: alpha (src/impl.py:3) <-> beta (src/impl.py:30) [100%]",
+        "summary": "Exact dupe: save (src/impl.py:3) <-> save (src/impl.py:30) [100%]",
         "detail": {
-            "fn_a": {"file": "/home/dev/src/impl.py", "name": "alpha", "line": 3, "loc": 11},
-            "fn_b": {"file": "/home/dev/src/impl.py", "name": "beta", "line": 30, "loc": 11},
+            "fn_a": {"file": "/home/dev/src/impl.py", "name": "save", "line": 3, "loc": 11},
+            "fn_b": {"file": "/home/dev/src/impl.py", "name": "save", "line": 30, "loc": 11},
             "kind": "exact", "similarity": 1.0, "cluster_size": 2,
         },
     }
@@ -364,7 +364,7 @@ def test_finding_brief_uses_anchors_and_its_own_key() -> None:
     assert isinstance(brief, RepairBrief) and not isinstance(brief, ProposalBrief)
     title, body = render_brief(brief)
     assert title.startswith("Repair: Exact dupe")
-    assert "- `` src/impl.py:3 `alpha` (11 lines) ``" in body.splitlines()
+    assert "- `` src/impl.py:3 `save` (11 lines) ``" in body.splitlines()
     assert FINDING_KEY_LINE.format(candidate.key) in body.splitlines()
     assert f"\nfinding-identity: {candidate.identity}\n" in body
     assert "desloppify-concern-key" not in body and "/home/" not in body

@@ -195,15 +195,18 @@ def _finding_repo(tmp_path: Path, body: str) -> Path:
     return root
 
 
-_PAIR = "def alpha():\n    return 1\n\n\ndef beta():\n    return 1\n"
+_PAIR = (
+    "class A:\n    def save(self):\n        return 1\n\n\n"
+    "class B:\n    def save(self):\n        return 1\n"
+)
 
 
-def _finding(alpha: dict | None = None, file: str = "src/impl.py") -> dict:
+def _finding(save: dict | None = None, file: str = "src/impl.py") -> dict:
     return {
         "file": file,
         "detail": {
-            "fn_a": {"file": "/abs/src/impl.py", "name": "alpha", "line": 1, "loc": 2, **(alpha or {})},
-            "fn_b": {"file": "/abs/src/impl.py", "name": "Owner.beta", "line": 5, "loc": 2},
+            "fn_a": {"file": "/abs/src/impl.py", "name": "save", "line": 2, "loc": 2, **(save or {})},
+            "fn_b": {"file": "/abs/src/impl.py", "name": "B.save", "line": 7, "loc": 2},
         },
     }
 
@@ -217,18 +220,18 @@ def _check_finding(repo: Path, issue: dict) -> CheckResult:
 def test_finding_anchors_pass(tmp_path: Path) -> None:
     result = _check_finding(_finding_repo(tmp_path, _PAIR), _finding())
     assert (result.outcome, result.reason) == ("pass", "evidence anchors hold")
-    assert [claim.identifiers for claim in result.claims] == [("alpha",), ("beta",)]
+    assert [claim.identifiers for claim in result.claims] == [("save",), ("save",)]
 
 
 @pytest.mark.parametrize(
-    ("alpha", "reason"),
+    ("save", "reason"),
     [
-        ({"line": 6}, "cited line is outside the file"),
+        ({"line": 8}, "cited line is outside the file"),
         ({"name": "gamma"}, "quoted identifier is absent from the cited files"),
     ],
 )
-def test_finding_anchor_failures(tmp_path: Path, alpha: dict, reason: str) -> None:
-    result = _check_finding(_finding_repo(tmp_path, _PAIR), _finding(alpha))
+def test_finding_anchor_failures(tmp_path: Path, save: dict, reason: str) -> None:
+    result = _check_finding(_finding_repo(tmp_path, _PAIR), _finding(save))
     assert (result.outcome, result.reason) == ("fail", reason)
 
 
@@ -248,11 +251,13 @@ def test_finding_without_bound_anchors_is_unknown(tmp_path: Path, issue: dict, r
     ("body", "reason"),
     [
         (
-            "def alpha():\n    return 1\n\n\ndef beta():\n    return alpha()\n",
+            "class A:\n    def save(self):\n        return 1\n\n\n"
+            "class B:\n    def save(self):\n        return 2\n",
             "duplicate spans differ",
         ),
         (
-            "def alpha():\n    return 1\n\n\n# other\ndef beta():\n    return 1\n",
+            "class A:\n    def save(self):\n        return 1\n\n\n"
+            "class B:\n    # other\n    def save(self):\n        return 1\n",
             "function name is not on its first line",
         ),
     ],

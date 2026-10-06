@@ -809,11 +809,11 @@ def test_record_from_the_other_lane_parks_the_item(capsys) -> None:
 def _dupe_state(**detail) -> dict:
     function = {"file": "src/impl.py", "line": 3, "loc": 11}
     item = {
-        "id": "dupes::src/impl.py::alpha::src/impl.py::beta", "detector": "dupes",
+        "id": "dupes::src/impl.py::save::src/impl.py::save", "detector": "dupes",
         "status": "open", "file": "src/impl.py", "confidence": "high",
-        "summary": "Exact dupe: alpha <-> beta",
+        "summary": "Exact dupe: save <-> save",
         "detail": {
-            "fn_a": {**function, "name": "alpha"}, "fn_b": {**function, "name": "beta", "line": 30},
+            "fn_a": {**function, "name": "save"}, "fn_b": {**function, "name": "save", "line": 30},
             "kind": "exact", "similarity": 1.0, "cluster_size": 2, **detail,
         },
     }

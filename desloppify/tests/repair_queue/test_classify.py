@@ -69,11 +69,11 @@ def _function(name: str, line: int, file: str = "src/impl.py") -> dict:
 
 def _dupe(**detail) -> dict:
     issue = {
-        "id": "dupes::src/impl.py::alpha::src/impl.py::beta", "detector": "dupes",
+        "id": "dupes::src/impl.py::save::src/impl.py::save", "detector": "dupes",
         "status": "open", "file": "src/impl.py", "confidence": "high", "tier": 2,
-        "summary": "Exact dupe: alpha <-> beta",
+        "summary": "Exact dupe: save <-> save",
         "detail": {
-            "fn_a": _function("alpha", 1), "fn_b": _function("beta", 20),
+            "fn_a": _function("save", 1), "fn_b": _function("save", 20),
             "kind": "exact", "similarity": 1.0, "cluster_size": 2, **detail,
         },
     }
@@ -123,9 +123,9 @@ def test_concern_scope_and_verification_predicates() -> None:
 @pytest.mark.parametrize(
     ("change", "reason"),
     [
-        ({"fn_a": {"file": "src/impl.py", "name": "alpha"}}, "finding evidence is malformed"),
-        ({"fn_b": {**_function("beta", 20), "line": True}}, "finding evidence is malformed"),
-        ({"fn_b": _function("beta", 20, file="src/other.py")}, "finding exceeds the small-repair bound"),
+        ({"fn_a": {"file": "src/impl.py", "name": "save"}}, "finding evidence is malformed"),
+        ({"fn_b": {**_function("save", 20), "line": True}}, "finding evidence is malformed"),
+        ({"fn_b": _function("save", 20, file="src/other.py")}, "finding exceeds the small-repair bound"),
         ({"kind": "near"}, "finding exceeds the small-repair bound"),
         ({"cluster_size": 3}, "finding exceeds the small-repair bound"),
     ],
@@ -152,7 +152,7 @@ def test_finding_without_revalidation_is_ineligible() -> None:
 
 def test_finding_identity_survives_a_line_move_but_evidence_does_not() -> None:
     before = item_hashes(_dupe())
-    after = item_hashes(_dupe(fn_b=_function("beta", 30)))
+    after = item_hashes(_dupe(fn_b=_function("save", 30)))
     assert before is not None and after is not None
     assert before[1] == after[1] and before[2] != after[2]
 
@@ -199,7 +199,7 @@ def test_scan_merge_keeps_finding_records_while_identity_holds() -> None:
     }
     issue["detail"]["github_repair"] = link
     existing = {issue["id"]: copy.deepcopy(issue)}
-    moved = _dupe(fn_b=_function("beta", 30))
+    moved = _dupe(fn_b=_function("save", 30))
     del moved["detail"]["github_repair_revalidated"]
     upsert_issues(existing, [moved], [], "2026-10-05T00:00:00Z", lang=None)
     detail = existing[issue["id"]]["detail"]

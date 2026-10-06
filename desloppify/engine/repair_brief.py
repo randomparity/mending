@@ -38,7 +38,8 @@ FINDING_HEADING = "## Detector finding (anchors checked against source; guidance
 _FINDING_GUIDANCE = {
     "consequence": "Two identical function bodies in one file must be changed together;"
     " a fix applied to one silently misses the other.",
-    "fix": "Keep one implementation and make the other name delegate to it or remove it.",
+    "fix": "Extract one shared implementation that both functions call, keeping each"
+    " function's signature and callers working.",
     "contracts": ["Every existing caller of either function keeps its current behavior."],
     "verification": "The project's existing tests pass, and a fresh desloppify scan no longer"
     " reports this duplicate pair.",

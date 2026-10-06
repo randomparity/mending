@@ -72,7 +72,12 @@ finds as an unverified hit. A lane flip while the other lane holds a record
 parks the item until a human reconciles it. `candidate_from_issue` keeps its
 meaning, a current small-repair candidate, so any caller of it never sees a
 proposal; sync reads both kinds through `classify`.
-Proposal publication is not rate-limited; #22 owns selection. Scan merge now
+The dupes detector keeps the signature line when it normalizes a body, so
+an exact pair shares a name (same-name methods in different scopes of one
+file); its identity cannot tell two such pairs in one file apart, as the
+existing dupes work-item ID already cannot, and a pair whose raw bodies
+differ only in comments fails the span check. Proposal publication is not
+rate-limited; #22 owns selection. Scan merge now
 preserves queue records for findings too.
 
 ## Considered & rejected

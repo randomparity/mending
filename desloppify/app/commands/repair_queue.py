@@ -85,9 +85,9 @@ def _revalidate(args: argparse.Namespace, client: Any) -> None:
             }
     if refused is not None:
         raise CommandError(
-            f"verification check did not pass ({refused.outcome}: {refused.reason}); the "
-            "concern evidence must cite recorded files as PATH:LINE whose lines and quoted "
-            "identifiers still hold"
+            f"verification check did not pass ({refused.outcome}: {refused.reason}); a "
+            "concern's PATH:LINE citations and quoted identifiers, or a duplicate pair's "
+            "line ranges, names, and bodies, must still hold in the recorded files"
         )
     print(f"Revalidated {args.issue_id} for {repository}.")
 
