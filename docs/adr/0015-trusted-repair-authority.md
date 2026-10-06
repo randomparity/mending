@@ -66,7 +66,9 @@ client. A material brief or evidence change voids the approval bound to the
 old version. Running the cycle as root, or from a configuration the service
 account owns, always parks. Observation (ADR 0007, #28) is unaffected by
 refusal. The file allowlist is checked against the brief's manifest; the
-host's actual edits are checked by the composed cycle (#31). An active attempt
+host's actual edits are checked by the composed cycle (#31), which also
+builds the host request from the binding the dispatch check returns; the
+source check reads the project root at `HEAD`. An active attempt
 recorded before this change has no bound authority and fails on resume, and
 so does one whose source files change in the checkout before it ends (for
 example, its repair landing there); the operator disposes of it.

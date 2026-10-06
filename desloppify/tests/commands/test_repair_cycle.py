@@ -1412,3 +1412,22 @@ def test_selection_prefers_an_approved_published_repair() -> None:
 
     assert client.bindings[0].key == KEY
     assert state["repair_cycle"]["authority"] == BOUND
+
+
+def test_resume_parks_on_unreadable_source_without_failing() -> None:
+    state = _state()
+    _bound_attempt(state)
+    unreadable = _Source(AnalysisUnknown("git unavailable"))
+
+    cmd_repair_cycle(_args(state, _ActiveClient(), source=unreadable))
+
+    assert state["repair_cycle"]["parked_reason"] == "source-unreadable"
+    assert state["repair_cycle"]["attempt_failure"] is None
+
+
+def test_config_authority_is_copied_from_the_source_mapping() -> None:
+    raw = _config()
+    config = CycleConfig.from_mapping(raw)
+    raw["authority"]["approvals"].append(_approval(key="other"))  # type: ignore[index]
+
+    assert config.authority == _config()["authority"]

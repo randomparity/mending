@@ -246,7 +246,9 @@ def _recheck_active(
     except TimeoutError:
         _park(state, cycle_state, "observation-timeout")
         return
-    if isinstance(authorized, str):
+    if authorized == "source-unreadable":
+        _park(state, cycle_state, authorized)  # transient: the next observation rechecks
+    elif isinstance(authorized, str):
         _fail(state, cycle_state, authorized)
 
 

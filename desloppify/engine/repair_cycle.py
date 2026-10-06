@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -55,7 +56,7 @@ class CycleConfig:
             ),
             observation_seconds=60
             * _positive_int(mapping, "observation_minutes", default=DEFAULT_OBSERVATION_MINUTES),
-            authority=mapping.get("authority"),
+            authority=deepcopy(mapping.get("authority")),
         )
 
     @property
