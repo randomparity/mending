@@ -62,7 +62,10 @@ published repair by its stable key and the `reviewed_brief_version` and
 `evidence_digest` of its current brief. Copy them from the repair's
 `github_repair` link record right after a `repair-queue sync --apply`, which
 rewrites the record and prints `Changed ...` when they move; the cycle
-recomputes both and refuses a stale pair. The cycle reads work items and link
+recomputes both and refuses a stale pair. The pair is computed from work items
+in the state file, which the coding host can write, so approve it only for a
+brief you reviewed: the published issue shows the brief as it was created, and
+a `Changed ...` line means the pair no longer matches that text. The cycle reads work items and link
 records from its own `--state` file, so `scan` and `repair-queue` must use that
 same file; wiring the recipe for this is #31.
 It allows the files of the brief's evidence manifest, the `repair` action
