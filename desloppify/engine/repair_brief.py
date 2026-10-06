@@ -331,16 +331,18 @@ def _contracts(brief: RepairBrief) -> list[str]:
 def _provenance(brief: RepairBrief) -> list[str]:
     if isinstance(brief, ProposalBrief):
         marker = proposal_marker(brief.key)
-        identity = [PROPOSAL_LINE.format(marker), "", "```text", f"schema: {brief.schema}"]
-        identity.append(f"proposal-key: {marker}")
+        line, keys = PROPOSAL_LINE.format(marker), [f"proposal-key: {marker}"]
     else:
-        line = FINDING_KEY_LINE if brief.route == "finding" else KEY_LINE
-        identity = [line.format(brief.key), "", "```text", f"schema: {brief.schema}"]
-        identity += [f"{brief.route}-key: {brief.key}", f"{brief.route}-identity: {brief.identity}"]
+        line = (FINDING_KEY_LINE if brief.route == "finding" else KEY_LINE).format(brief.key)
+        keys = [f"{brief.route}-key: {brief.key}", f"{brief.route}-identity: {brief.identity}"]
     return [
         "## Provenance",
         "",
-        *identity,
+        line,
+        "",
+        "```text",
+        f"schema: {brief.schema}",
+        *keys,
         f"evidence-digest: {brief.evidence_digest}",
         f"manifest-digest: {brief.manifest_digest}",
         f"source-revision: {brief.revision}",
