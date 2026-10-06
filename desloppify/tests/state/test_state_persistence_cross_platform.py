@@ -60,6 +60,20 @@ def test_state_lock_refuses_to_save_over_state_with_invalid_invariants(tmp_path)
     assert not state_path.with_suffix(".json.bak").exists()
 
 
+def test_invalid_invariants_refusal_offers_the_backup(tmp_path):
+    persistence_mod = importlib.import_module("desloppify.engine._state.persistence")
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps({"version": 2, "work_items": {"a": {"id": "b"}}}))
+    backup = state_path.with_suffix(".json.bak")
+    backup.write_text(json.dumps({"version": 2, "scan_count": 7}))
+
+    with pytest.raises(CommandError) as excinfo:
+        _locked_write(persistence_mod, state_path)
+
+    assert f"Restore {backup} over it" in excinfo.value.message
+    assert "remove it" not in excinfo.value.message
+
+
 def test_state_lock_keeps_undecodable_state_without_backup(tmp_path):
     persistence_mod = importlib.import_module("desloppify.engine._state.persistence")
     state_path = tmp_path / "state.json"

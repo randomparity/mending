@@ -281,9 +281,15 @@ def _load_state_reporting_fallback(state_path: Path) -> tuple[StateModel, str | 
             f"  ⚠ State invariants invalid ({normalize_ex}). Starting fresh.",
             file=sys.stderr,
         )
+        backup = state_path.with_suffix(".json.bak")
+        recovery = (
+            f"Restore {backup} over it, repair it"
+            if backup.exists()
+            else "Repair or remove it"
+        )
         reason = (
             f"its state invariants are invalid ({normalize_ex}); the file was left in place. "
-            "Repair or remove it, or rerun `desloppify scan` to rebuild state"
+            f"{recovery}, or rerun `desloppify scan` to rebuild state"
         )
         return _reconstruct_from_saved_plan_if_available(state_path, empty_state()), reason
 
