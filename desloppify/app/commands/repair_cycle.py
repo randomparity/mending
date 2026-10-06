@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import signal
 import threading
 from collections.abc import Iterator, Mapping
@@ -22,27 +23,34 @@ from desloppify.app.commands.repair_cycle_host import (
     HostRequest,
     host_session_id,
 )
+from desloppify.app.commands.repair_queue import source_comparison
 from desloppify.base.exception_sets import CommandError
 from desloppify.engine._state.persistence import save_state, state_lock
 from desloppify.engine._state.schema_types import StateModel
+from desloppify.engine.repair_authority import (
+    Authority,
+    AuthorityBinding,
+    UnsupportedAuthority,
+    authority_from_mapping,
+    check_authority,
+)
+from desloppify.engine.repair_brief import reviewed_version
 from desloppify.engine.repair_cycle import (
     CycleConfig,
     CycleLease,
     CycleState,
     DispatchRecord,
 )
+from desloppify.engine.repair_manifest import SourceManifest, manifest_from_record
+from desloppify.engine.repair_queue import (
+    PromotionCandidate,
+    RepairRecordError,
+    candidate_from_issue,
+    matching_record,
+)
+from desloppify.engine.repair_selection import rank_key
 
 _Result = TypeVar("_Result")
-
-
-@dataclass(frozen=True)
-class AuthorityProof:
-    """Repository-bound policy facts that must precede new model work."""
-
-    repository: str
-    policy_id: str
-    policy_revision: str
-    proof_id: str
 
 
 @dataclass(frozen=True)
@@ -71,9 +79,7 @@ class AdeptReceipt:
 
 
 class AdeptCycleClient(Protocol):
-    """The Adept-owned authority, reconciliation, and selection boundary."""
-
-    def verify_authority(self, repository: str) -> AuthorityProof: ...
+    """The reconciliation and selection boundary; authority stays with Mending (ADR 0015)."""
 
     def reconcile(self, repository: str, lease: CycleLease) -> AdeptReceipt: ...
 
@@ -81,15 +87,12 @@ class AdeptCycleClient(Protocol):
         self,
         config: CycleConfig,
         lease: CycleLease,
-        authority: AuthorityProof,
+        binding: AuthorityBinding,
     ) -> AdeptReceipt: ...
 
 
 class _UnavailableAdeptCycleClient:
     """Prevent live dispatch until Adept installs its owned protocol adapter."""
-
-    def verify_authority(self, repository: str) -> AuthorityProof:
-        raise RuntimeError("Adept repair-cycle adapter is not installed")
 
     def reconcile(self, repository: str, lease: CycleLease) -> AdeptReceipt:
         raise RuntimeError("Adept repair-cycle adapter is not installed")
@@ -98,7 +101,7 @@ class _UnavailableAdeptCycleClient:
         self,
         config: CycleConfig,
         lease: CycleLease,
-        authority: AuthorityProof,
+        binding: AuthorityBinding,
     ) -> AdeptReceipt:
         raise RuntimeError("Adept repair-cycle adapter is not installed")
 
@@ -112,7 +115,8 @@ def cmd_repair_cycle(args: argparse.Namespace) -> None:
     with _locked_state(args) as state:
         cycle_state = _cycle_state(state)
         if dispose_attempt is not None:
-            _dispose(state, cycle_state, dispose_attempt)
+            confirm_stopped = getattr(args, "confirm_stopped", False) is True
+            _dispose(state, cycle_state, dispose_attempt, confirm_stopped)
             return
         if cycle_state.current_lease is not None:
             if _has_terminal_receipt(cycle_state) or cycle_state.disposed:
@@ -140,13 +144,28 @@ def _begin_and_select(
     if cycle_state.awaiting_disposition:
         _park(state, cycle_state, "disposition-required")
         return
-    lease = cycle_state.begin(config, now or _now(args))
+    now = now or _now(args)
+    # Authorized before the lease exists, so a refusal leaves no attempt to reconcile.
+    try:
+        authorized = _call_within(
+            config.runtime_seconds,
+            lambda: _authorize(args, state, cycle_state, config, now, select=True),
+        )
+    except TimeoutError:
+        _park(state, cycle_state, "timeout")
+        return
+    if isinstance(authorized, str):
+        _park(state, cycle_state, authorized)
+        return
+    binding, bound = authorized
+    lease = cycle_state.begin(config, now)
     if lease is None:
         _park(state, cycle_state, "daily-attempt-complete")
         return
+    cycle_state.authority = bound
     _store_cycle_state(state, cycle_state)
     _persist_before_external_call(args, state)
-    _select(args, state, cycle_state, config, client, lease)
+    _select(args, state, cycle_state, config, client, lease, binding)
 
 
 def _select(
@@ -156,27 +175,13 @@ def _select(
     config: CycleConfig,
     client: AdeptCycleClient,
     lease: CycleLease,
+    binding: AuthorityBinding,
 ) -> None:
-    try:
-        authority = _call_before_deadline(
-            args,
-            lease,
-            lambda: client.verify_authority(config.repository),
-        )
-    except TimeoutError:
-        _park(state, cycle_state, "timeout")
-        return
-    except Exception:
-        _park(state, cycle_state, "authority-unavailable")
-        return
-    if not _valid_authority(authority, config.repository):
-        _park(state, cycle_state, "invalid-authority-proof")
-        return
     try:
         receipt = _call_before_deadline(
             args,
             lease,
-            lambda: client.select(config, lease, authority),
+            lambda: client.select(config, lease, binding),
         )
     except TimeoutError:
         _park(state, cycle_state, "timeout")
@@ -215,7 +220,145 @@ def _reconcile(
         _park(state, cycle_state, "reconciliation-unavailable")
         return False
     accepted = _accept_receipt(state, cycle_state, lease, receipt, _now(args))
+    if accepted and isinstance(receipt, AdeptReceipt) and receipt.state == "active":
+        _recheck_active(args, state, cycle_state, config)
+        return False
     return accepted and isinstance(receipt, AdeptReceipt) and receipt.state == "terminal"
+
+
+def _recheck_active(
+    args: argparse.Namespace,
+    state: dict[str, Any],
+    cycle_state: CycleState,
+    config: CycleConfig,
+) -> None:
+    """On resume, an active attempt whose authority no longer holds fails (ADR 0015)."""
+    try:
+        authorized = _call_within(
+            config.observation_seconds,
+            lambda: _authorize(args, state, cycle_state, config, _now(args)),
+        )
+    except TimeoutError:
+        _park(state, cycle_state, "observation-timeout")
+        return
+    if isinstance(authorized, str):
+        _fail(state, cycle_state, authorized)
+
+
+def _authorize(
+    args: argparse.Namespace,
+    state: dict[str, Any],
+    cycle_state: CycleState,
+    config: CycleConfig,
+    now: datetime,
+    *,
+    select: bool = False,
+) -> tuple[AuthorityBinding, dict[str, str]] | str:
+    """The one authority check (ADR 0015): the binding and its record, else a park reason.
+
+    Selection (``select``) picks the work item; every later check rebuilds the
+    binding from the work item the attempt was bound to.
+    """
+    bound = None if select else cycle_state.authority
+    if not select and bound is None:
+        return "authority-missing"
+    authority = _trusted_authority(args, config)
+    if isinstance(authority, str):
+        return authority
+    issue_id = bound["issue_id"] if bound else _selected_issue(state, config.repository, authority)
+    items = state.get("work_items")
+    issue = items.get(issue_id) if isinstance(items, Mapping) and issue_id else None
+    if not isinstance(issue, Mapping):
+        return "selected-repair-unavailable"
+    candidate = candidate_from_issue(issue, config.repository)
+    version = reviewed_version(issue, candidate) if candidate else None
+    if candidate is None or version is None:
+        return "selected-repair-unavailable"
+    if bound and bound["key"] != candidate.key:
+        return "authority-mismatch"
+    recheck = source_comparison(args, issue)
+    if not recheck.current:
+        return "source-unreadable" if recheck.keep else "source-not-current"
+    binding = _binding(issue, candidate, version, config)
+    reason = check_authority(authority, binding, now, bound is not None)
+    if reason is not None or authority is None:
+        return reason or "authority-missing"
+    return binding, {"issue_id": issue_id, "key": candidate.key, "revision": authority.revision}
+
+
+def _trusted_authority(args: argparse.Namespace, config: CycleConfig) -> Authority | None | str:
+    """Decode the configuration's authority, or name why it cannot grant any."""
+    if not _trusted_config(args):
+        return "authority-untrusted"
+    try:
+        return authority_from_mapping(config.repository, config.authority)
+    except UnsupportedAuthority:
+        return "authority-unsupported"
+    except ValueError:
+        return "authority-invalid"
+
+
+def _binding(
+    issue: Mapping[str, Any],
+    candidate: PromotionCandidate,
+    version: str,
+    config: CycleConfig,
+) -> AuthorityBinding:
+    record = matching_record(issue["detail"], "github_repair_revalidated", candidate) or {}
+    manifest = manifest_from_record(record.get("manifest"))
+    files = manifest.dependencies if isinstance(manifest, SourceManifest) else ()
+    return AuthorityBinding(
+        repository=candidate.repository,
+        key=candidate.key,
+        reviewed_brief_version=version,
+        evidence_digest=candidate.evidence_digest,
+        files=frozenset(dependency.path for dependency in files),
+        action="repair",
+        call_limit=config.call_limit,
+        cost_cap_usd=config.cost_cap_usd or Decimal(0),
+        runtime_seconds=config.runtime_seconds,
+    )
+
+
+def _selected_issue(
+    state: Mapping[str, object], repository: str, authority: Authority | None
+) -> str | None:
+    """The published repair to bind: an approved one first, then ADR 0014's rank order."""
+    approved = {approval.key for approval in authority.approvals} if authority else set()
+    items = state.get("work_items")
+    choices = []
+    for issue_id, issue in items.items() if isinstance(items, Mapping) else ():
+        candidate = candidate_from_issue(issue, repository) if isinstance(issue, Mapping) else None
+        if candidate is None:
+            continue
+        try:
+            link = matching_record(issue["detail"], "github_repair", candidate)
+        except RepairRecordError:
+            continue
+        if link is not None and link.get("state") != "closed":
+            choices.append((candidate.key not in approved, rank_key(issue, candidate), issue_id))
+    return min(choices)[2] if choices else None
+
+
+def _trusted_config(args: argparse.Namespace) -> bool:
+    """Only a configuration this account neither owns nor can write grants authority.
+
+    The coding host runs as this account (ADR 0010), so an owned file could be
+    made writable again; every ancestor directory is checked because a writable
+    one lets the file be replaced.
+    """
+    if isinstance(getattr(args, "config_data", None), Mapping):
+        return True
+    path = Path(str(getattr(args, "config", ""))).resolve()
+    account = os.geteuid()
+    for entry in (path, *path.parents):
+        try:
+            owner = entry.stat().st_uid
+        except OSError:
+            return False
+        if owner == account or os.access(entry, os.W_OK):
+            return False
+    return True
 
 
 def _accept_receipt(
@@ -251,6 +394,7 @@ def _dispatch_host(
     args: argparse.Namespace,
     state: dict[str, Any],
     cycle_state: CycleState,
+    config: CycleConfig,
     adapter: ClaudeHostAdapter,
     request: HostRequest,
 ) -> HostOutcome | None:
@@ -271,6 +415,10 @@ def _dispatch_host(
         return None
     if _now(args) >= lease.deadline:
         _fail(state, cycle_state, "runtime-exhausted")
+        return None
+    authorized = _authorize(args, state, cycle_state, config, _now(args))
+    if isinstance(authorized, str):
+        _park(state, cycle_state, authorized)
         return None
     try:
         prior_worktrees = adapter.worktrees(request.repo_root)
@@ -453,18 +601,6 @@ def _deadline_exceeded(_signum: int, _frame: object) -> None:
     raise TimeoutError("repair-cycle call bound exceeded")
 
 
-def _valid_authority(proof: object, repository: str) -> bool:
-    return (
-        isinstance(proof, AuthorityProof)
-        and proof.repository == repository
-        and all(isinstance(value, str) and value.strip() for value in (
-            proof.policy_id,
-            proof.policy_revision,
-            proof.proof_id,
-        ))
-    )
-
-
 def _load_config(args: argparse.Namespace) -> CycleConfig:
     supplied = getattr(args, "config_data", None)
     if isinstance(supplied, Mapping):
@@ -508,9 +644,10 @@ def _dispose(
     state: dict[str, Any],
     cycle_state: CycleState,
     attempt_id: str,
+    confirm_stopped: bool,
 ) -> None:
     try:
-        cycle_state.dispose(attempt_id)
+        cycle_state.dispose(attempt_id, confirm_stopped=confirm_stopped)
     except ValueError as exc:
         raise CommandError(f"repair-cycle cannot dispose attempt: {exc}", exit_code=2) from exc
     _store_cycle_state(state, cycle_state)
@@ -549,4 +686,4 @@ def _locked_state(args: argparse.Namespace) -> Iterator[dict[str, Any]]:
         yield cast(dict[str, Any], state)
 
 
-__all__ = ["AdeptCycleClient", "AdeptReceipt", "AuthorityProof", "cmd_repair_cycle"]
+__all__ = ["AdeptCycleClient", "AdeptReceipt", "cmd_repair_cycle"]
