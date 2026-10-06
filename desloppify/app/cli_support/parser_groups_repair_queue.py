@@ -2,12 +2,25 @@
 
 from __future__ import annotations
 
+_SYNC_HELP = (
+    "Reconcile linked issues, then publish at most one ranked small repair (a"
+    " high-confidence concern with a verification plan and at most 3 files in one"
+    " directory, or an exact same-file duplicate pair); records a no-op when none"
+    " is safe. Proposals"
+    " publish without status:ready and are never dispatched."
+)
+
 
 def _add_repair_queue_parser(sub) -> None:
-    parser = sub.add_parser("repair-queue", help="Promote revalidated concerns to GitHub")
+    parser = sub.add_parser(
+        "repair-queue",
+        help="Publish revalidated small repairs (one per sync) and non-dispatchable proposals"
+        " to GitHub",
+    )
     actions = parser.add_subparsers(dest="repair_queue_action", required=True)
     for action in ("sync", "revalidate", "recover"):
-        child = actions.add_parser(action)
+        texts = {"help": _SYNC_HELP, "description": _SYNC_HELP} if action == "sync" else {}
+        child = actions.add_parser(action, **texts)
         child.add_argument("--repo", dest="repository", required=True, metavar="OWNER/REPO")
         child.add_argument("--state", type=str, default=None, help="Path to state file")
         child.add_argument("--apply", action="store_true", help="Permit local or GitHub writes")

@@ -338,3 +338,14 @@ def test_scan_merge_keeps_corrupt_link_verbatim() -> None:
     corrupt = {**_LINK, "number": "seven"}
     detail = _merge({**_hashes(), "github_repair": corrupt}, _hashes("c" * 64))
     assert detail["github_repair"] == corrupt
+
+
+def test_link_version_survives_merge_and_rejects_malformed() -> None:
+    versioned = {**_LINK, "reviewed_brief_version": "e" * 64}
+    assert normalize_record("github_repair", versioned, REPOSITORY, IDENTITY, EVIDENCE) == versioned
+    with pytest.raises(RepairRecordError):
+        normalize_record(
+            "github_repair", {**_LINK, "reviewed_brief_version": "x"}, REPOSITORY, IDENTITY, EVIDENCE
+        )
+    detail = _merge({**_hashes(), "github_repair": versioned}, _hashes("c" * 64))
+    assert detail["github_repair"] == versioned

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from unittest.mock import ANY
 
 import pytest
 
@@ -211,6 +212,7 @@ def test_sync_adopts_closed_match_with_last_read_state() -> None:
 
     assert detail["github_repair"] == {
         **BASE,
+        **VERSIONED,
         "number": 7,
         "url": "https://example.test/7",
         "state": "closed",
@@ -314,6 +316,8 @@ def test_sync_search_failure_never_attempts_create() -> None:
 
 ISSUE_7 = GitHubIssue(7, "https://example.test/7", "closed", LEGACY_BODY)
 LINK_7 = {**BASE, "number": 7, "url": "https://example.test/7", "state": "closed"}
+# A link write also stores the reviewed brief version (ADR 0014).
+VERSIONED = {"reviewed_brief_version": ANY}
 
 
 class _Recorder(_Client):
@@ -373,7 +377,7 @@ def test_human_edited_legacy_issue_is_found_by_legacy_marker() -> None:
     client = _Recorder({LEGACY: [ISSUE_7]})
     _sync(state, client)
     assert client.create_calls == 0
-    assert _detail(state)["github_repair"] == LINK_7
+    assert _detail(state)["github_repair"] == {**LINK_7, **VERSIONED}
 
 
 def test_own_pending_is_not_cleared_by_peer_link() -> None:
@@ -401,7 +405,7 @@ def test_evidence_change_reconciles_closed_link_without_create() -> None:
     assert client.views == [7]
     assert client.searches == []
     assert client.create_calls == 0
-    assert _detail(state)["github_repair"] == {**LINK_7, "evidence_digest": new_evidence}
+    assert _detail(state)["github_repair"] == {**LINK_7, "evidence_digest": new_evidence, **VERSIONED}
 
 
 def test_old_evidence_revalidation_is_not_eligible() -> None:
@@ -443,7 +447,7 @@ def test_legacy_link_is_migrated_on_sync() -> None:
     client = _Recorder()
     _sync(state, client)
     assert client.views == [7]
-    assert _detail(state)["github_repair"] == LINK_7
+    assert _detail(state)["github_repair"] == {**LINK_7, **VERSIONED}
 
 
 def test_legacy_pending_never_creates_again() -> None:
@@ -457,7 +461,7 @@ def test_legacy_pending_never_creates_again() -> None:
     client.results = {IDENTITY: [ISSUE_7]}
     _sync(state, client)
     assert client.create_calls == 0
-    assert _detail(state)["github_repair"] == LINK_7
+    assert _detail(state)["github_repair"] == {**LINK_7, **VERSIONED}
     assert "github_repair_pending" not in _detail(state)
 
 
@@ -490,7 +494,7 @@ def test_rename_adopts_local_link_from_old_item() -> None:
     _sync(state, client)
     assert client.views == [7]
     assert (client.searches, client.create_calls) == ([], 0)
-    assert _detail(state)["github_repair"] == LINK_7
+    assert _detail(state)["github_repair"] == {**LINK_7, **VERSIONED}
 
 
 def test_rename_adopts_legacy_issue_found_by_identity() -> None:
@@ -498,7 +502,7 @@ def test_rename_adopts_legacy_issue_found_by_identity() -> None:
     client = _Recorder({IDENTITY: [ISSUE_7]})
     _sync(state, client)
     assert client.create_calls == 0
-    assert _detail(state)["github_repair"] == LINK_7
+    assert _detail(state)["github_repair"] == {**LINK_7, **VERSIONED}
 
 
 def test_rename_with_peer_pending_never_creates() -> None:
@@ -580,7 +584,7 @@ def test_successful_create_links_new_shape_record() -> None:
     client = CreateThenFind()
     _sync(state, client)
     assert client.create_calls == 1
-    assert _detail(state)["github_repair"] == {**BASE, "number": 9, "url": "https://example.test/9", "state": "open"}
+    assert _detail(state)["github_repair"] == {**BASE, "number": 9, "url": "https://example.test/9", "state": "open", **VERSIONED}
     assert "github_repair_pending" not in _detail(state)
 
 
@@ -673,7 +677,7 @@ def test_verified_hit_beside_unverified_hit_is_linked() -> None:
     })
     _sync(state, client)
     assert client.create_calls == 0
-    assert _detail(state)["github_repair"] == LINK_7
+    assert _detail(state)["github_repair"] == {**LINK_7, **VERSIONED}
 
 
 def test_two_verified_hits_park() -> None:
