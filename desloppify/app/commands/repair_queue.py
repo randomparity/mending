@@ -244,12 +244,12 @@ def _select(
                 " reconcile it manually."
             )
     if blockers:
-        _record_selection(args, "no-op", "unresolved repair publication", None)
+        _record_selection(args, state, "no-op", "unresolved repair publication", None)
         return
     safe = [candidate for candidate in selectable if _safe(args, state, candidate)]
     if not safe:
         print("No repair selected: no safe small repair.")
-        _record_selection(args, "no-op", "no safe small repair", None)
+        _record_selection(args, state, "no-op", "no safe small repair", None)
         return
     chosen, *others = sorted(
         safe, key=lambda candidate: rank_key(_issues(state)[candidate.issue_id], candidate)
@@ -259,9 +259,9 @@ def _select(
     if not args.apply:
         print(f"Would create a repair issue for {chosen.issue_id}.")
     elif _create_once(args, client, chosen):
-        _record_selection(args, "selected", "ranked first", chosen.issue_id)
+        _record_selection(args, state, "selected", "ranked first", chosen.issue_id)
     else:
-        _record_selection(args, "no-op", "selected candidate changed before create", None)
+        _record_selection(args, state, "no-op", "selected candidate changed before create", None)
 
 
 def _safe(args: argparse.Namespace, state: Mapping[str, Any], candidate: PromotionCandidate) -> bool:
@@ -290,9 +290,16 @@ def _pending_repairs(state: Mapping[str, Any], repository: str) -> list[tuple[st
 
 
 def _record_selection(
-    args: argparse.Namespace, outcome: str, reason: str, issue_id: str | None
+    args: argparse.Namespace,
+    state: Mapping[str, Any],
+    outcome: str,
+    reason: str,
+    issue_id: str | None,
 ) -> None:
-    if not args.apply:
+    # load_state falls back to an empty state when the file fails its invariants, and a
+    # locked write would then replace that file and its backup; with no work items there
+    # is nothing to record, so never take the lock for them.
+    if not args.apply or not _issues(state):
         return
     with _locked_state(args) as state:
         records = state.get("repair_queue_selection")

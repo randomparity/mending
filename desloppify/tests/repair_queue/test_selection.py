@@ -217,7 +217,13 @@ def test_clean_state_records_no_op_and_dry_run_records_nothing(capsys) -> None:
     _sync(dry, _GitHub(), apply=False)
     assert "repair_queue_selection" not in dry
 
-    state = _state()
+    empty = _state()
+    _sync(empty, _GitHub())
+    assert "repair_queue_selection" not in empty  # never rewrite a state that loaded empty
+
+    fixed = _concern("fixed", "1")
+    fixed["status"] = "fixed"
+    state = _state(fixed)
     _sync(state, _GitHub())
     selection = _selection(state)
     assert (selection["outcome"], selection["reason"], selection["issue_id"]) == (
