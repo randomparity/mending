@@ -36,16 +36,19 @@ repair is returned to `_sync` as selectable instead. After the loop,
    `--apply` calls `_create_once(args, client, chosen)`, which now returns
    `True` when it wrote the pending record. Inside its lock, for a small
    repair, it also refuses (prints `Skipped <id>: another repair publication
-   is pending.`, returns `False`) when `_pending_repair` holds, so concurrent
+   is pending.`, returns `False`) when `_pending_repairs` holds, so concurrent
    syncs sharing the state file cannot both create. `False` → no-op, reason
    `selected candidate changed before create`; `True` → `selected`.
 
 With `--apply` only, `_record_selection` writes under the state lock
 `state["repair_queue_selection"][repository] = {"outcome", "reason",
 "issue_id", "at"}` (`issue_id` is `None` for a no-op; `at` is UTC ISO-8601).
+It writes nothing when the read state has no work items: `load_state` falls
+back to an empty state for a file that fails its invariants, and a locked
+write would replace that file and its backup.
 
-**Ranking** (`desloppify/engine/repair_selection.py`, `rank(entries)` over
-`(issue, candidate)` pairs, ascending by `rank_key`):
+**Ranking** (`desloppify/engine/repair_selection.py`; `_select` sorts
+candidates ascending by `rank_key(issue, candidate)`):
 `(file_count, 0 if route == "finding" else 1, -citations, -cited_lines, key)`,
 read from `matching_record(detail, "github_repair_revalidated", candidate)`:
 `file_count` = manifest dependencies; `citations` = all claim citations in

@@ -53,8 +53,8 @@ directory; an exact duplicate pair of functions inside one file (`dupes`) is a
 small repair too, proven by its line ranges and names. A concern that misses
 any of those bounds becomes an architecture proposal: published without
 `status:ready`, it asks for a human decision and is never dispatched. Each
-`sync` first reconciles every linked or pending issue, including closed and
-human-edited ones, which are never recreated. It then publishes at most one
+`sync` first reconciles each eligible item's linked or pending issue,
+including closed and human-edited ones, which are never recreated. It then publishes at most one
 new small repair, ranked by fewer files, mechanical verification, more
 source-checked evidence, and more cited lines, never by score. With `--apply`
 it records the selection, or a no-op when nothing is safe or an earlier

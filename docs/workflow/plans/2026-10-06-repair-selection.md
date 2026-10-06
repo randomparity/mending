@@ -8,7 +8,7 @@ records, per [the spec](../specs/2026-10-06-repair-selection-design.md) and
 Architecture: `repair_brief.py` gains `reviewed_version`; `repair_queue.py`
 accepts the optional version on link records; a new
 `repair_selection.py` owns `rank_key`; the command module returns small
-repairs from `_sync_one` as selectable and adds `_select`, `_pending_repair`,
+repairs from `_sync_one` as selectable and adds `_select`, `_pending_repairs`,
 and `_record_selection`, and writes the version in `_write_link`.
 
 Tech stack: Python 3.11+, pytest, `gh` via fixed argv.
@@ -37,7 +37,7 @@ assertion updates in existing tests).
 | `desloppify/engine/repair_brief.py` | add `REVIEWED_SCHEMA`, `reviewed_version` | brief and its two versions |
 | `desloppify/engine/repair_queue.py` | `_kind_fields` keeps `reviewed_brief_version` | record shapes |
 | `desloppify/engine/repair_selection.py` | new: `rank_key` | ranking order |
-| `desloppify/app/commands/repair_queue.py` | `_sync`, `_sync_one`, `_preview_create`, `_create_once`, `_write_link`; new `_select`, `_safe`, `_pending_repair`, `_record_selection` | sync flow |
+| `desloppify/app/commands/repair_queue.py` | `_sync`, `_sync_one`, `_preview_proposal`, `_create_once`, `_write_link`; new `_select`, `_safe`, `_pending_repairs`, `_record_selection` | sync flow |
 | `desloppify/tests/repair_queue/test_selection.py` | new | Success 1–6 |
 | `desloppify/tests/repair_queue/test_promotion.py` | merge/shape test | Success 7 |
 | existing tests asserting whole link records | include the version | — |
@@ -143,13 +143,13 @@ Steps:
 3. `_sync_one`: every existing `return` becomes `return False`; the final
    branch becomes `elif candidate.kind == "proposal":` create-or-preview
    (unchanged), `else: return True`; end with `return False`.
-   `_preview_create` keeps only the park and proposal messages.
-4. Add `_select`, `_safe`, `_pending_repair`, `_record_selection` exactly as
+   `_preview_proposal` keeps only the park and proposal messages.
+4. Add `_select`, `_safe`, `_pending_repairs`, `_record_selection` exactly as
    the spec's `_select` section states (messages verbatim; `at` from
    `datetime.now(UTC).isoformat()`; `_record_selection` returns early without
    `--apply`).
 5. `_create_once`: inside the lock, after the existing stale checks, add
-   `if candidate.kind == "small_repair" and _pending_repair(state, candidate.repository):`
+   `if candidate.kind == "small_repair" and _pending_repairs(state, candidate.repository):`
    print `Skipped <id>: another repair publication is pending.` and `return
    False`; `return False` on each other early exit inside the lock, `return
    True` after it (create outcome no longer changes the result). Test:
