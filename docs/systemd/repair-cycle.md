@@ -15,7 +15,9 @@ unprivileged `mending` account and make it the owner of the one target checkout
 at `/var/lib/mending/repository`, and keep that checkout current with its
 default branch: the cycle scans and rechecks it as it is and never fetches.
 The scan also writes its working files under `.desloppify/` in the checkout,
-which the target repository should ignore.
+which the target repository should ignore; confirm it commits no
+`.desloppify/` files, because a committed `.desloppify/config.json` with
+`trust_plugins` makes every refresh run the checkout's plugins.
 Create `/var/lib/mending/repository-worktrees` (where the Adept skills put the
 repair worktree) and `/var/lib/mending/claude` (the Claude Code configuration
 directory, holding the account's credentials and session files), both owned
@@ -89,8 +91,9 @@ not run either by hand against that file while the unit is active.
 manifest files and any test or documentation file the repair will touch. The
 host is told this set, and a repair pull request that changes any other path
 fails the attempt (`authority-scope-exceeded`). The check compares each pull
-request's changed paths after the change, so a file renamed onto an approved
-path is not caught; review renames before merging. A pull request whose edits
+request's changed paths after the change, and reads at most 100 of them, so a
+file renamed onto an approved path, or a path past the first 100, is not
+caught; review renames before merging. A pull request whose edits
 cannot be compared because its approval was removed or the configuration is
 unreadable fails the attempt with that authority reason instead of settling,
 so remove an approval only after its attempt has settled. The approval also names the

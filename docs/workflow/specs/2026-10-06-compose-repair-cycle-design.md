@@ -185,8 +185,8 @@ contract wording stays as #16 left it.
 - **Actors.** The coding host's model (same account; untrusted for authority);
   GitHub content authors. Trust sits in the root-owned config (ADR 0015).
 - **Checkout and host settings.** The checkout is untrusted input to the
-  refresh: `scan` runs with `-P`, so the checkout's Python modules are never
-  imported. The
+  refresh: `scan` runs with `-P`, so a checkout package cannot shadow the
+  installed `desloppify`. The
   Claude configuration directory is writable by the host account, so the
   host's permission rules belong in Claude Code's root-owned managed settings,
   not in that directory (guide).
@@ -196,7 +196,10 @@ contract wording stays as #16 left it.
 - **Out of scope.** A same-account host tampering with state (accepted
   above); `scan`'s language tools running checkout-resolved executables (for
   example `node_modules/.bin/tsc`, `cargo check`), which adds nothing to the
-  host's own execution of checkout code under the same account; a compromised `gh` or `claude` binary.
+  host's own execution of checkout code under the same account; plugins the
+  checkout commits under `.desloppify/` with `trust_plugins` set, which run
+  during every refresh, so the guide requires a target that commits no
+  `.desloppify/` files (default-branch content is the operator's own); a compromised `gh` or `claude` binary.
 
 ## Success
 
