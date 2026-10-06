@@ -179,7 +179,7 @@ def _print_score_guide() -> None:
     print(colorize("  Score guide:", "dim"))
     print(colorize("    overall  = 25% mechanical + 75% subjective (lenient — ignores wontfix)", "dim"))
     print(colorize("    objective = mechanical detectors only (no subjective review)", "dim"))
-    print(colorize("    strict   = like overall, but wontfix counts against you  <-- your north star", "dim"))
+    print(colorize("    strict   = like overall, but wontfix counts against you", "dim"))
     print(colorize("    verified = strict, but only credits scan-verified fixes", "dim"))
 
 

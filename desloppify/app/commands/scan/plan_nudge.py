@@ -40,7 +40,7 @@ def print_plan_workflow_nudge(state: dict) -> None:
     print(
         colorize(
             f"  Workflow: {queue_total} queue item{'s' if queue_total != 1 else ''}."
-            " Score is frozen until the queue is clear — use `desloppify next` to begin.",
+            " Score is frozen until the queue is clear; `desloppify next` shows the next item if you choose to continue.",
             "dim",
         )
     )
