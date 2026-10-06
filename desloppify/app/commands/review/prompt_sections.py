@@ -564,8 +564,9 @@ def render_evidence_citation_note() -> str:
         "Evidence format for issues[] (confirmed concerns above all):\n"
         "Give each `evidence` item as a `PATH:LINE[-LINE]` citation (repo-relative path, "
         "for example `src/app.py:12-18`) followed by what that code shows, quoting each "
-        "identifier you rely on in backticks. Cite only lines you read, and quote only "
-        "identifiers that appear in the cited file. Evidence with no resolvable "
+        "identifier you rely on in backticks. Cite only lines you read, only files you "
+        "also list in `related_files`, and backtick only bare code identifiers copied "
+        "from the cited lines, never phrases or values. Evidence with no resolvable "
         "citation is never promoted to repair work.\n\n"
     )
 
