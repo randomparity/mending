@@ -192,7 +192,8 @@ def _bring_current(root: Path, seconds: float) -> str | None:
     configuration. A dirty, detached, diverged, or ahead checkout is left as it is.
     """
     deadline = time.monotonic() + seconds
-    # The host can write the checkout's git configuration and hooks; run neither.
+    # The host can write the checkout's hooks and fsmonitor setting, so neither runs; the
+    # checkout's other git configuration, its origin URL included, still applies (guide).
     env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     env["GIT_TERMINAL_PROMPT"] = "0"
 
@@ -207,16 +208,18 @@ def _bring_current(root: Path, seconds: float) -> str | None:
     try:
         if git("status", "--porcelain", "--untracked-files=no"):
             return "uncommitted changes"
-        default = git("ls-remote", "--symref", "origin", "HEAD").partition("\t")[0]
+        advertised = git("ls-remote", "--symref", "origin", "HEAD").partition("\t")[0]
+        default = advertised.removeprefix("ref: ") if advertised.startswith("ref: ") else ""
         branch = git("rev-parse", "--symbolic-full-name", "HEAD").strip()
-        if not default.startswith("ref: refs/heads/") or branch != default[5:]:
-            return f"on {branch}, not {default[5:] or 'an advertised default branch'}"
+        if not default.startswith("refs/heads/") or branch != default:
+            return f"on {branch}, not {default or 'an advertised default branch'}"
         git("fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "origin", branch)
         git("merge", "--quiet", "--ff-only", "FETCH_HEAD")
         head, fetched = git("rev-parse", "HEAD", "FETCH_HEAD").split()
     except subprocess.CalledProcessError as exc:
-        detail = (exc.stderr or "").strip().splitlines() or [f"exit {exc.returncode}"]
-        return f"git {exc.cmd[7]} failed: {detail[-1]}"
+        lines = [line for line in (exc.stderr or "").splitlines() if line and not
+                 line.startswith("hint:")]
+        return f"git {exc.cmd[7]} failed: {' '.join(lines) or f'exit {exc.returncode}'}"
     except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
         return f"git failed: {exc}"
     return None if head == fetched else "ahead of origin"

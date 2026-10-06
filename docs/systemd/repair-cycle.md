@@ -21,14 +21,18 @@ disabled. It does not commit, reset, stash, or switch branches, and moves
 nothing on a checkout with uncommitted changes to tracked files, on another
 branch or a detached `HEAD`, ahead of or diverged from `origin`, or one it
 cannot fetch or fast-forward; each of those parks the run as
-`checkout-not-current` before the scan, and the journal says which. The other settings in the checkout's git
-configuration still apply, and the host can write that configuration like the
-rest of the checkout.
+`checkout-not-current` before the scan, and the journal says which. The other
+settings in the checkout's git configuration still apply, including the
+`origin` URL, and the host can write that configuration like the rest of the
+checkout: the cycle fetches from whichever remote it names.
 The unit needs network access to `origin`. For a private repository, give
 `mending` a read-only credential git uses without asking (the cycle sets
 `GIT_TERMINAL_PROMPT=0` and drops inherited `GIT_*` variables, so configure it
 in git configuration, not the environment file), stored outside `/home`,
-which the unit hides; a read-only deploy key is enough.
+which the unit hides; a read-only deploy key is enough. Over SSH, also record
+the remote's host key in a `known_hosts` file the account reads, because the
+unit cannot accept an unknown key, and name the key and that file in
+`core.sshCommand` in `/etc/gitconfig` or the account's own git configuration.
 The scan also writes its working files under `.desloppify/` in the checkout,
 which the target repository should ignore; confirm it commits no
 `.desloppify/` files, because a committed `.desloppify/config.json` with
