@@ -12,6 +12,7 @@ from desloppify.engine.repair_brief import (
     RepairBrief,
     build_brief,
     render_brief,
+    reviewed_version,
 )
 from desloppify.engine.repair_check import CheckResult
 from desloppify.engine.repair_manifest import MANIFEST_SCHEMA, manifest_from_record
@@ -274,6 +275,35 @@ def test_version_is_stable_and_content_bound() -> None:
     assert changed.key == first.key
 
 
+def _published_pair(body: str) -> list[str]:
+    prefixes = ("evidence-digest: ", "reviewed-brief-version: ")
+    return [line for line in body.splitlines() if line.startswith(prefixes)]
+
+
+def test_body_publishes_the_stored_approval_pair() -> None:
+    issue = _issue()
+    candidate = candidate_from_issue(issue, REPOSITORY)
+    assert candidate is not None
+    version = reviewed_version(issue, candidate)
+    assert version == "d3986fadfd0c76297332c63737344478a9616fc4df78024fd4f738e2bc48c940"
+    body = render_brief(_valid())[1]
+    assert _published_pair(body) == [
+        f"evidence-digest: {EVIDENCE}",
+        f"reviewed-brief-version: {version}",
+    ]
+
+
+def test_wording_change_keeps_the_published_pair() -> None:
+    issue = _issue()
+    issue["summary"] = "Parser re-derives the loader's path policy"
+    reworded = _build(issue)
+    assert isinstance(reworded, RepairBrief)
+    title, body = render_brief(reworded)
+    original_title, original_body = render_brief(_valid())
+    assert title != original_title
+    assert _published_pair(body) == _published_pair(original_body)
+
+
 def test_long_title_is_cut() -> None:
     issue = _issue()
     issue["summary"] = "word " * 60
@@ -327,6 +357,7 @@ def test_proposal_renders_decision_content_without_a_repair_key() -> None:
     assert PROPOSAL_LINE.format(proposal_marker(KEY)) in body.splitlines()
     assert "desloppify-concern-key" not in body and "## Completion criterion" not in body
     assert KEY not in body and IDENTITY not in body
+    assert "reviewed-brief-version" not in body
     assert brief.version != _valid().version
 
 

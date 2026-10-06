@@ -126,13 +126,21 @@ class RepairBrief:
     verification: str
     confidence: str
     route: str = "concern"
+    # Each manifest file's path, role, and blob ID. Only the reviewed version binds them,
+    # under the "sources" name ADR 0014's record already uses, so stored versions hold.
+    sources: tuple[tuple[str, str, str | None], ...] = ()
 
     @property
     def version(self) -> str:
         """SHA-256 of the canonical brief record; a wording change moves it, never the key."""
-        record = {"schema": self.schema, **asdict(self)}
-        canonical = json.dumps(record, sort_keys=True, separators=(",", ":"))
-        return sha256(canonical.encode()).hexdigest()
+        fields = {key: value for key, value in asdict(self).items() if key != "sources"}
+        return _digest({"schema": self.schema, **fields})
+
+    @property
+    def reviewed_version(self) -> str:
+        """ADR 0014's approval-bound digest: material fields and source blobs, never wording."""
+        fields = {key: value for key, value in asdict(self).items() if key not in _WORDING}
+        return _digest({"schema": REVIEWED_SCHEMA, "brief_schema": self.schema, **fields})
 
 
 @dataclass(frozen=True)
@@ -172,6 +180,7 @@ def build_brief(
             "verification": _text("verification", source["verification"]),
             "confidence": _confidence(issue.get("confidence")),
             "route": candidate.route,
+            "sources": tuple((d.path, d.role, d.object_id) for d in manifest.dependencies),
         }
         brief: RepairBrief = (
             ProposalBrief(**fields, questions=_items("questions", list(concern_failures(issue))))
@@ -188,11 +197,10 @@ def build_brief(
 def reviewed_version(issue: Mapping[str, Any], candidate: PromotionCandidate) -> str | None:
     """Digest of the brief's material fields and source blobs; ``None`` when the brief parks."""
     brief = build_brief(issue, candidate)
-    if isinstance(brief, ParkedBrief):
-        return None
-    fields = {key: value for key, value in asdict(brief).items() if key not in _WORDING}
-    sources = [[d.path, d.role, d.object_id] for d in _manifest(issue["detail"]).dependencies]
-    record = {"schema": REVIEWED_SCHEMA, "brief_schema": brief.schema, **fields, "sources": sources}
+    return None if isinstance(brief, ParkedBrief) else brief.reviewed_version
+
+
+def _digest(record: Mapping[str, Any]) -> str:
     canonical = json.dumps(record, sort_keys=True, separators=(",", ":"))
     return sha256(canonical.encode()).hexdigest()
 
@@ -347,9 +355,11 @@ def _provenance(brief: RepairBrief) -> list[str]:
     if isinstance(brief, ProposalBrief):
         marker = proposal_marker(brief.key)
         line, keys = PROPOSAL_LINE.format(marker), [f"proposal-key: {marker}"]
+        reviewed = []
     else:
         line = (FINDING_KEY_LINE if brief.route == "finding" else KEY_LINE).format(brief.key)
         keys = [f"{brief.route}-key: {brief.key}", f"{brief.route}-identity: {brief.identity}"]
+        reviewed = [f"reviewed-brief-version: {brief.reviewed_version}"]
     return [
         "## Provenance",
         "",
@@ -359,6 +369,7 @@ def _provenance(brief: RepairBrief) -> list[str]:
         f"schema: {brief.schema}",
         *keys,
         f"evidence-digest: {brief.evidence_digest}",
+        *reviewed,
         f"manifest-digest: {brief.manifest_digest}",
         f"source-revision: {brief.revision}",
         f"brief-version: {brief.version}",

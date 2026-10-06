@@ -762,6 +762,18 @@ class _Publishing(_Client):
         self.created.append((title, body, ready))
 
 
+def test_published_repair_shows_the_stored_approval_pair() -> None:
+    state = _revalidated_state()
+    client = _Publishing()
+    _sync(state, client)
+    [(_title, body, _ready)] = client.created
+    link = _detail(state)["github_repair"]
+    assert link["number"] == 9
+    lines = body.splitlines()
+    assert f"reviewed-brief-version: {link['reviewed_brief_version']}" in lines
+    assert f"evidence-digest: {link['evidence_digest']}" in lines
+
+
 def _proposal_state(**records) -> dict:
     state = _revalidated_state(**records)
     state["work_items"]["concerns::item"]["confidence"] = "medium"
