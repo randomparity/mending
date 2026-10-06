@@ -124,6 +124,7 @@ class _Response:
     def __init__(self, body: bytes = b"skill text", url: str | None = None) -> None:
         self._body = body
         self._url = url
+        self.read_sizes: list[int | None] = []
 
     def __enter__(self):
         return self
@@ -135,6 +136,7 @@ class _Response:
         return self._url or f"{update_skill_cmd_mod._RAW_BASE}/SKILL.md"
 
     def read(self, amt: int | None = None) -> bytes:
+        self.read_sizes.append(amt)
         return self._body if amt is None else self._body[:amt]
 
 
@@ -178,10 +180,12 @@ def test_download_accepts_body_at_the_size_limit(monkeypatch) -> None:
 
 def test_download_rejects_body_over_the_size_limit(monkeypatch) -> None:
     limit = update_skill_cmd_mod._MAX_DOWNLOAD_BYTES
-    _fake_opener(monkeypatch, _Response(b"x" * (limit + 1)))
+    response = _Response(b"x" * (limit + 1))
+    _fake_opener(monkeypatch, response)
 
     with pytest.raises(CommandError) as excinfo:
         update_skill_cmd_mod._download("SKILL.md")
+    assert response.read_sizes == [limit + 1]
     message = str(excinfo.value)
     assert "Download of SKILL.md" in message
     assert str(limit) in message
