@@ -70,8 +70,9 @@ at a 0.5 s grace period.
 ### Matrix
 
 Each row is one test (parametrized where a row has variants). "Launches" is
-the line count of `launches.jsonl`; every row asserts it and the `gh ... create`
-count.
+the line count of `launches.jsonl`; every row asserts it. For every row, the
+fixture's teardown also asserts that no attempt launched twice, that at most
+one repair issue was created, and that no attempt tag appears on two PRs.
 
 | # | Scenario | Expected |
 |---|---|---|
