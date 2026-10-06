@@ -29,7 +29,11 @@ import pytest
 
 from desloppify.app.commands import repair_cycle, repair_cycle_host
 from desloppify.app.commands.repair_cycle import cmd_repair_cycle
-from desloppify.app.commands.repair_cycle_host import ClaudeHostAdapter, host_session_id
+from desloppify.app.commands.repair_cycle_host import (
+    ATTEMPT_TAG,
+    ClaudeHostAdapter,
+    host_session_id,
+)
 from desloppify.base.exception_sets import CommandError
 from desloppify.engine.repair_check import CheckResult
 from desloppify.tests.commands.test_repair_cycle import _authority, _config
@@ -277,6 +281,8 @@ def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_World]:
     assert len(attempts) == len(set(attempts)), "an attempt launched its host twice"
     assert built.creates("issue") <= 1, "a second repair issue was created"
     assert len(tags) == len(set(tags)), "an attempt opened two pull requests"
+    heads = [pr["head"]["ref"] for pr in built.github()["prs"]]
+    assert len(heads) == len(set(heads)), "a branch opened two pull requests"
 
 
 @pytest.fixture
@@ -614,10 +620,11 @@ def test_a_crashed_host_fails_the_attempt(world, pr_first) -> None:
 @pytest.mark.parametrize(("steps", "reason", "recorded"), [
     (({"do": "garbage"},), "host-failed", 0),
     (({"do": "result", "is_error": True},), "host-failed", 0),
-    (({"do": "pr", "attempt": "another-attempt"}, {"do": "result"}), "no-pull-request", 0),
+    (({"do": "pr", "branch": "feat/elsewhere"}, {"do": "result"}), "no-pull-request", 0),
+    (({"do": "pr", "head_repo": "fork/repository"}, {"do": "result"}), "no-pull-request", 0),
     (({"do": "pr", "files": ["src/impl.py", "deploy/secrets.env"]}, {"do": "result"}),
      "authority-scope-exceeded", 1),
-], ids=["garbage", "error-result", "foreign-tag", "outside-approval"])
+], ids=["garbage", "error-result", "foreign-branch", "fork-head", "outside-approval"])
 def test_mismatched_results_fail_the_attempt(world, steps, reason, recorded) -> None:
     world.host(*steps)
 
@@ -625,6 +632,16 @@ def test_mismatched_results_fail_the_attempt(world, steps, reason, recorded) -> 
 
     assert len(world.cycle()["dispatch"]["pull_requests"]) == recorded
     assert len(world.launches()) == 1
+
+
+def test_the_hosts_own_pull_request_needs_no_tag(world) -> None:
+    world.host({"do": "pr", "tag": False, "files": ["src/impl.py"]}, {"do": "result"})
+
+    assert "Repair cycle active: pull request open." in world.run()
+
+    [pr] = world.github()["prs"]
+    assert ATTEMPT_TAG not in pr["body"]
+    assert world.cycle()["dispatch"]["pull_requests"] == [pr["url"]]
 
 
 def test_an_unverifiable_worker_stays_reported_active(world, short_grace, monkeypatch) -> None:
