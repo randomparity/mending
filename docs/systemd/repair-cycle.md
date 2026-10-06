@@ -59,7 +59,12 @@ below.
 `authority` is the only source of repair authority
 ([ADR 0015](../adr/0015-trusted-repair-authority.md)). Each approval names one
 published repair by its stable key and the `reviewed_brief_version` and
-`evidence_digest` stored on its `github_repair` link record in the state file.
+`evidence_digest` of its current brief. Copy them from the repair's
+`github_repair` link record right after a `repair-queue sync --apply`, which
+rewrites the record and prints `Changed ...` when they move; the cycle
+recomputes both and refuses a stale pair. The cycle reads work items and link
+records from its own `--state` file, so `scan` and `repair-queue` must use that
+same file; wiring the recipe for this is #31.
 It allows the files of the brief's evidence manifest, the `repair` action
 (the only one supported), limits at or above the cycle's own, and an expiry.
 A selection binds the attempt to the approved repair and records the

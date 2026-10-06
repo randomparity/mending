@@ -169,11 +169,14 @@ def test_terminal_attempt_restarts_without_second_selection() -> None:
     client = _Client()
 
     cmd_repair_cycle(_args(state, client))
-    cmd_repair_cycle(_args(state, client))
+    stale = _Source(AnalysisUnknown("git unavailable"))
+    cmd_repair_cycle(_args(state, client, source=stale))
 
     assert client.selections == 1
     assert client.reconciliations == 0
+    assert stale.calls == 0
     assert state["repair_cycle"]["authoritative_receipt"]["state"] == "terminal"
+    assert state["repair_cycle"]["parked_reason"] == "daily-attempt-complete"
 
 
 def test_selection_binds_authority_before_client_selection(tmp_path) -> None:
@@ -678,6 +681,8 @@ def test_legacy_state_decodes_and_new_fields_validate() -> None:
 
     decoded = CycleState.from_mapping(legacy)
     assert decoded.authority is None
+    for malformed in ({"issue_id": ITEM, "key": KEY}, {**BOUND, "revision": 1}, "bound"):
+        assert CycleState.from_mapping({**legacy, "authority": malformed}).authority is None
 
     assert decoded.current_lease == lease
     assert (decoded.observation_calls, decoded.attempt_failure, decoded.disposed_attempt) == (
@@ -699,8 +704,6 @@ def test_legacy_state_decodes_and_new_fields_validate() -> None:
         ("observation_calls", True),
         ("attempt_failure", 3),
         ("disposed_attempt", ""),
-        ("authority", {"issue_id": ITEM, "key": KEY}),
-        ("authority", {"issue_id": ITEM, "key": KEY, "revision": 1}),
     ):
         with pytest.raises(ValueError):
             CycleState.from_mapping({**legacy, field: bad})

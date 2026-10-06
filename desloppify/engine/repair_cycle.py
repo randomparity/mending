@@ -501,13 +501,13 @@ def _dispatch(mapping: Mapping[str, object], lease: CycleLease | None) -> Dispat
 
 
 def _bound_authority(value: object) -> dict[str, str] | None:
-    if value is None:
-        return None
+    # A malformed record reads as unbound, which every later check refuses (ADR 0015);
+    # raising here would block observation and disposal of the attempt instead.
     keys = ("issue_id", "key", "revision")
     if not isinstance(value, Mapping) or set(value) != set(keys) or not all(
         isinstance(value[key], str) and value[key] for key in keys
     ):
-        raise ValueError("bound authority must name issue_id, key, and revision")
+        return None
     return {key: value[key] for key in keys}
 
 

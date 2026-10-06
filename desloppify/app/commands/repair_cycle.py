@@ -145,6 +145,10 @@ def _begin_and_select(
         _park(state, cycle_state, "disposition-required")
         return
     now = now or _now(args)
+    lease = cycle_state.current_lease
+    if lease is not None and lease.day_key == now.date().isoformat():
+        _park(state, cycle_state, "daily-attempt-complete")
+        return
     # Authorized before the lease exists, so a refusal leaves no attempt to reconcile.
     try:
         authorized = _call_within(
