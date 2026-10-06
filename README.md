@@ -41,7 +41,11 @@ binds a concern to the git blob IDs of its concern file and related files at
 `--revision` (default `HEAD`) of `--source-root` (default: the project root,
 which must be the repository top level), and `sync --apply` publishes to
 GitHub only while those files are unchanged, rechecking them before every
-GitHub create and link write.
+GitHub create and link write. `revalidate` also requires the concern's
+evidence to cite those files as `PATH:LINE` and refuses unless every cited
+line, and every identifier quoted in backticks beside it, is still there; `sync`
+re-runs that check and drops a concern whose result changed. Concerns
+revalidated before this check must be revalidated again.
 
 ```bash
 desloppify scan --path .          # refresh findings and scan history
@@ -60,8 +64,10 @@ A manual pilot ([#7](https://github.com/randomparity/mending/issues/7)) comes be
 ## Using the analyzer directly
 
 The rest of this README documents the inherited desloppify analyzer. Its agent
-skill (`update-skill`) is downloaded from the upstream project and still
-teaches the upstream score loop; it is not the Mending maintenance lifecycle.
+skill, installed by `update-skill` from this repository's `docs/`
+([ADR 0011](docs/adr/0011-fork-hosted-skill-source.md)), covers the analyzer
+commands and treats scores as diagnostics; it is not the Mending maintenance
+lifecycle.
 
 ### Agent prompt
 
@@ -71,7 +77,7 @@ Paste this prompt into your agent:
 I want you to improve the quality of this codebase. To do this, install and run desloppify.
 Run ALL of the following (requires Python 3.11+):
 
-pip install --upgrade "desloppify[full]"
+pip install --upgrade "desloppify[full] @ git+https://github.com/randomparity/mending.git"
 desloppify update-skill claude    # installs the full workflow guide — pick yours: claude, cursor, codex, copilot, droid, windsurf, gemini, rovodev
 
 Add .desloppify/ to your .gitignore — it contains local state that shouldn't be committed.

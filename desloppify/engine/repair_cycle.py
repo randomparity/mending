@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from uuid import uuid4
@@ -12,6 +12,7 @@ DEFAULT_RUNTIME_SECONDS = 90 * 60
 DEFAULT_CALL_LIMIT = 100
 DEFAULT_OBSERVATION_CALL_LIMIT = 3
 DEFAULT_OBSERVATION_MINUTES = 5
+_DISPATCH_PHASES = frozenset({"intent", "returned", "unknown"})
 
 
 @dataclass(frozen=True)
@@ -136,6 +137,86 @@ class CycleLease:
         }
 
 
+@dataclass(frozen=True)
+class BudgetAdmission:
+    """The lease budget reserved for one host dispatch."""
+
+    cost_usd: Decimal
+    calls: int
+
+
+@dataclass(frozen=True)
+class DispatchRecord:
+    """A host dispatch for the current attempt: its intent, then what it left behind.
+
+    ``phase`` is ``intent`` (persisted before launch), ``returned`` (the adapter
+    returned an outcome), or ``unknown`` (a lease persisted before dispatch
+    records existed, whose dispatch may or may not have happened).
+    """
+
+    attempt_id: str
+    phase: str
+    session_id: str | None = None
+    repository: str | None = None
+    repo_root: str | None = None
+    prior_worktrees: tuple[str, ...] = ()
+    outcome: str | None = None
+    pull_requests: tuple[str, ...] = ()
+    issues: tuple[str, ...] = ()
+    worktrees: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.attempt_id:
+            raise ValueError("dispatch attempt ID is required")
+        if self.phase not in _DISPATCH_PHASES:
+            raise ValueError(f"dispatch phase {self.phase!r} is invalid")
+
+    @classmethod
+    def from_mapping(cls, mapping: Mapping[str, object]) -> DispatchRecord:
+        """Decode one previously persisted dispatch record."""
+        return cls(
+            attempt_id=_required_text(mapping, "attempt_id"),
+            phase=_required_text(mapping, "phase"),
+            session_id=_optional_text(mapping, "session_id"),
+            repository=_optional_text(mapping, "repository"),
+            repo_root=_optional_text(mapping, "repo_root"),
+            prior_worktrees=_texts(mapping, "prior_worktrees"),
+            outcome=_optional_text(mapping, "outcome"),
+            pull_requests=_texts(mapping, "pull_requests"),
+            issues=_texts(mapping, "issues"),
+            worktrees=_texts(mapping, "worktrees"),
+        )
+
+    def to_mapping(self) -> dict[str, object]:
+        """Return JSON-safe dispatch facts."""
+        return {
+            "attempt_id": self.attempt_id,
+            "phase": self.phase,
+            "session_id": self.session_id,
+            "repository": self.repository,
+            "repo_root": self.repo_root,
+            "prior_worktrees": list(self.prior_worktrees),
+            "outcome": self.outcome,
+            "pull_requests": list(self.pull_requests),
+            "issues": list(self.issues),
+            "worktrees": list(self.worktrees),
+        }
+
+    def with_references(
+        self,
+        pull_requests: tuple[str, ...],
+        issues: tuple[str, ...],
+        worktrees: tuple[str, ...],
+    ) -> DispatchRecord:
+        """Add found references to the recorded ones; a later lookup never removes one."""
+        return replace(
+            self,
+            pull_requests=_union(self.pull_requests, pull_requests),
+            issues=_union(self.issues, issues),
+            worktrees=_union(self.worktrees, worktrees),
+        )
+
+
 @dataclass
 class CycleState:
     """The minimal state needed to reconcile one external scheduler attempt."""
@@ -147,6 +228,12 @@ class CycleState:
     observation_calls: int = 0
     attempt_failure: str | None = None
     disposed_attempt: str | None = None
+    consumed_cost_usd: Decimal = Decimal(0)
+    consumed_calls: int = 0
+    reserved_cost_usd: Decimal = Decimal(0)
+    reserved_calls: int = 0
+    dispatch: DispatchRecord | None = None
+    attempt_history: list[dict[str, object]] = field(default_factory=list)
 
     @classmethod
     def empty(cls) -> CycleState:
@@ -172,19 +259,21 @@ class CycleState:
             if not isinstance(merge_day, str):
                 raise ValueError("merge permit day is invalid")
             _parse_day_key(merge_day)
-        observation_calls = mapping.get("observation_calls", 0)
-        if isinstance(observation_calls, bool) or not isinstance(observation_calls, int):
-            raise ValueError("observation call count is invalid")
-        if observation_calls < 0:
-            raise ValueError("observation call count is invalid")
+        lease = CycleLease.from_mapping(lease_value) if lease_value else None
         return cls(
-            current_lease=CycleLease.from_mapping(lease_value) if lease_value else None,
+            current_lease=lease,
             authoritative_receipt=dict(receipt_value) if receipt_value else None,
             parked_reason=parked_reason,
             merge_permit_day=merge_day,
-            observation_calls=observation_calls,
+            observation_calls=_count(mapping, "observation_calls"),
             attempt_failure=_optional_text(mapping, "attempt_failure"),
             disposed_attempt=_optional_text(mapping, "disposed_attempt"),
+            consumed_cost_usd=_cost(mapping, "consumed_cost_usd"),
+            consumed_calls=_count(mapping, "consumed_calls"),
+            reserved_cost_usd=_cost(mapping, "reserved_cost_usd"),
+            reserved_calls=_count(mapping, "reserved_calls"),
+            dispatch=_dispatch(mapping, lease),
+            attempt_history=_history(mapping),
         )
 
     def to_mapping(self) -> dict[str, object]:
@@ -197,19 +286,73 @@ class CycleState:
             "observation_calls": self.observation_calls,
             "attempt_failure": self.attempt_failure,
             "disposed_attempt": self.disposed_attempt,
+            "consumed_cost_usd": str(self.consumed_cost_usd),
+            "consumed_calls": self.consumed_calls,
+            "reserved_cost_usd": str(self.reserved_cost_usd),
+            "reserved_calls": self.reserved_calls,
+            "dispatch": self.dispatch.to_mapping() if self.dispatch else None,
+            "attempt_history": list(self.attempt_history),
         }
 
     def begin(self, config: CycleConfig, now: datetime, *, attempt_id: str | None = None) -> CycleLease | None:
         """Persist a new daily lease only when no active or same-day attempt exists."""
         if self.current_lease is not None and not self._may_replace_lease(now.date()):
             return None
+        if self.current_lease is not None:
+            self.attempt_history.append(self._archive(self.current_lease))
         self.current_lease = CycleLease.create(config, now, attempt_id=attempt_id)
         self.authoritative_receipt = None
         self.parked_reason = None
         self.observation_calls = 0
         self.attempt_failure = None
         self.disposed_attempt = None
+        self.consumed_cost_usd = self.reserved_cost_usd = Decimal(0)
+        self.consumed_calls = self.reserved_calls = 0
+        self.dispatch = None
         return self.current_lease
+
+    def _archive(self, lease: CycleLease) -> dict[str, object]:
+        return {
+            "lease": lease.to_mapping(),
+            "authoritative_receipt": self.authoritative_receipt,
+            "parked_reason": self.parked_reason,
+            "attempt_failure": self.attempt_failure,
+            "disposed": self.disposed,
+            "observation_calls": self.observation_calls,
+            "consumed_cost_usd": str(self.consumed_cost_usd),
+            "consumed_calls": self.consumed_calls,
+            "reserved_cost_usd": str(self.reserved_cost_usd),
+            "reserved_calls": self.reserved_calls,
+            "dispatch": self.dispatch.to_mapping() if self.dispatch else None,
+        }
+
+    def admit(self) -> BudgetAdmission | None:
+        """Reserve the lease's whole remaining budget, or None when nothing remains."""
+        lease = self.current_lease
+        if lease is None:
+            raise ValueError("no current lease")
+        cost = lease.cost_cap_usd - self.consumed_cost_usd - self.reserved_cost_usd
+        calls = lease.call_limit - self.consumed_calls - self.reserved_calls
+        if cost <= 0 or calls <= 0:
+            return None
+        self.reserved_cost_usd += cost
+        self.reserved_calls += calls
+        return BudgetAdmission(cost, calls)
+
+    def settle(self, admission: BudgetAdmission, cost_usd: Decimal | None, calls: int) -> None:
+        """Release a reservation and charge measured usage; unmeasured cost charges it all."""
+        self.reserved_cost_usd -= admission.cost_usd
+        self.reserved_calls -= admission.calls
+        self.consumed_cost_usd += admission.cost_usd if cost_usd is None else cost_usd
+        self.consumed_calls += calls
+
+    @property
+    def budget_exceeded(self) -> bool:
+        """Return whether consumed usage is over the current lease's ceilings."""
+        lease = self.current_lease
+        return lease is not None and (
+            self.consumed_cost_usd > lease.cost_cap_usd or self.consumed_calls > lease.call_limit
+        )
 
     def record_receipt(self, receipt: Mapping[str, object]) -> None:
         """Persist an already-validated receipt for restart reconciliation."""
@@ -304,6 +447,70 @@ def _optional_text(mapping: Mapping[str, object], key: str) -> str | None:
     return value.strip()
 
 
+def _texts(mapping: Mapping[str, object], key: str) -> tuple[str, ...]:
+    value = mapping.get(key, [])
+    if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
+        raise ValueError(f"{key} must be a list of non-empty strings")
+    return tuple(value)
+
+
+def _union(recorded: tuple[str, ...], found: tuple[str, ...]) -> tuple[str, ...]:
+    return recorded + tuple(item for item in dict.fromkeys(found) if item not in recorded)
+
+
+def _dispatch(mapping: Mapping[str, object], lease: CycleLease | None) -> DispatchRecord | None:
+    if "dispatch" not in mapping:
+        # State from before dispatch records: whether this lease dispatched is unknown.
+        return DispatchRecord(lease.attempt_id, "unknown") if lease else None
+    value = mapping["dispatch"]
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ValueError("dispatch record is invalid")
+    record = DispatchRecord.from_mapping(value)
+    if lease is None or record.attempt_id != lease.attempt_id:
+        raise ValueError("dispatch record does not match the current lease")
+    return record
+
+
+def _history(mapping: Mapping[str, object]) -> list[dict[str, object]]:
+    value = mapping.get("attempt_history", [])
+    if not isinstance(value, list):
+        raise ValueError("attempt history must be a list")
+    entries: list[dict[str, object]] = []
+    for entry in value:
+        if not isinstance(entry, Mapping) or not isinstance(entry.get("lease"), Mapping):
+            raise ValueError("attempt history entry needs a lease")
+        CycleLease.from_mapping(entry["lease"])
+        dispatch = entry.get("dispatch")
+        if dispatch is not None:
+            if not isinstance(dispatch, Mapping):
+                raise ValueError("attempt history dispatch is invalid")
+            DispatchRecord.from_mapping(dispatch)
+        entries.append(dict(entry))
+    return entries
+
+
+def _count(mapping: Mapping[str, object], key: str) -> int:
+    value = mapping.get(key, 0)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{key} must be a non-negative integer")
+    return value
+
+
+def _cost(mapping: Mapping[str, object], key: str) -> Decimal:
+    value = mapping.get(key, "0")
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise ValueError(f"{key} must be a decimal string")
+    try:
+        parsed = Decimal(str(value))
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError(f"{key} must be a decimal string") from exc
+    if not parsed.is_finite() or parsed < 0:
+        raise ValueError(f"{key} must be non-negative")
+    return parsed
+
+
 def _optional_cost_cap(mapping: Mapping[str, object]) -> Decimal | None:
     value = mapping.get("cost_cap_usd")
     return None if value is None else _decimal(value, "USD cost cap")
@@ -328,4 +535,12 @@ def _parse_day_key(value: str) -> date:
         raise ValueError("day key is invalid") from exc
 
 
-__all__ = ["CycleConfig", "CycleLease", "CycleState", "DEFAULT_CALL_LIMIT", "DEFAULT_RUNTIME_SECONDS"]
+__all__ = [
+    "BudgetAdmission",
+    "CycleConfig",
+    "CycleLease",
+    "CycleState",
+    "DispatchRecord",
+    "DEFAULT_CALL_LIMIT",
+    "DEFAULT_RUNTIME_SECONDS",
+]

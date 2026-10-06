@@ -2,25 +2,27 @@
 name: desloppify
 description: >
   Multi-language codebase health scanner. Use when the user explicitly asks
-  to run desloppify, scan for technical debt, get a health score, or create
+  to run desloppify, scan for technical debt, review code health, or create
   a cleanup plan. Do NOT trigger for general code review, renaming, or
   fixing individual bugs.
 ---
 
 <!-- desloppify-begin -->
-<!-- desloppify-skill-version: 7 -->
+<!-- desloppify-skill-version: 8 -->
 
 # Desloppify
 
 ## 1. Your Job
 
-Maximise the **strict score** honestly. Your main cycle: **scan → plan → execute → rescan**. Follow the scan output's **INSTRUCTIONS FOR AGENTS** — don't substitute your own analysis.
+Find and make worthwhile, verified fixes within the scope the user asked for. The cycle is **scan → plan → execute → rescan**, and each run is bounded: it ends when that scope is done, or when nothing left is worth fixing. Use the scan output's **INSTRUCTIONS FOR AGENTS** as guidance within that scope.
 
-**Don't be lazy.** Do large refactors and small detailed fixes with equal energy. If it takes touching 20 files, touch 20 files. If it's a one-line change, make it. No task is too big or too small — fix things properly, not minimally.
+- **Findings are evidence, not a quota.** Fix what is worth fixing; a run that finds nothing worth fixing is a valid result.
+- **Scores are optional diagnostics.** There is no score target. A score is never a reason to continue a run, to stop one early, or to skip or defer required tests.
+- **Keep each fix small and verified.** Fix things properly and run the tests that cover them. A change that needs a broad refactor goes to the user as a proposal with evidence and alternatives, not as unrequested work.
 
 ## 2. The Workflow
 
-Three phases, repeated as a cycle.
+Three phases. Repeat them only when the user asks for another run.
 
 ### Monorepos and multi-project directories
 
@@ -37,10 +39,10 @@ Each `--path` target should be a single coherent project. Scanning a parent that
 
 ```bash
 desloppify scan --path .       # analyse the codebase
-desloppify status              # check scores — are we at target?
+desloppify status              # optional: scores as a diagnostic
 ```
 
-After scanning, **always run `desloppify next`** — it tells you exactly what to do, in order. Don't interpret the scan output yourself or ask the user what to do. Just run `next` and follow its instructions.
+After scanning, run `desloppify next` — it shows the next item in the execution queue and the command to resolve it. Use it to pick work inside the scope the user asked for.
 
 The scan will tell you if subjective dimensions need review. Follow its instructions. To trigger a review manually:
 ```bash
@@ -71,14 +73,14 @@ desloppify plan focus <cluster>          # scope next to one cluster
 desloppify plan skip <pat>              # defer — hide from next
 ```
 
-### Phase 3: Execute — grind the queue to completion
+### Phase 3: Execute — work the agreed scope
 
-Trust the plan and execute. Don't rescan mid-queue — finish the queue first.
+Work the items in scope in queue order. Rescan when the batch is done, not after every fix.
 
 **Branch first.** Create a dedicated branch — never commit health work directly to main:
 ```bash
 git checkout -b desloppify/code-health    # or desloppify/<focus-area>
-desloppify config set commit_pr 42        # link a PR for auto-updated descriptions
+desloppify config set commit_pr 42        # only if the user linked a PR for auto-updated descriptions
 ```
 
 **The loop:**
@@ -92,18 +94,16 @@ desloppify next
 
 # 4. When you have a logical batch, commit and record
 git add <files> && git commit -m "desloppify: fix 3 deferred_import findings"
-desloppify plan commit-log record      # moves findings uncommitted → committed, updates PR
+desloppify plan commit-log record      # moves findings uncommitted → committed, updates a linked PR
 
-# 5. Push periodically
+# 5. Push only when the user asked you to publish the branch
 git push -u origin desloppify/code-health
 
-# 6. Repeat until the queue is empty
+# 6. Stop when the agreed scope is done or nothing left is worth fixing
 ```
 
-Score may temporarily drop after fixes — cascade effects are normal, keep going.
+Items left in the queue at the end of a run are fine; report them instead of draining the queue.
 If `next` suggests an auto-fixer, run `desloppify autofix <fixer> --dry-run` to preview, then apply.
-
-**When the queue is clear, go back to Phase 1.** New issues will surface, cascades will have resolved, priorities will have shifted. This is the cycle.
 
 ## 3. Reference
 
@@ -120,7 +120,7 @@ Overall score = **25% mechanical** + **75% subjective**.
 
 - **Mechanical (25%)**: auto-detected issues — duplication, dead code, smells, unused imports, security. Fixed by changing code and rescanning.
 - **Subjective (75%)**: design quality review — naming, error handling, abstractions, clarity. Starts at **0%** until reviewed. The scan will prompt you when a review is needed.
-- **Strict score** is the north star: wontfix items count as open. The gap between overall and strict is your wontfix debt.
+- **Strict score** counts wontfix items as open. The gap between overall and strict is your wontfix debt. Like every score, it is a diagnostic, not a target.
 - **Score types**: overall (lenient), strict (wontfix counts), objective (mechanical only), verified (confirmed fixes only).
 
 ### Reviews
@@ -139,8 +139,7 @@ Four paths to get subjective scores:
 
 - Import first, fix after — import creates tracked state entries for correlation.
 - Target-matching scores trigger auto-reset to prevent gaming. Use the blind-review workflow described in your agent overlay doc (e.g. `docs/CLAUDE.md`, `docs/HERMES.md`).
-- Even moderate scores (60-80) dramatically improve overall health.
-- Stale dimensions auto-surface in `next` — just follow the queue.
+- Stale dimensions auto-surface in `next`.
 
 **Integrity rules:** Score from evidence only — no prior chat context, score history, or target-threshold anchoring. When evidence is mixed, score lower and explain uncertainty. Assess every requested dimension; never drop one.
 
@@ -247,52 +246,14 @@ desloppify config show                            # show all config including ex
 desloppify scan --path . --reset-subjective       # reset subjective baseline to 0
 ```
 
-## 4. Fix Tool Issues Upstream
+## 4. Report Tool Issues
 
-When desloppify itself appears wrong or inconsistent — a bug, a bad detection, a crash, confusing output — **fix it and open a PR**. If you can't confidently fix it, file an issue instead.
-
-### Fix and PR (preferred)
-
-Clone the tool repo to a temp directory, make the fix there, and verify it works against the project you're scanning before pushing.
-
-```bash
-git clone https://github.com/peteromallet/desloppify.git /tmp/desloppify-fix
-cd /tmp/desloppify-fix
-git checkout -b fix/<short-description>
-```
-
-Make your changes, then run the test suite and verify the fix against the original project:
-
-```bash
-python -m pytest desloppify/tests/ -q
-python -m desloppify scan --path <project-root>   # the project you were scanning
-```
-
-Once it looks good, push and open a PR:
-
-```bash
-git add <files> && git commit -m "fix: <what and why>"
-git push -u origin fix/<short-description>
-gh pr create --title "fix: <short description>" --body "$(cat <<'EOF'
-## Problem
-<what went wrong — include the command and output>
-
-## Fix
-<what you changed and why>
-EOF
-)"
-```
-
-Clean up after: `rm -rf /tmp/desloppify-fix`
-
-### File an issue (fallback)
-
-If the fix is unclear or the change needs discussion, open an issue at `https://github.com/peteromallet/desloppify/issues` with a minimal repro: command, path, expected output, actual output.
+When desloppify itself appears wrong or inconsistent — a bug, a bad detection, a crash, confusing output — tell the user, with the command, path, expected output, and actual output. Do not clone the tool, open a pull request, or file an issue on your own; if the user asks you to file one, use `https://github.com/randomparity/mending/issues`.
 
 ## Prerequisite
 
-`command -v desloppify >/dev/null 2>&1 && echo "desloppify: installed" || echo "NOT INSTALLED — run: uvx --from git+https://github.com/peteromallet/desloppify.git desloppify"`
+`command -v desloppify >/dev/null 2>&1 && echo "desloppify: installed" || echo "NOT INSTALLED — run: uvx --from git+https://github.com/randomparity/mending.git desloppify"`
 
-If `uvx` is not available: `pip install desloppify[full] && desloppify setup`
+If `uvx` is not available: `pip install "desloppify[full] @ git+https://github.com/randomparity/mending.git" && desloppify setup`
 
 <!-- desloppify-end -->

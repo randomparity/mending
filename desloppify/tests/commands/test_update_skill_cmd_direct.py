@@ -111,3 +111,28 @@ def test_cmd_update_skill_handles_missing_and_unknown_interfaces(monkeypatch, ca
     update_skill_cmd_mod.cmd_update_skill(argparse.Namespace(interface=None))
     out = capsys.readouterr().out
     assert "Unknown interface 'unknown_thing'." in out
+
+
+def test_download_fetches_from_this_repository_docs(monkeypatch) -> None:
+    requested: list[str] = []
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def read(self) -> bytes:
+            return b"skill text"
+
+    def _urlopen(url, **_kwargs):
+        requested.append(url)
+        return _Response()
+
+    monkeypatch.setattr(update_skill_cmd_mod.urllib.request, "urlopen", _urlopen)
+
+    assert update_skill_cmd_mod._download("SKILL.md") == "skill text"
+    assert requested == [
+        "https://raw.githubusercontent.com/randomparity/mending/main/docs/SKILL.md"
+    ]

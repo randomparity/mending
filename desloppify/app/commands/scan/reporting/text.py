@@ -11,8 +11,9 @@ def build_workflow_guide(attest_example: str) -> str:
         f"""
         ## Workflow Guide
 
-        Work the two loops: **outer** (scan → score → at target? → rescan) and
-        **inner** (plan → fix next → update plan → repeat until plan clear).
+        Work in bounded runs: scan → plan → fix the items in scope → rescan. Stop when
+        the agreed scope is done or nothing left is worth fixing; items left in the
+        queue are fine.
 
         1. **Follow `next`**: `desloppify next` — the single source of truth for what to work on now.
            It is the execution queue from the living plan, surfaces auto-clustered batches,

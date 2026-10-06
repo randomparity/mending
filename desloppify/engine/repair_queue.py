@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import subprocess  # nosec B404 - fixed argv is passed to the installed gh CLI.
 from collections.abc import Callable, Mapping, Sequence
@@ -9,6 +10,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from typing import Any
 
+from desloppify.engine.repair_check import passing_check
 from desloppify.engine.repair_manifest import SourceManifest, manifest_from_record
 
 KEY_SCHEMA = "desloppify-concern-key:v1"
@@ -103,13 +105,22 @@ def _kind_fields(kind: str, record: Mapping[str, Any]) -> dict[str, Any]:
         return {"number": number, "url": url, "state": state}
     if kind == "github_repair_revalidated":
         manifest = manifest_from_record(record.get("manifest"))
+        check, check_digest = record.get("check"), record.get("check_digest")
         if (
             not isinstance(manifest, SourceManifest)
             or manifest.coverage != "complete"
             or record.get("manifest_digest") != manifest.digest
+            or not passing_check(check, check_digest)
         ):
-            raise RepairRecordError("github_repair_revalidated has no complete bound manifest")
-        return {"manifest": manifest.as_record(), "manifest_digest": manifest.digest}
+            raise RepairRecordError(
+                "github_repair_revalidated has no complete bound manifest and passing check"
+            )
+        return {
+            "manifest": manifest.as_record(),
+            "manifest_digest": manifest.digest,
+            "check": copy.deepcopy(check),
+            "check_digest": check_digest,
+        }
     raise RepairRecordError(f"unknown repair record kind {kind}")
 
 
