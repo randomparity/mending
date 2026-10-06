@@ -107,7 +107,8 @@ Steps:
    `(_digest({"schema": 1, "detector": "dupes", "file": file, "names": sorted names}),
    _digest({"schema": 1, "kind": detail.get("kind"), "functions": sorted [[name, line, loc]]}))`;
    else `None`. `item_hashes` returns `("concern", *concern_hashes(detail))`
-   for `concerns`, `("finding", *_finding_hashes(issue))` for `dupes`, else `None`.
+   for `concerns` and `("finding", *found)` for `dupes`, returning `None`
+   whenever the underlying hashes are `None` (a malformed item never raises).
 4. `concern_failures(issue)`: paths from `concern_dependencies(issue) or ()`;
    append `"scope spans N files; the bound is 3"` when `len > 3`,
    `"files span N directories"` when `len({posixpath.dirname(p)}) > 1`,
@@ -146,11 +147,19 @@ Verification:
   file not in the manifest is `unknown`. Red: `ImportError` for
   `check_finding`. Green: `uv run --locked pytest desloppify/tests/repair_queue/test_check.py -q`.
 
+- Mode: focused-test — span check: a fixture whose `beta` body was reduced to
+  `return alpha()` (names and ranges still valid) fails
+  `"duplicate spans differ"`; a name not on its span's first line fails
+  `"function name is not on its first line"`. Same command.
+
 Steps: write tests; add `_finding_claims(issue, manifest)` returning a tuple of
 `Claim(Citation(file, line, line + loc - 1), (name.rsplit(".", 1)[-1],))` per
 function when the file is a present dependency, else the reason string; extract
-the shared tail of `check_concern` into `_run_claims(root, manifest, claims)`
-and call it from both; run green; commit `feat: prove dupe findings by their anchors`.
+the shared tail of `check_concern` into `_run_claims(root, manifest, claims,
+extra=None)` where `extra(sources)` returns a failure reason after the claims
+hold; `_CitedBlob` gains the blob `text`; `check_finding` passes `extra` =
+`_span_failure(claims)` comparing the two spans; run green; commit
+`feat: prove dupe findings by their anchors`.
 
 ## Task 3 — Briefs (`desloppify/engine/repair_brief.py`)
 
@@ -169,7 +178,10 @@ Verification:
   a hostile `fix` still parks a proposal. Red: `ImportError` for
   `ProposalBrief`. Green: `uv run --locked pytest desloppify/tests/repair_queue/test_brief.py -q`.
 
-Steps: write tests; `_fields(issue, candidate)` returns the raw field mapping
+Steps: first set the existing `test_brief.py` fixture's `confidence` to
+`"high"` (after Task 1 a medium concern is a proposal); write tests;
+`RepairBrief` gains a trailing `route: str = "concern"` field so the renderer
+picks the key line; `_fields(issue, candidate)` returns the raw field mapping
 (concern: as today; finding: fixed consequence, fix, contracts, verification,
 owner = item `file`, evidence = `f"{file}:{line} `{name}` ({loc} lines)"` per
 function); build `ProposalBrief(..., questions=concern_failures(issue))` when
@@ -194,14 +206,23 @@ Verification:
   ineligible item fails naming its reason. Existing fixtures gain
   `confidence="high"` so they stay small repairs. Green:
   `uv run --locked pytest desloppify/tests/commands/test_repair_queue.py desloppify/tests/repair_queue -q`.
+- Mode: focused-test — lanes outside sync's main path: `recover --marker KEY`
+  removes a `github_proposal_pending` record; a repair candidate whose peer
+  holds `github_proposal`, and a proposal candidate whose peer holds
+  `github_repair`, are both skipped with no view, search, or create; an item
+  holding its other lane's record is skipped with a reason naming it. Same
+  command.
 - Mode: focused-test — merge: `upsert_issues` over a rescanned dupe item
   keeps `github_repair` and `github_proposal` records while identity holds
   and drops revalidation when evidence moves. Same command.
 
 Steps: in the command, replace literal record kinds with `lane_for(candidate)`
 fields (`_sync_one`, `_adopt_if_unique`, `_create_once`, `_write_link`,
-`_read_link`), make `_has_record`, `_peer_records`, and `_pending_matches`
-iterate both lanes using `item_hashes`/`record_key`, choose `check_finding`
+`_read_link`, and `_resolved_by_peer`, which adopts only a peer's
+`lane.link`), skip an item holding its other lane's record, make
+`_has_record`, `_peer_records`, and `_pending_matches` iterate both lanes
+using `item_hashes`/`record_key`, make `_recover` pop the matched lane's
+pending kind, choose `check_finding`
 for non-concern items in `_check`, pass `ready=lane.ready` to `create`, print
 `Would publish a proposal issue` for proposals, and raise
 `work item is not eligible for revalidation (<reason>)` in `_revalidate`. In

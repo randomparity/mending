@@ -34,6 +34,10 @@ sentence; any failure → `proposal`): at most 3 files in
 `concern_dependencies(issue)` (scope bound); all of them in one directory
 (single ownership boundary); `detail.verification` a non-blank string
 (verification present); work-item `confidence == "high"` (certainty).
+Verification presence is already guaranteed upstream — review import rejects
+a confirmed concern without it (`contracts_validation.py`) and it feeds the
+evidence digest — so that predicate is a fail-closed guard; if it fires on
+hand-edited state, the proposal brief parks on the missing field.
 
 **Finding route (`dupes`).** Evidence shape: `detail.fn_a` and `detail.fn_b`
 are mappings with string `file` and `name` and integer `line` ≥ 1 and `loc`
@@ -55,7 +59,10 @@ with this key; no legacy marker exists for findings.
 file, stored check) except that a finding's check is
 `check_finding`: one claim per function citing `file:line..line+loc-1` with
 the function name's last dotted segment as the quoted identifier, evaluated
-by ADR 0012's predicate, bounds and schema.
+by ADR 0012's predicate, bounds and schema, plus two span checks over the
+same blob: each name occurs on its span's first line, and the two spans'
+remaining lines are equal after stripping surrounding whitespace (the
+duplication still exists). A failed span check is `fail`.
 
 **Lanes.** A `small_repair` uses the existing records
 (`github_repair`, `github_repair_pending`), key line, and `status:ready`
@@ -63,8 +70,12 @@ label. A `proposal` uses `github_proposal`/`github_proposal_pending`, the
 line `<!-- desloppify-proposal-key: KEY -->`, and is created with no label.
 Sync verifies and adopts only bodies carrying the lane's own line, so a
 proposal issue is never linked as a repair and vice versa; any record of
-either lane on the item blocks a create. Scan merge preserves both lanes'
-records for concerns and findings while identity is unchanged.
+either lane on the item blocks a create. An item holding a record of its
+other lane is skipped with a reason naming that, and a peer item's record is
+adopted only when it is the candidate's own lane link; any other peer record
+parks the candidate. `recover` clears a matching pending record of either
+lane. Scan merge preserves both lanes' records for concerns and findings
+while identity is unchanged.
 
 **Proposal brief** (`desloppify-proposal-brief:v1`, `ProposalBrief`): the
 repair brief's sanitized fields plus `questions` = the concern's predicate
@@ -73,8 +84,10 @@ notice, observed source, observed evidence (reviewer assertions), alternatives
 and trade-offs (reviewer suggestion when present, split into small repairs,
 keep and dismiss — fixed text), expected ownership and contracts, open
 questions, decision needed, provenance (proposal line and schema block).
-A finding brief fills owner, consequence, fix, contracts and verification
-with fixed text and its evidence from the anchors.
+A finding brief keeps schema `desloppify-repair-brief:v1` and its field set;
+it fills owner, consequence, fix, contracts and verification with fixed text
+and its evidence from the anchors, renders them under a detector-finding
+heading, and labels provenance `finding-key`/`finding-identity`.
 
 Out of scope: selection (#22), dispatch (#19), brief schema (#20).
 
@@ -91,7 +104,10 @@ Out of scope: selection (#22), dispatch (#19), brief schema (#20).
 3. **Accepted failure classes** — a renamed file gives a dupe pair a new
    identity (bounded: one extra issue; old one stays linked by number);
    a repair issue published before reclassification to proposal stays open
-   until #22/#19 recheck (bounded: dispatch-time recheck owns it); predicate
+   until #22/#19 recheck (bounded only once that recheck calls `classify` and
+   requires `small_repair`, as ADR 0013 directs); a lane flip while the other
+   lane holds a record parks the item with no create until a human
+   reconciles it (bounded: no duplicate issue); predicate
    thresholds may misroute borderline concerns to proposal (cost: human reads
    it).
 4. **Covered elsewhere** — selection and at-most-one (#22), dispatch-time

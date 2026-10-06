@@ -37,15 +37,22 @@ proposals are published to GitHub as non-dispatchable issues.
 - **Finding source proof.** Revalidation binds the finding file in a complete
   manifest and stores a `desloppify-repair-check:v1` result whose claims are
   the finding's own anchors (each function's line range and name) instead of
-  parsed evidence text. Recheck, transient handling, and invalidation follow
-  ADR 0012 unchanged.
+  parsed evidence text, plus a span check that each name is on its span's
+  first line and the spans' remaining lines are equal after stripping
+  whitespace. Recheck, transient handling, and invalidation follow ADR 0012
+  unchanged. A finding's repair brief keeps `desloppify-repair-brief:v1`
+  and its fields, with fixed guidance text and `finding-key` provenance
+  labels.
 - **Proposal lane.** A proposal is published with no label, a
   `desloppify-proposal-key` line, and a `desloppify-proposal-brief:v1` body
   (observed evidence, alternatives and trade-offs, ownership and contracts,
   open questions, decision needed). It is recorded only as `github_proposal`
   or `github_proposal_pending`. Sync adopts a GitHub issue only when its body
-  carries the lane's own line, and any record of either lane blocks a create,
-  so a proposal is never linked, labeled, or adopted as a repair. Approving
+  carries the lane's own line, adopts a peer item's link only from the same
+  lane, skips an item holding its other lane's record, and creates nothing
+  while any record of either lane exists, so a proposal is never linked,
+  labeled, or adopted as a repair. `recover` clears either lane's pending
+  record. Approving
   a proposal leads only to a separately scoped, revalidated execution
   decision outside this command.
 
@@ -61,8 +68,12 @@ before a reclassification, is not withdrawn; the dispatch-time recheck
 (#19/#26) and selection (#22) own that. A renamed file gives a duplicate pair
 a new identity. A proposal blocks automatic repair creation for the same
 concern, because its body holds the concern identity that repair search
-finds as an unverified hit. Proposal publication is not rate-limited; #22
-owns selection. Scan merge now preserves queue records for findings too.
+finds as an unverified hit. A lane flip while the other lane holds a record
+parks the item until a human reconciles it. `candidate_from_issue` now
+returns proposal candidates too, so the dispatch-time recheck (#19/#26) must
+call `classify` and require `small_repair`, not only re-run the check.
+Proposal publication is not rate-limited; #22 owns selection. Scan merge now
+preserves queue records for findings too.
 
 ## Considered & rejected
 
@@ -79,10 +90,12 @@ owns selection. Scan merge now preserves queue records for findings too.
   the mass-cleanup route #21 excludes.
 - **Keep proposals local only.** judgment: fit; operator decision on
   2026-10-05 requires publication as non-dispatchable issues.
-- **Add a `proposal` label.** judgment: cost; the label may not exist and
-  `gh issue create` fails on an unknown label, while the absent
-  `status:ready` label and distinct body line already keep it out of the
-  queue.
+- **Add a `proposal` label.** judgment: cost; it adds a label-provisioning
+  prerequisite, while the absent `status:ready` label and the distinct body
+  line already keep a proposal out of the queue.
+- **Prove a finding by its anchors alone.** judgment: fit; names and line
+  ranges still hold after one function is reduced to a call of the other,
+  so a removed duplicate would publish (constructed in design review).
 - **Admit `orphaned`, `single_use`, or `structural`.** judgment: fit;
   deleting an orphan, inlining across areas, or splitting a large file is not
   provable as small from bounded anchors.
