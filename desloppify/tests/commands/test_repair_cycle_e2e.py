@@ -323,7 +323,9 @@ def test_approved_repair_runs_once_through_the_adapter_and_settles(world) -> Non
     assert launch["config_dir"] == str(world.root / "claude-config")
     assert launch["background"] == "1"
     [pr] = world.github()["prs"]
-    assert ["pr", "view", pr["url"], "--json", "state,files"] in world.github()["log"]
+    pull = f"repos/{world.github()['repository']}/pulls/{pr['number']}"
+    assert ["api", pull] in world.github()["log"]
+    assert ["api", "--paginate", "--slurp", f"{pull}/files?per_page=100"] in world.github()["log"]
     dispatch = world.cycle()["dispatch"]
     assert (dispatch["outcome"], dispatch["pull_requests"]) == ("completed", [pr["url"]])
     assert world.cycle()["consumed_cost_usd"] == "0.4"
