@@ -72,9 +72,8 @@ def _gh(argv: list[str]) -> int:
         elif (kind, action) == ("issue", "view"):
             found = next(item for item in items if item["number"] == int(argv[2]))
             output = _pick(found, options["--json"])
-        elif (kind, action) == ("pr", "view"):
-            found = next(item for item in items if item["url"] == argv[2])
-            output = {"state": found["state"], "files": [{"path": p} for p in found["files"]]}
+        elif kind == "api":
+            output = _api(world, argv[-1])
         elif action == "create":
             number = 1 + max((i["number"] for i in world["issues"] + world["prs"]), default=0)
             path = "issues" if kind == "issue" else "pull"
@@ -88,6 +87,20 @@ def _gh(argv: list[str]) -> int:
             return 2
     print(output if isinstance(output, str) else json.dumps(output))
     return 0
+
+
+def _api(world: dict, endpoint: str) -> object:
+    """Answer the REST reads of one pull request: the pull itself, or its paged files."""
+    path, _, _query = endpoint.partition("?")
+    match = re.fullmatch(rf"repos/{re.escape(world['repository'])}/pulls/(\d+)(/files)?", path)
+    if match is None:
+        raise SystemExit(f"stand-in gh: unsupported api endpoint {endpoint}")
+    found = next(item for item in world["prs"] if item["number"] == int(match[1]))
+    if match[2] is None:
+        state = "open" if found["state"] == "OPEN" else "closed"
+        return {"state": state, "changed_files": len(found["files"])}
+    files = [{"filename": name, "status": "modified"} for name in found["files"]]
+    return [files[start:start + 100] for start in range(0, len(files), 100)] or [[]]
 
 
 def _wait_for_go() -> None:
