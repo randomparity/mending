@@ -86,11 +86,13 @@ still matches the repair's `github_repair` link record after a
 `repair-queue sync --apply`, which rewrites the record and prints `Changed ...`
 when the pair moves; the cycle recomputes both and refuses a stale pair. The
 record is computed from work items in the state file, which the coding host
-can write, so it alone does not show what you reviewed. If the record differs
-from the issue, or sync printed `Changed ...`, the brief changed after the
-issue was published: do not approve that pair against the published text. An
-issue published before the Provenance block carried `reviewed-brief-version`
-shows no reviewed version; only the link record holds it. The cycle runs
+can write, so it alone does not show what you reviewed. Compare the record
+with the issue itself rather than relying on the absence of `Changed ...`: the
+first link write after an uncertain create can store a different pair without
+printing it. If they differ, the brief changed after the issue was published:
+do not approve that pair against the published text. An issue published before
+the Provenance block carried `reviewed-brief-version` shows no reviewed version,
+so for it the pair rests on the host-writable record alone. The cycle runs
 `scan` and `repair-queue sync --apply` itself with its own `--state` file; do
 not run either by hand against that file while the unit is active.
 `files` is the whole set of paths the repair may change: the brief's evidence
