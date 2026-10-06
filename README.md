@@ -47,6 +47,20 @@ line, and every identifier quoted in backticks beside it, is still there; `sync`
 re-runs that check and drops a concern whose result changed. Concerns
 revalidated before this check must be revalidated again.
 
+Two routes reach the queue. A concern is a small repair when it has a
+verification plan, high review confidence, and at most three files in one
+directory; an exact duplicate pair of functions inside one file (`dupes`) is a
+small repair too, proven by its line ranges and names. A concern that misses
+any of those bounds becomes an architecture proposal: published without
+`status:ready`, it asks for a human decision and is never dispatched. Each
+`sync` first reconciles every linked or pending issue, including closed and
+human-edited ones, which are never recreated. It then publishes at most one
+new small repair, ranked by fewer files, mechanical verification, more
+source-checked evidence, and more cited lines, never by score. With `--apply`
+it records the selection, or a no-op when nothing is safe or an earlier
+create is still unresolved. Linked issues store a reviewed-brief version that
+moves only when evidence or a material brief field changes.
+
 ```bash
 desloppify scan --path .          # refresh findings and scan history
 desloppify review --run-batches   # bounded subjective and architecture-concern review
@@ -56,8 +70,7 @@ desloppify repair-queue recover MARKER --repo OWNER/REPO --apply
 desloppify repair-cycle --config FILE --state FILE        # parks: no host adapter yet
 ```
 
-Planned, not yet available: actionable repair briefs and a separate proposal path
-([#18](https://github.com/randomparity/mending/issues/18)), and a Mending-owned host adapter that runs one bounded repair ([#19](https://github.com/randomparity/mending/issues/19)).
+Planned, not yet available: a Mending-owned host adapter that runs one bounded repair ([#19](https://github.com/randomparity/mending/issues/19)).
 A manual pilot ([#7](https://github.com/randomparity/mending/issues/7)) comes before any scheduled run; the
 [systemd recipe](docs/systemd/repair-cycle.md) stays disabled until then.
 
