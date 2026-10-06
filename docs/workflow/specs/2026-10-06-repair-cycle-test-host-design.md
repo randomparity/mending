@@ -21,7 +21,7 @@ script with two roles, chosen by its first argument and installed by the test
 as two shell wrappers in a temporary `bin/`:
 
 - **`claude`** (the `host_executable`, absolute path): answers `--version`
-  (`2.1.289 (Claude Code)`) and `--help` (lists `--max-budget-usd`,
+  (`2.1.289 (Claude Code)`; held until `go` while a `hold-probe` file exists) and `--help` (lists `--max-budget-usd`,
   `stream-json`, `--forward-subagent-text`). A `-p` run appends one launch
   record (argv, the `MENDING_HOST_SESSION` and `CLAUDE_CONFIG_DIR` values,
   pid) to `launches.jsonl`, reads the attempt ID from the prompt, then runs
@@ -30,7 +30,7 @@ as two shell wrappers in a temporary `bin/`:
   events to its own file, not the stream), `child` (`setsid` and/or ignoring
   `SIGTERM`), `pr`/`issue` (create through `gh` with a tag line naming this or
   another attempt, and the PR's files), `wait` (until a `go` file exists,
-  bounded at 30 s), `hang` (ignore `SIGTERM`, sleep), `result` (the
+  bounded at 30 s), `hang` (ignore `SIGTERM`, sleep at most 30 s), `result` (the
   stream-json result event), `garbage`, and `exit`. Every spawned pid is
   appended to `pids.jsonl`.
 - **`gh`**: serves the commands Mending and the host issue (`repo view`,
@@ -42,7 +42,9 @@ The test puts `bin/` first on `PATH`, points `GH_CONFIG_DIR` at an empty
 directory and clears `GH_TOKEN`/`GITHUB_TOKEN`, so a missed fake can never
 reach GitHub. Each test gets its own `tmp_path`; attempt IDs are fresh
 `uuid4` values, so the `/proc` marker scan never matches another test's host.
-A fixture kills every pid in `pids.jsonl` and `launches.jsonl` at teardown.
+Every process a test starts inherits `STAND_IN_WORLD=<tmp_path>`. Teardown
+lists live, non-zombie processes whose `/proc/<pid>/environ` carries it, kills
+them, and fails the test if there were any; no other process is signalled.
 
 ### Driving the cycle
 
@@ -51,11 +53,18 @@ A fixture kills every pid in `pids.jsonl` and `launches.jsonl` at teardown.
 `ClaudeHostAdapter(config)`), no `queue_client` (sync uses the production
 `GitHubIssueClient` over the fake `gh`), a real `git` checkout as `repo_root`,
 and the injected `source`/`check`/`refresh` seams the existing tests use
-(checkout reading, the evidence check, and `scan` have their own tests). The
-clock is real time plus a per-test offset, because the adapter compares the
-lease deadline with wall time. Two scenarios run the cycle in a child Python
-process (`_drive`) so it can be killed or held: crash, and overlap. The
-timeout scenarios replace `repair_cycle.ClaudeHostAdapter` with the same class
+(checkout reading, the evidence check, and `scan` have their own tests). Every
+row starts from the unpublished `_revalidated_state()`, so the cycle's own
+sync publishes the repair issue. One test clock serves the cycle (`args.clock`)
+and the adapter (`repair_cycle_host.datetime` replaced by a subclass whose
+`now` reads it): real time plus an offset that starts at the next UTC noon, so
+no run straddles a window boundary; tests add whole days to reach later
+windows. A `late_clock` fixture makes it jump an hour once the host has spawned
+a child, so deadlines pass at a known point of the run, not after a real-time
+margin. The crash and overlap rows run the cycle in a child Python process
+(`_drive`), which reads only data (config, offset, an optional held source
+read) from `drive.json` and rebuilds the same seams from the test module. Rows
+that stop a tree replace `repair_cycle.ClaudeHostAdapter` with the same class
 at a 0.5 s grace period.
 
 ### Matrix
@@ -67,19 +76,23 @@ count.
 | # | Scenario | Expected |
 |---|---|---|
 | 1 | no-op/discovery-only: no approval; run twice | `no-op: authority-missing`, no lease, 0 launches, 1 `issue create` total |
-| 2 | approved small repair: host opens a tagged PR; PR then merged and repair issue closed; third run | run 1 active (`pull request open`); run 2 settled then no-op; 1 launch, 1 PR |
+| 2 | approved small repair: host opens a tagged PR; PR merged and issue closed; same window; next window | run 1 active (`pull request open`); run 2 `settled` then `window-attempt-complete`; run 3 `no-op: selected-repair-unavailable`; 1 launch, 1 issue, 1 PR |
 | 3 | missing host / skills / version mismatch | park `missing-host`/`missing-host-skills`/`host-skills-mismatch`, 0 launches |
-| 4a | permission denied: host completes without a PR | `no-pull-request`; next run `disposition-required`; 1 launch |
+| 4a | permission denied: host completes without a PR | `no-pull-request`; later runs re-observe and stay `no-pull-request`; dispose needs `--confirm-stopped`; 1 launch |
 | 4b | revoked or expired while PR open | resume fails `authority-revoked`/`authority-expired`; later runs never launch; dispose needs `--confirm-stopped` |
 | 4c | expired before selection | park `authority-expired`, no lease, 0 launches |
-| 4d | approval expires mid-run | host stopped at expiry, `runtime-exhausted` |
-| 5 | stale evidence at sync / source changes before dispatch / source changes while PR open | no-op `selected-repair-unavailable` / park `source-not-current` with 0 launches / fail `source-not-current` |
-| 6 | overlap: second invocation while the first's host runs | `Repair cycle already running.`, state untouched, 1 launch |
-| 7 | nested budget: forwarded subagent messages pass `call_limit`; host-reported cost over the cap; host's own budget stop; nested model process | `budget-exhausted`; `budget-exhausted`; `host-failed`; nested events absent from `consumed_calls`, nested process stopped |
-| 8 | timeout with a surviving `setsid` child ignoring `SIGTERM` | `runtime-exhausted`, every recorded pid gone, no relaunch |
-| 9 | Mending killed after intent, before / after the host's PR; host crashes before / after its PR | while the host lives: `dispatch-in-flight`; after: `unsettled-reservation` with the PR recorded; host crash: `host-failed`, PR recorded, reported active; 1 launch, ≤1 PR |
+| 4d | approval expires mid-run, inside the lease | host tree stopped at expiry, `authority-expired` |
+| 5 | stale evidence at sync / source changes at the dispatch recheck / source changes while PR open | no-op `selected-repair-unavailable` / park `source-not-current` with a lease and 0 launches / fail `source-not-current` |
+| 6 | overlap: second invocation while the first's host runs | `Repair cycle already running.`, state bytes unchanged, 1 launch |
+| 7 | nested budget: forwarded subagent messages pass `call_limit`; host-reported cost over the cap; host's own budget stop; nested model process | outcome `stopped`, `budget-exhausted`; outcome `completed`, `budget-exhausted` after the fact; `host-failed`; nested events absent from `consumed_calls`, nested process stopped |
+| 8 | timeout with a surviving `setsid` child ignoring `SIGTERM` | `runtime-exhausted`, no process left, next window `disposition-required`, no relaunch |
+| 9 | Mending killed: at the dispatch recheck (lease only); after intent, during the host probe; while the host runs, before / after its PR. Host crash before / after its PR | `window-attempt-complete`, next window dispatches once; `unsettled-reservation`, 0 launches; `dispatch-in-flight` while the host lives, then `unsettled-reservation` with the PR recorded; `host-failed`, cost charged in full, the PR recorded only after-PR, and only then disposal needs `--confirm-stopped` |
 | 10 | garbage output; result `is_error` with exit 0; PR tagged for another attempt; PR edits a file outside the approval; worker unverifiable | `host-failed`; `host-failed`; `no-pull-request` with the foreign PR unrecorded; `authority-scope-exceeded`; `dispatch-outcome-unknown`, dispose needs `--confirm-stopped` |
-| 11 | restart after lease expiry: PR open past the deadline into the next window; dead host with an intent record | stays active, no new lease until the PR settles; `unsettled-reservation`, then `observation-exhausted`, then after disposal a new attempt with a new attempt ID and session |
+| 11 | restart after lease expiry: PR open two days later; row 9's killed cycle two days later | stays active on its old lease, then settles and no-ops once merged; `observation-exhausted` after the allowance, then after `--confirm-stopped` disposal a new attempt with a new attempt ID and session, one PR per attempt |
+
+An observed result that differs from this table is checked against ADRs
+0010/0015/0016 and the code before it is called a defect: the table records
+the code's behavior unless a completion criterion contradicts it.
 
 The routed checks from #31 are row 2's launch-record assertions: no
 permission flag in argv, `CLAUDE_CONFIG_DIR` passed through unchanged, and the
@@ -91,17 +104,21 @@ permission flag in argv, `CLAUDE_CONFIG_DIR` passed through unchanged, and the
 deadline is the lease deadline, so a dispatch shortly before expiry runs up to
 `runtime_minutes` past it. `_host_request` sets
 `deadline = min(lease.deadline, approval.expires_at)`; the adapter's existing
-timeout stops the tree there (`runtime-exhausted`). Rejected: refusing
-dispatch when expiry falls before the lease deadline (parks a repair that
-could finish in time); rechecking authority while the host runs (a second
-check point for one timestamp).
+timeout stops the tree there. `_dispatch_host` renames a `timeout` stop whose
+request deadline is earlier than the lease's to `authority-expired`, and
+`_outcome_failure` maps it to that failure, keeping ADR 0015's distinct reason.
+Rejected: refusing dispatch when expiry falls before the lease deadline (parks
+a repair that could finish in time); rechecking authority while the host runs
+(a second check point for one timestamp).
 
 ### Enforcement report
 
 A `## Limit enforcement` section in `docs/systemd/repair-cycle.md`, repeated
 in the PR: for USD cost, calls, runtime, permissions, edit scope, and
 authority expiry/revocation, which the host enforces, which Mending enforces,
-the test row proving it, and what is unsupported or unverified. Unverified
+the test row proving it, and what is unsupported or unverified, including a
+host orphaned by a Mending crash outside systemd (row 9: later runs only park
+`dispatch-in-flight`; nothing bounds it by the lease or the approval). Unverified
 without live credentials (#7): `--max-budget-usd` under the deployment's auth,
 managed-settings precedence, the `CLAUDE_CONFIG_DIR`/`ProtectHome` layout, and
 systemd stopping an orphaned host when Mending dies (`KillMode` default).
@@ -126,6 +143,6 @@ systemd stopping an orphaned host when Mending dies (`KillMode` default).
 ## Success
 
 1. Every matrix row passes against the production adapter and production `gh` client, with the launch and create counts above.
-2. A test that leaves a recorded pid alive fails.
+2. A test that leaves any process carrying its `STAND_IN_WORLD` value alive fails.
 3. The enforcement report states, for each listed limit, its enforcer, its proof row, and its gaps.
 4. `make lint typecheck arch ci-contracts tests tests-full package-smoke` and the records gate pass.
