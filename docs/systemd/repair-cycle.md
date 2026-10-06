@@ -68,7 +68,9 @@ checks again: it recomputes the brief version, rechecks the source files and
 their evidence, and re-reads the approval. To revoke, set `"revoked": true`,
 remove the approval, or change `revision`; a revocation stops dispatch and
 fails an active attempt, which then needs a disposition. A changed brief or
-evidence version voids its approval the same way. Every refusal parks with a
+evidence version voids its approval the same way, and an active attempt also
+fails when its source files change in the checkout (including when its own
+repair lands there) or when it was recorded before authority existed. Every refusal parks with a
 named reason (`authority-missing`, `authority-revoked`, `authority-expired`,
 `authority-mismatch`, `authority-scope-exceeded`, `authority-limits-exceeded`,
 `authority-invalid`, `authority-unsupported`, `authority-untrusted`,
