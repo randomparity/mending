@@ -138,7 +138,10 @@ to run `scan` or `repair-queue` by hand against the service's state file while
 the unit is active. The guide's configuration example
 gains an absolute `host_executable` outside `/home` and the Adept skills
 directory and version, and its observation, window, and adapter text is
-updated to this flow. Prerequisite wording stays with #16.
+updated to this flow. `README.md`'s two repair-cycle status lines (the
+`# parks: no host adapter yet` comment and the "Planned, not yet available"
+adapter sentence) are corrected to the shipped path; other prerequisite and
+contract wording stays as #16 left it.
 
 ## Failure model
 

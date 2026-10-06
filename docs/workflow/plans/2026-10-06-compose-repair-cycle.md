@@ -47,6 +47,7 @@ cases onto the fake host).
   `_host_request`; `_dispatch_host` loses its `request` parameter; receipt
   protocol removed (spec: Flow).
 - `docs/systemd/mending-repair-cycle.service`, `docs/systemd/repair-cycle.md`.
+- `README.md` — the two repair-cycle status lines only (scope audit F1).
 - Tests: `desloppify/tests/commands/test_repair_cycle.py`,
   `desloppify/tests/commands/test_repair_cycle_host.py`,
   `desloppify/tests/repair_cycle/test_repair_cycle_state.py`,
@@ -221,7 +222,9 @@ Verification:
   checkout current, no manual `scan`/`repair-queue` on the service state while
   the unit runs) has no executable consumer.
 
-Steps: edit the service and guide; green; commit `docs(repair-cycle): wire the recipe to the composed path`.
+Steps: edit the service and guide, and correct `README.md`'s two
+repair-cycle status lines (entry-path comment; adapter sentence, keeping the
+#7 pilot gate); green; commit `docs(repair-cycle): wire the recipe to the composed path`.
 
 ## Final
 
