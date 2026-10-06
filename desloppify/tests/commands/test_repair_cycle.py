@@ -1235,8 +1235,10 @@ def test_missing_or_symlinked_config_is_untrusted(tmp_path, monkeypatch) -> None
     def trusted(path: Path) -> bool:
         return repair_cycle._trusted_config(argparse.Namespace(config=str(path), config_data=None))
 
+    (tmp_path / "sub").mkdir()
     assert trusted(target) is True
     assert trusted(link) is False
+    assert trusted(tmp_path / "sub" / ".." / "repair-cycle.json") is False
     assert trusted(tmp_path / "gone.json") is False
 
 
@@ -1264,6 +1266,8 @@ def test_dispatch_authority_check_is_time_bounded(monkeypatch) -> None:
         (True, _config(authority=None), "authority-revoked"),
         (True, _config(authority=_authority(key="other")), "authority-revoked"),
         (True, _config(authority=_authority(expires_at=NOW.isoformat())), "authority-expired"),
+        (True, _config(cost_cap_usd="1.00", authority=_authority(cost_cap_usd="1.00")),
+         "authority-limits-exceeded"),
     ],
 )
 def test_dispatch_rechecks_authority(bound, config, reason) -> None:

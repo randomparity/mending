@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import signal
 import threading
@@ -283,7 +284,10 @@ def _authorize(
     recheck = source_comparison(args, issue)
     if not recheck.current:
         return "source-unreadable" if recheck.keep else "source-not-current"
-    binding = _binding(issue, candidate, version, config)
+    limits = _limits(None if select else cycle_state.current_lease, config, now)
+    if limits is None:
+        return "missing-cost-cap"
+    binding = _binding(issue, candidate, version, limits)
     reason = check_authority(authority, binding, now, bound is not None)
     if reason is not None or authority is None:
         return reason or "authority-missing"
@@ -302,11 +306,23 @@ def _trusted_authority(args: argparse.Namespace, config: CycleConfig) -> Authori
         return "authority-invalid"
 
 
+def _limits(
+    lease: CycleLease | None, config: CycleConfig, now: datetime
+) -> tuple[int, Decimal, int] | None:
+    """Calls, USD cap, and seconds the attempt may use: the lease's once it exists."""
+    if lease is not None:
+        remaining = max(0, math.ceil((lease.deadline - now).total_seconds()))
+        return lease.call_limit, lease.cost_cap_usd, remaining
+    if config.cost_cap_usd is None:
+        return None
+    return config.call_limit, config.cost_cap_usd, config.runtime_seconds
+
+
 def _binding(
     issue: Mapping[str, Any],
     candidate: PromotionCandidate,
     version: str,
-    config: CycleConfig,
+    limits: tuple[int, Decimal, int],
 ) -> AuthorityBinding:
     record = matching_record(issue["detail"], "github_repair_revalidated", candidate) or {}
     manifest = manifest_from_record(record.get("manifest"))
@@ -318,9 +334,9 @@ def _binding(
         evidence_digest=candidate.evidence_digest,
         files=frozenset(dependency.path for dependency in files),
         action="repair",
-        call_limit=config.call_limit,
-        cost_cap_usd=config.cost_cap_usd or Decimal(0),
-        runtime_seconds=config.runtime_seconds,
+        call_limit=limits[0],
+        cost_cap_usd=limits[1],
+        runtime_seconds=limits[2],
     )
 
 
@@ -354,9 +370,9 @@ def _trusted_config(args: argparse.Namespace) -> bool:
     """
     if isinstance(getattr(args, "config_data", None), Mapping):
         return True
-    named = Path(os.path.abspath(str(getattr(args, "config", ""))))
+    named = Path(str(getattr(args, "config", ""))).absolute()
     path = named.resolve()
-    if path != named:
+    if path != named:  # a symlink or ".." component: the checked file may not be the read one
         return False
     account = os.geteuid()
     for entry in (path, *path.parents):
