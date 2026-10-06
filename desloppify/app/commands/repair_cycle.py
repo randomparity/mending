@@ -164,7 +164,10 @@ def _refresh(args: argparse.Namespace, config: CycleConfig) -> str | None:
     supplied = getattr(args, "refresh", None)
     if callable(supplied):
         return cast("str | None", supplied())
-    argv = [sys.executable, "-m", "desloppify", "scan", "--state", str(_state_file(args).resolve())]
+    argv = [
+        sys.executable, "-m", "desloppify", "scan", "--no-badge",
+        "--state", str(_state_file(args).resolve()),
+    ]
     try:
         done = subprocess.run(  # nosec B603
             argv, cwd=_repo_root(args), timeout=config.runtime_seconds, check=False
@@ -190,8 +193,8 @@ def _publish(args: argparse.Namespace, config: CycleConfig) -> str | None:
         revision="HEAD",
     )
     try:
-        cmd_repair_queue(sync)
-    except (CommandError, RuntimeError, OSError, ValueError) as exc:
+        _call_within(config.runtime_seconds, lambda: cmd_repair_queue(sync))
+    except (CommandError, RuntimeError, OSError, ValueError, TimeoutError) as exc:
         print(f"Repair cycle publication failed: {exc}")
         return "publication-failed"
     return None

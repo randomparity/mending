@@ -356,6 +356,8 @@ def test_missing_model_or_cost_cap_parks_without_external_calls() -> None:
     [
         ({"refresh": lambda: "refresh-failed"}, "refresh-failed"),
         ({"queue_client": _Queue(error=OSError("gh missing"))}, "publication-failed"),
+        ({"queue_client": _Queue(error=TimeoutError("repair-cycle call bound exceeded"))},
+         "publication-failed"),
     ],
 )
 def test_refresh_or_publication_failure_parks_before_selection(overrides, reason) -> None:
@@ -367,6 +369,26 @@ def test_refresh_or_publication_failure_parks_before_selection(overrides, reason
     assert args.host.requests == []
     assert state["repair_cycle"]["parked_reason"] == reason
     assert state["repair_cycle"]["current_lease"] is None
+
+
+def test_publication_is_bounded_by_the_runtime(monkeypatch) -> None:
+    bounds: list[float] = []
+
+    def expire_immediately(_which: int, seconds: float) -> tuple[float, float]:
+        if seconds:
+            bounds.append(seconds)
+            repair_cycle._deadline_exceeded(repair_cycle.signal.SIGALRM, None)
+        return (0.0, 0.0)
+
+    monkeypatch.setattr(repair_cycle.signal, "setitimer", expire_immediately)
+    state = _state()
+    args = _args(state)
+
+    cmd_repair_cycle(args)
+
+    assert bounds == [90 * 60]
+    assert _events(args) == ["refresh"]
+    assert state["repair_cycle"]["parked_reason"] == "publication-failed"
 
 
 def test_file_backed_cycle_composes_refresh_sync_and_dispatch(tmp_path) -> None:
@@ -415,7 +437,7 @@ def test_production_refresh_scans_into_the_cycle_state_file(
 
     assert repair_cycle._refresh(args, CONFIG) == reason
     assert calls == [(
-        [sys.executable, "-m", "desloppify", "scan", "--state",
+        [sys.executable, "-m", "desloppify", "scan", "--no-badge", "--state",
          str((tmp_path / "state.json").resolve())],
         tmp_path,
         90 * 60,
@@ -580,12 +602,16 @@ def test_legacy_merge_fields_decode_and_authorize_nothing() -> None:
 
 
 def test_deadline_timer_interrupts_before_selection(monkeypatch) -> None:
-    def expire_immediately(_which: int, seconds: float) -> tuple[float, float]:
+    armed: list[float] = []
+
+    def expire_at_selection(_which: int, seconds: float) -> tuple[float, float]:
         if seconds:
-            repair_cycle._deadline_exceeded(repair_cycle.signal.SIGALRM, None)
+            armed.append(seconds)
+            if len(armed) == 2:  # the first bound is publication's
+                repair_cycle._deadline_exceeded(repair_cycle.signal.SIGALRM, None)
         return (0.0, 0.0)
 
-    monkeypatch.setattr(repair_cycle.signal, "setitimer", expire_immediately)
+    monkeypatch.setattr(repair_cycle.signal, "setitimer", expire_at_selection)
     state = _state()
     args = _args(state)
 

@@ -14,6 +14,8 @@ Perform these steps only after the pilot and approval above. Install
 unprivileged `mending` account and make it the owner of the one target checkout
 at `/var/lib/mending/repository`, and keep that checkout current with its
 default branch: the cycle scans and rechecks it as it is and never fetches.
+The scan also writes its working files under `.desloppify/` in the checkout,
+which the target repository should ignore.
 Create `/var/lib/mending/repository-worktrees` (where the Adept skills put the
 repair worktree) and `/var/lib/mending/claude` (the Claude Code configuration
 directory, holding the account's credentials and permission settings), both
@@ -114,7 +116,7 @@ owned by another account.
 
 Each run does, in order: observe a recorded attempt that is not settled, and
 stop there; refresh with `desloppify scan`; revalidate and publish with
-`repair-queue sync --apply`; select and authorize one published repair; then
+`repair-queue sync --apply`, both bounded by the configured runtime; select and authorize one published repair; then
 dispatch it once to the Claude Code host, which runs the Adept skills and stops
 at a draft pull request. A second run that starts while one is running prints
 `Repair cycle already running.` and exits. A failed refresh or publication
