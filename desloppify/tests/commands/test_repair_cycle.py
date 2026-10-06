@@ -18,10 +18,21 @@ from desloppify.app.commands.repair_cycle import (
     _dispatch_host,
     cmd_repair_cycle,
 )
-from desloppify.app.commands.repair_cycle_host import HostOutcome, HostRequest
+from desloppify.app.commands.repair_cycle_host import (
+    HostLookupError,
+    HostOutcome,
+    HostReferences,
+    HostRequest,
+    host_session_id,
+)
 from desloppify.base.exception_sets import CommandError
 from desloppify.cli import create_parser
-from desloppify.engine.repair_cycle import BudgetAdmission, CycleConfig, CycleState
+from desloppify.engine.repair_cycle import (
+    BudgetAdmission,
+    CycleConfig,
+    CycleState,
+    DispatchRecord,
+)
 
 REPOSITORY = "owner/repository"
 NOW = datetime(2026, 9, 13, 9, 0, tzinfo=UTC)
@@ -648,6 +659,78 @@ def test_legacy_state_decodes_and_new_fields_validate() -> None:
             CycleState.from_mapping({**legacy, field: bad})
 
 
+def test_dispatch_record_round_trips_and_legacy_lease_is_unknown() -> None:
+    cycle_state = CycleState.empty()
+    lease = cycle_state.begin(CycleConfig.from_mapping(_config()), NOW, attempt_id="a1")
+    assert lease is not None
+    cycle_state.dispatch = DispatchRecord(
+        "a1", "returned", "s", "o/r", "/repo", ("/repo",), "completed",
+        ("https://x/pull/1",), (), ("/w",),
+    )
+    assert CycleState.from_mapping(json.loads(json.dumps(cycle_state.to_mapping()))) == cycle_state
+    record = DispatchRecord("a1", "returned", pull_requests=("p2", "p0"))
+    assert record.with_references(("p1", "p2"), ("i1",), ()).pull_requests == ("p2", "p0", "p1")
+    assert record.with_references(("p1", "p2"), ("i1",), ()).issues == ("i1",)
+
+    legacy = {key: value for key, value in cycle_state.to_mapping().items()
+              if key not in {"dispatch", "attempt_history"}}
+    decoded = CycleState.from_mapping(legacy)
+    assert decoded.current_lease == lease
+    assert decoded.dispatch == DispatchRecord("a1", "unknown")
+    assert decoded.attempt_history == []
+    assert CycleState.from_mapping({}).dispatch is None
+
+    valid = cycle_state.to_mapping()
+    dispatch = valid["dispatch"]
+    assert isinstance(dispatch, dict)
+    for bad in (
+        {**valid, "current_lease": None},
+        {**valid, "dispatch": {**dispatch, "attempt_id": "other"}},
+        {**valid, "dispatch": {**dispatch, "phase": "other"}},
+        {**valid, "dispatch": {**dispatch, "pull_requests": "p1"}},
+        {**valid, "dispatch": {**dispatch, "worktrees": [""]}},
+        {**valid, "dispatch": "a1"},
+        {**valid, "attempt_history": {}},
+        {**valid, "attempt_history": [{"lease": None}]},
+        {**valid, "attempt_history": [{"lease": lease.to_mapping(), "dispatch": {"phase": "x"}}]},
+    ):
+        with pytest.raises(ValueError):
+            CycleState.from_mapping(bad)
+
+
+def test_begin_archives_replaced_attempt() -> None:
+    config = CycleConfig.from_mapping(_config())
+    cycle_state = CycleState.empty()
+    lease = cycle_state.begin(config, NOW, attempt_id="a1")
+    assert lease is not None
+    cycle_state.dispatch = DispatchRecord("a1", "returned", "s", outcome="failed")
+    cycle_state.consumed_calls = 4
+    cycle_state.fail("host-error")
+    cycle_state.dispose("a1")
+
+    assert cycle_state.begin(config, NOW + timedelta(days=1), attempt_id="a2") is not None
+    assert cycle_state.begin(config, NOW + timedelta(days=1), attempt_id="a3") is None
+
+    assert cycle_state.dispatch is None
+    assert cycle_state.attempt_history == [
+        {
+            "lease": lease.to_mapping(),
+            "authoritative_receipt": None,
+            "parked_reason": "host-error",
+            "attempt_failure": "host-error",
+            "disposed": True,
+            "observation_calls": 0,
+            "consumed_cost_usd": "0",
+            "consumed_calls": 4,
+            "reserved_cost_usd": "0",
+            "reserved_calls": 0,
+            "dispatch": DispatchRecord("a1", "returned", "s", outcome="failed").to_mapping(),
+        }
+    ]
+    round_trip = CycleState.from_mapping(json.loads(json.dumps(cycle_state.to_mapping())))
+    assert round_trip.attempt_history == cycle_state.attempt_history
+
+
 def _budget_state() -> CycleState:
     cycle_state = CycleState.empty()
     cycle_state.begin(CycleConfig.from_mapping(_config(call_limit=10)), NOW, attempt_id="a1")
@@ -691,12 +774,38 @@ def test_unmeasured_cost_charges_whole_admission() -> None:
 
 
 class _FakeHost:
+    repository = REPOSITORY
+
     def __init__(self, outcome: HostOutcome | None = None, *, error: BaseException | None = None,
-                 on_run=None) -> None:
+                 on_run=None, alive: bool | None = False,
+                 found: HostReferences | HostLookupError | None = None,
+                 snapshot: tuple[str, ...] | HostLookupError = ("/repo",),
+                 on_references=None) -> None:
         self.outcome = outcome or HostOutcome("completed", cost_usd=Decimal("0.5"), calls=3)
         self.error = error
         self.on_run = on_run
+        self.alive = alive
+        self.found = found or HostReferences(("https://example.invalid/pull/1",))
+        self.snapshot = snapshot
+        self.on_references = on_references
         self.admissions: list[BudgetAdmission] = []
+        self.lookups: list[tuple[str, str, Path, tuple[str, ...]]] = []
+
+    def worker_alive(self, attempt_id: str) -> bool | None:
+        return self.alive
+
+    def worktrees(self, repo_root: Path) -> tuple[str, ...]:
+        if isinstance(self.snapshot, HostLookupError):
+            raise self.snapshot
+        return self.snapshot
+
+    def references(self, attempt_id, repository, repo_root, prior_worktrees) -> HostReferences:
+        self.lookups.append((attempt_id, repository, repo_root, prior_worktrees))
+        if self.on_references is not None:
+            self.on_references()
+        if isinstance(self.found, HostLookupError):
+            raise self.found
+        return self.found
 
     def run(self, request: HostRequest, admission: BudgetAdmission) -> HostOutcome:
         self.admissions.append(admission)
@@ -797,6 +906,9 @@ def test_dispatch_persists_reservation_before_launch(tmp_path) -> None:
         _dispatch_host(args, state, cycle_state, _FakeHost(on_run=read_disk), request)
 
     assert (seen[0]["reserved_cost_usd"], seen[0]["reserved_calls"]) == ("2.00", 10)
+    assert seen[0]["dispatch"] == DispatchRecord(
+        "a1", "intent", host_session_id("a1"), REPOSITORY, str(Path(".").resolve()), ("/repo",)
+    ).to_mapping()
     settled = json.loads(state_path.read_text())["repair_cycle"]
     assert (settled["reserved_calls"], settled["consumed_calls"]) == (0, 3)
     assert settled["consumed_cost_usd"] == "0.5"
@@ -821,3 +933,100 @@ def test_interrupted_dispatch_keeps_reservation(tmp_path) -> None:
     recorded = json.loads(state_path.read_text())["repair_cycle"]
     assert recorded["attempt_failure"] == "unsettled-reservation"
     assert recorded["reserved_calls"] == 10
+
+
+def test_returned_dispatch_is_persisted_before_reference_lookup(tmp_path) -> None:
+    state_path = tmp_path / "state.json"
+    args = _args(None, _Client(), state=str(state_path))
+    seen: list[dict] = []
+    host = _FakeHost(
+        on_references=lambda: seen.append(json.loads(state_path.read_text())["repair_cycle"])
+    )
+
+    with repair_cycle._locked_state(args) as state:
+        cycle_state, request = _leased(state)
+        _dispatch_host(args, state, cycle_state, host, request)
+
+    assert seen[0]["dispatch"]["phase"] == "returned"
+    assert seen[0]["dispatch"]["outcome"] == "completed"
+    assert (seen[0]["reserved_calls"], seen[0]["consumed_calls"]) == (0, 3)
+    assert host.lookups == [("a1", REPOSITORY, Path(".").resolve(), ("/repo",))]
+    recorded = json.loads(state_path.read_text())["repair_cycle"]["dispatch"]
+    assert recorded["pull_requests"] == ["https://example.invalid/pull/1"]
+
+
+def test_dispatch_record_follows_the_outcome() -> None:
+    state = _state()
+    cycle_state, request = _leased(state)
+    parked = _FakeHost(HostOutcome("parked", "missing-host"))
+    assert _dispatch_host(_args(state, _Client()), state, cycle_state, parked, request)
+    assert cycle_state.dispatch is None
+    assert parked.lookups == []
+
+    state = _state()
+    cycle_state, request = _leased(state)
+    offline = _FakeHost(found=HostLookupError("gh exited 1"))
+    assert _dispatch_host(_args(state, _Client()), state, cycle_state, offline, request)
+    assert cycle_state.dispatch is not None
+    assert (cycle_state.dispatch.phase, cycle_state.dispatch.pull_requests) == ("returned", ())
+    assert state["repair_cycle"]["parked_reason"] is None
+
+    state = _state()
+    cycle_state, request = _leased(state)
+    no_git = _FakeHost(snapshot=HostLookupError("git exited 128"))
+    assert _dispatch_host(_args(state, _Client()), state, cycle_state, no_git, request) is None
+    assert no_git.admissions == []
+    assert (cycle_state.dispatch, cycle_state.reserved_calls) == (None, 0)
+    assert state["repair_cycle"]["parked_reason"] == "dispatch-lookup-unavailable"
+
+
+@pytest.mark.parametrize(
+    ("phase", "reserved", "alive", "found", "failure", "parked"),
+    [
+        ("intent", True, True, None, None, "dispatch-in-flight"),
+        ("intent", True, None, None, None, "dispatch-unverified"),
+        ("intent", True, False, None, "unsettled-reservation", "unsettled-reservation"),
+        ("intent", True, False, "error", "unsettled-reservation", "unsettled-reservation"),
+        ("unknown", False, False, None, "dispatch-outcome-unknown", "dispatch-outcome-unknown"),
+        ("unknown", False, False, "error", "dispatch-outcome-unknown", "dispatch-outcome-unknown"),
+        ("returned", False, False, "error", None, "dispatch-lookup-unavailable"),
+        ("returned", False, False, None, None, "already-dispatched"),
+    ],
+)
+def test_replay_never_relaunches(phase, reserved, alive, found, failure, parked) -> None:
+    state = _state()
+    cycle_state, request = _leased(state)
+    recorded = DispatchRecord(
+        "a1", phase, pull_requests=("https://example.invalid/pull/0",),
+        **({} if phase == "unknown" else {
+            "session_id": host_session_id("a1"), "repository": "owner/recorded",
+            "repo_root": "/recorded", "prior_worktrees": ("/recorded",),
+        }),
+    )
+    cycle_state.dispatch = recorded
+    if reserved:
+        cycle_state.admit()
+    lookup = HostLookupError("gh exited 1") if found == "error" else HostReferences(
+        ("https://example.invalid/pull/1",), ("https://example.invalid/issues/2",), ("/wt",)
+    )
+    host = _FakeHost(alive=alive, found=lookup)
+    late = _args(state, _Client(), now=request.deadline + timedelta(days=1))
+
+    assert _dispatch_host(late, state, cycle_state, host, request) is None
+
+    assert host.admissions == []
+    assert (state["repair_cycle"]["attempt_failure"], state["repair_cycle"]["parked_reason"]) == (
+        failure,
+        parked,
+    )
+    if alive is not False:
+        assert host.lookups == []
+        return
+    expected = ("a1", REPOSITORY, Path("."), ()) if phase == "unknown" else (
+        "a1", "owner/recorded", Path("/recorded"), ("/recorded",)
+    )
+    assert host.lookups == [expected]
+    record = state["repair_cycle"]["dispatch"]
+    assert record["pull_requests"][0] == "https://example.invalid/pull/0"
+    assert len(record["pull_requests"]) == (1 if found == "error" else 2)
+    assert record["worktrees"] == ([] if phase == "unknown" or found == "error" else ["/wt"])

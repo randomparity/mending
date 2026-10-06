@@ -8,7 +8,7 @@ import signal
 import threading
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
@@ -17,13 +17,20 @@ from typing import Any, Callable, Protocol, TypeVar, cast
 from desloppify.app.commands.helpers.state import state_path
 from desloppify.app.commands.repair_cycle_host import (
     ClaudeHostAdapter,
+    HostLookupError,
     HostOutcome,
     HostRequest,
+    host_session_id,
 )
 from desloppify.base.exception_sets import CommandError
 from desloppify.engine._state.persistence import save_state, state_lock
 from desloppify.engine._state.schema_types import StateModel
-from desloppify.engine.repair_cycle import CycleConfig, CycleLease, CycleState
+from desloppify.engine.repair_cycle import (
+    CycleConfig,
+    CycleLease,
+    CycleState,
+    DispatchRecord,
+)
 
 _Result = TypeVar("_Result")
 
@@ -249,11 +256,15 @@ def _dispatch_host(
 ) -> HostOutcome | None:
     """Admit, persist, run, and settle one host dispatch under the held state lock.
 
-    Returns None when nothing was dispatched. #31 composes this into the cycle.
+    An attempt that already has a dispatch record is replayed, never launched
+    again. Returns None when nothing was dispatched. #31 composes this into the cycle.
     """
     lease = cycle_state.current_lease
     if lease is None or request.attempt_id != lease.attempt_id or request.deadline > lease.deadline:
         raise ValueError("host request does not match the current lease")
+    if cycle_state.dispatch is not None:
+        _replay_dispatch(state, cycle_state, adapter, request)
+        return None
     if cycle_state.reserved_calls or cycle_state.reserved_cost_usd:
         # An interrupted dispatch may still be spending; that outranks every other refusal.
         _fail(state, cycle_state, "unsettled-reservation")
@@ -261,17 +272,34 @@ def _dispatch_host(
     if _now(args) >= lease.deadline:
         _fail(state, cycle_state, "runtime-exhausted")
         return None
+    try:
+        prior_worktrees = adapter.worktrees(request.repo_root)
+    except HostLookupError as exc:
+        print(f"Repair cycle lookup failed: {exc}")
+        _park(state, cycle_state, "dispatch-lookup-unavailable")
+        return None
     admission = cycle_state.admit()
     if admission is None:
         _fail(state, cycle_state, "budget-exhausted")
         return None
+    record = DispatchRecord(
+        lease.attempt_id,
+        "intent",
+        host_session_id(lease.attempt_id),
+        adapter.repository,
+        str(request.repo_root.resolve()),
+        prior_worktrees,
+    )
+    cycle_state.dispatch = record
     _store_cycle_state(state, cycle_state)
     _persist_before_external_call(args, state)
     outcome = adapter.run(request, admission)
     if outcome.state == "parked":
+        cycle_state.dispatch = None
         cycle_state.settle(admission, Decimal(0), outcome.calls)
         _park(state, cycle_state, outcome.reason or "host-parked")
         return outcome
+    cycle_state.dispatch = replace(record, phase="returned", outcome=outcome.state)
     if outcome.state in {"stopped", "unknown"}:
         # Work in flight or still running when Mending stopped it may have spent anything.
         cycle_state.settle(admission, None, max(outcome.calls, admission.calls))
@@ -281,7 +309,59 @@ def _dispatch_host(
         _fail(state, cycle_state, "budget-exhausted")
     else:
         _store_cycle_state(state, cycle_state)
+    _persist_before_external_call(args, state)
+    _add_references(state, cycle_state, adapter, request)
     return outcome
+
+
+def _replay_dispatch(
+    state: dict[str, Any],
+    cycle_state: CycleState,
+    adapter: ClaudeHostAdapter,
+    request: HostRequest,
+) -> None:
+    """Observe what a recorded dispatch left behind; never launch it again."""
+    alive = adapter.worker_alive(request.attempt_id)
+    if alive is not False:
+        _park(state, cycle_state, "dispatch-in-flight" if alive else "dispatch-unverified")
+        return
+    found = _add_references(state, cycle_state, adapter, request)
+    record = cycle_state.dispatch
+    if cycle_state.reserved_calls or cycle_state.reserved_cost_usd:
+        _fail(state, cycle_state, "unsettled-reservation")
+    elif record is not None and record.phase == "unknown":
+        _fail(state, cycle_state, "dispatch-outcome-unknown")
+    elif not found:
+        _park(state, cycle_state, "dispatch-lookup-unavailable")
+    else:
+        _park(state, cycle_state, "already-dispatched")
+
+
+def _add_references(
+    state: dict[str, Any],
+    cycle_state: CycleState,
+    adapter: ClaudeHostAdapter,
+    request: HostRequest,
+) -> bool:
+    """Add what the adapter finds for the recorded dispatch; False when the lookup failed."""
+    record = cycle_state.dispatch
+    if record is None:
+        return False
+    try:
+        found = adapter.references(
+            record.attempt_id,
+            record.repository or adapter.repository,
+            Path(record.repo_root) if record.repo_root else request.repo_root,
+            record.prior_worktrees,
+        )
+    except HostLookupError as exc:
+        print(f"Repair cycle lookup failed: {exc}")
+        return False
+    # An unknown record has no pre-launch snapshot, so no worktree can be attributed to it.
+    worktrees = () if record.phase == "unknown" else found.worktrees
+    cycle_state.dispatch = record.with_references(found.pull_requests, found.issues, worktrees)
+    _store_cycle_state(state, cycle_state)
+    return True
 
 
 def _receipt_reason(

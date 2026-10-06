@@ -228,3 +228,37 @@ def test_mistyped_revision_keeps_revalidation(repo: Path) -> None:
     _run("sync", state, repo, client, source=SourceCheckout(repo, "HAED"))
     assert (client.searches, client.creates) == (0, 0)
     assert "github_repair_revalidated" in _detail(state)
+
+
+def test_revalidate_records_the_passing_check(repo: Path) -> None:
+    record = _detail(_revalidated(repo, _GitHub()))["github_repair_revalidated"]
+    assert record["check"]["outcome"] == "pass"
+    assert record["check"]["claims"][0]["citations"] == [
+        {"path": "src/impl.py", "start": 1, "end": 1}
+    ]
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        "impl.py:9 re-derives the root",
+        "impl.py:1 calls `missing_helper`",
+        "the parser re-derives the root",
+    ],
+    ids=["line-past-end", "absent-identifier", "no-citation"],
+)
+def test_evidence_edit_with_unchanged_source_clears(repo: Path, evidence: str) -> None:
+    client = _GitHub()
+    state = _revalidated(repo, client)
+    _detail(state)["evidence"] = [evidence]
+    _run("sync", state, repo, client)
+    assert (client.searches, client.creates) == (0, 0)
+    assert "github_repair_revalidated" not in _detail(state)
+
+
+def test_revalidate_refuses_a_failing_check(repo: Path) -> None:
+    state = _state()
+    _detail(state)["evidence"] = ["impl.py:1 calls `missing_helper`"]
+    with pytest.raises(CommandError, match=r"did not pass \(fail: quoted identifier"):
+        _run("revalidate", state, repo, _GitHub(), issue_id=next(iter(state["work_items"])))
+    assert "github_repair_revalidated" not in _detail(state)

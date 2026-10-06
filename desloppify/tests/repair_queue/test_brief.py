@@ -11,6 +11,7 @@ from desloppify.engine.repair_brief import (
     build_brief,
     render_brief,
 )
+from desloppify.engine.repair_check import CheckResult
 from desloppify.engine.repair_manifest import MANIFEST_SCHEMA, manifest_from_record
 from desloppify.engine.repair_queue import (
     candidate_from_issue,
@@ -35,6 +36,7 @@ MANIFEST = {
     ],
 }
 MANIFEST_DIGEST = manifest_from_record(MANIFEST).digest
+PASS = CheckResult("pass", "evidence anchors hold", ())
 ASSERTIONS = "## Reviewer assertions (not verified against source)"
 
 
@@ -61,6 +63,8 @@ def _issue() -> dict:
                 "evidence_digest": EVIDENCE,
                 "manifest": MANIFEST,
                 "manifest_digest": MANIFEST_DIGEST,
+                "check": PASS.as_record(),
+                "check_digest": PASS.digest,
             },
         },
     }

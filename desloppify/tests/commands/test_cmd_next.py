@@ -155,7 +155,7 @@ class TestCmdNextOutput:
 
         cmd_next(_args())
         out = capsys.readouterr().out
-        assert "North star: strict 84.0/100 → target 85.0 (+1.0 needed)" in out
+        assert "Strict score: 84.0/100 (configured target: 85.0)" in out
         assert "Subjective:" in out
         assert "below target" in out
         assert "show subjective" in out
@@ -207,7 +207,7 @@ class TestCmdNextOutput:
 
         cmd_next(_args())
         out = capsys.readouterr().out
-        assert "North star: strict 80.0/100 → target 85.0 (+5.0 needed)" in out
+        assert "Strict score: 80.0/100 (configured target: 85.0)" in out
         assert "Subjective:" in out
         assert "need review" in out
         assert "show subjective" in out
@@ -355,7 +355,7 @@ class TestCmdNextOutput:
 
         cmd_next(_args())
         out = capsys.readouterr().out
-        assert "North star: strict 96.0/100 → target 97.0 (+1.0 needed)" in out
+        assert "Strict score: 96.0/100 (configured target: 97.0)" in out
         assert "Subjective:" in out
         assert "below target" in out
         assert "show subjective" in out

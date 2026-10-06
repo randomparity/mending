@@ -246,7 +246,22 @@ def _changed_paths(previous: SourceManifest, current: SourceManifest) -> tuple[s
     return tuple(sorted(p for p in before.keys() | after.keys() if before.get(p) != after.get(p)))
 
 
-def _git(root: Path, *args: str) -> str | None:
+def blob_size(root: Path, object_id: str, timeout: float) -> int | None:
+    """Return a blob's size in bytes, or ``None`` when it cannot be read."""
+    if not _is_object_id(object_id):
+        return None
+    size = _git(root, "cat-file", "-s", object_id, timeout=timeout)
+    return int(size) if size is not None and size.strip().isdigit() else None
+
+
+def read_blob(root: Path, object_id: str, timeout: float) -> str | None:
+    """Return a blob's text (universal newlines), or ``None`` when it cannot be read."""
+    if not _is_object_id(object_id):
+        return None
+    return _git(root, "cat-file", "blob", object_id, timeout=timeout)
+
+
+def _git(root: Path, *args: str, timeout: float = _GIT_TIMEOUT_SECONDS) -> str | None:
     git = shutil.which("git")
     if git is None:
         return None
@@ -256,7 +271,7 @@ def _git(root: Path, *args: str) -> str | None:
             [git, "--literal-pathspecs", "-C", str(root), *args],
             capture_output=True,
             text=True,
-            timeout=_GIT_TIMEOUT_SECONDS,
+            timeout=timeout,
             check=False,
             env=env,
         )
@@ -317,8 +332,10 @@ __all__ = [
     "ROLES",
     "SourceCheckout",
     "SourceManifest",
+    "blob_size",
     "build_manifest",
     "compare_manifests",
     "concern_dependencies",
     "manifest_from_record",
+    "read_blob",
 ]

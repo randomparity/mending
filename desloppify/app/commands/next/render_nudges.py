@@ -119,26 +119,17 @@ def _render_frozen_queue_status(
     return True
 
 
-def _render_north_star(
+def _render_strict_score(
     *,
     strict_score: float | None,
     target_strict_score: float,
 ) -> None:
     if strict_score is None:
         return
-    gap = round(float(target_strict_score) - float(strict_score), 1)
-    if gap > 0:
-        print(
-            colorize(
-                f"\n  North star: strict {strict_score:.1f}/100 → target {target_strict_score:.1f} (+{gap:.1f} needed)",
-                "cyan",
-            )
-        )
-        return
     print(
         colorize(
-            f"\n  North star: strict {strict_score:.1f}/100 meets target {target_strict_score:.1f}",
-            "green",
+            f"\n  Strict score: {strict_score:.1f}/100 (configured target: {target_strict_score:.1f})",
+            "dim",
         )
     )
 
@@ -250,7 +241,7 @@ def render_followup_nudges(
         breakdown=breakdown,
     )
     if not rendered_frozen:
-        _render_north_star(
+        _render_strict_score(
             strict_score=strict_score,
             target_strict_score=target_strict_score,
         )

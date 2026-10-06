@@ -224,7 +224,7 @@ def _report_scores_reminder(command: str | None) -> list[dict]:
             "message": (
                 "ALWAYS share ALL scores with the user: overall, objective, and strict, "
                 "plus every dimension score (lenient + strict), including subjective dimensions. "
-                "The goal is to maximize strict scores."
+                "Scores are optional diagnostics, not targets."
             ),
             "command": None,
             "no_decay": True,
