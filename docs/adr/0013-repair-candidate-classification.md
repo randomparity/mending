@@ -78,7 +78,10 @@ file); its identity cannot tell two such pairs in one file apart, as the
 existing dupes work-item ID already cannot, and a pair whose raw bodies
 differ only in comments fails the span check. Proposal publication is not
 rate-limited; #22 owns selection. Scan merge now
-preserves queue records for findings too.
+preserves queue records for findings too. The brief record gains a `route`
+field, so every v1 brief-version moves once with this change, and v1
+provenance carries `concern-` or `finding-` labels by route; ADR 0009 left
+the version unpersisted, so #22 starts comparing from this shape.
 
 ## Considered & rejected
 
