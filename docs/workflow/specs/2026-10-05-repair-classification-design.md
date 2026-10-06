@@ -77,7 +77,8 @@ either lane on the item blocks a create. An item holding a record of its
 other lane is skipped with a reason naming that, and a peer item's record is
 adopted only when it is the candidate's own lane link; any other peer record
 parks the candidate. `recover` clears a matching pending record of either
-lane. Scan merge preserves both lanes' records for concerns and findings
+lane. A finding key is computable from public source, so a finding adopts a
+GitHub match only through its own pending create; any other match parks it. Scan merge preserves both lanes' records for concerns and findings
 while identity is unchanged.
 
 **Proposal brief** (`desloppify-proposal-brief:v1`, `ProposalBrief`): the

@@ -189,6 +189,11 @@ def _sync_one(
         print(f"Skipped {candidate.issue_id}: GitHub matches do not carry the concern key.")
     elif pending is not None:
         _adopt_if_unique(args, candidate, matches, lane.pending)
+    elif matches and candidate.route == "finding":
+        print(
+            f"Skipped {candidate.issue_id}: a GitHub issue carries this finding key, which"
+            " anyone can compute from public source; a human reconciles it."
+        )
     elif len(matches) == 1:
         _adopt_if_unique(args, candidate, matches, None)
     elif len(matches) > 1:

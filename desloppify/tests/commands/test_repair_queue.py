@@ -883,3 +883,25 @@ def test_peer_link_from_the_other_lane_is_never_adopted(make_state, peer_record:
     _sync(state, client)
     assert (client.views, client.searches, client.create_calls) == ([], [], 0)
     assert not set(LINK_KINDS) & set(_detail(state))
+
+
+def test_finding_never_adopts_an_issue_it_did_not_create(monkeypatch, capsys) -> None:
+    state = _dupe_state()
+    [issue_id] = state["work_items"]
+    monkeypatch.setattr(
+        "desloppify.app.commands.repair_queue.check_finding", lambda root, manifest, issue: PASS
+    )
+    cmd_repair_queue(_args(
+        "revalidate", state, apply=True, issue_id=issue_id, check=None, source=_RootedSource(),
+    ))
+    hashes = item_hashes(state["work_items"][issue_id])
+    assert hashes is not None
+    squat = GitHubIssue(
+        999, "https://example.test/999", "open",
+        FINDING_KEY_LINE.format(finding_key(REPOSITORY, hashes[1])),
+    )
+    client = _Recorder({finding_key(REPOSITORY, hashes[1]): [squat]})
+    _sync(state, client)
+    assert client.create_calls == 0
+    assert not set(LINK_KINDS) & set(_detail(state, issue_id))
+    assert "a human reconciles it" in capsys.readouterr().out
