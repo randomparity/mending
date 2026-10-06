@@ -237,7 +237,8 @@ def _observe_once(
     if record is None:
         # No dispatch record, yet unsettled: a legacy active receipt or a held reservation.
         reserved = cycle_state.reserved_calls or cycle_state.reserved_cost_usd
-        _fail(state, cycle_state, "unsettled-reservation" if reserved else "dispatch-outcome-unknown")
+        reason = "unsettled-reservation" if reserved else "dispatch-outcome-unknown"
+        _fail(state, cycle_state, reason)
         return
     if record.phase != "returned" or record.outcome == "unknown":
         if _replay_dispatch(state, cycle_state, host, repo_root):
@@ -511,26 +512,10 @@ def _dispatch_host(
     if cycle_state.dispatch is not None:
         _replay_dispatch(state, cycle_state, adapter, repo_root)
         return None
-    if cycle_state.reserved_calls or cycle_state.reserved_cost_usd:
-        # An interrupted dispatch may still be spending; that outranks every other refusal.
-        _fail(state, cycle_state, "unsettled-reservation")
-        return None
-    if _now(args) >= lease.deadline:
-        _fail(state, cycle_state, "runtime-exhausted")
-        return None
-    try:
-        authorized = _call_before_deadline(
-            args, lease, lambda: _authorize(args, state, cycle_state, config, _now(args))
-        )
-    except TimeoutError:
-        _park(state, cycle_state, "timeout")
-        return None
-    if isinstance(authorized, str):
-        _park(state, cycle_state, authorized)
-        return None
-    request = _host_request(args, state, config, lease, repo_root, *authorized)
+    request = _authorized_request(
+        args, state, cycle_state, config, lease=lease, repo_root=repo_root
+    )
     if request is None:
-        _park(state, cycle_state, "selected-repair-unavailable")
         return None
     try:
         prior_worktrees = adapter.worktrees(repo_root)
@@ -565,19 +550,71 @@ def _dispatch_host(
         cycle_state.settle(admission, None, max(outcome.calls, admission.calls))
     else:
         cycle_state.settle(admission, outcome.cost_usd, outcome.calls)
+    _settle_run(args, state, cycle_state, config, adapter, outcome)
+    return outcome
+
+
+def _authorized_request(
+    args: argparse.Namespace,
+    state: dict[str, Any],
+    cycle_state: CycleState,
+    config: CycleConfig,
+    *,
+    lease: CycleLease,
+    repo_root: Path,
+) -> HostRequest | None:
+    """The execution-time recheck, and the request built from the binding it returns.
+
+    Returns None after recording why nothing may be dispatched.
+    """
+    if cycle_state.reserved_calls or cycle_state.reserved_cost_usd:
+        # An interrupted dispatch may still be spending; that outranks every other refusal.
+        _fail(state, cycle_state, "unsettled-reservation")
+        return None
+    if _now(args) >= lease.deadline:
+        _fail(state, cycle_state, "runtime-exhausted")
+        return None
+    try:
+        authorized = _call_before_deadline(
+            args, lease, lambda: _authorize(args, state, cycle_state, config, _now(args))
+        )
+    except TimeoutError:
+        _park(state, cycle_state, "timeout")
+        return None
+    if isinstance(authorized, str):
+        _park(state, cycle_state, authorized)
+        return None
+    binding, bound = authorized
+    request = _host_request(
+        args, state, config, lease, repo_root=repo_root, binding=binding, bound=bound
+    )
+    if request is None:
+        _park(state, cycle_state, "selected-repair-unavailable")
+    return request
+
+
+def _settle_run(
+    args: argparse.Namespace,
+    state: dict[str, Any],
+    cycle_state: CycleState,
+    config: CycleConfig,
+    adapter: ClaudeHostAdapter,
+    outcome: HostOutcome,
+) -> None:
+    """Fail a run that did not complete; otherwise settle it by its pull requests."""
     failure = "budget-exhausted" if cycle_state.budget_exceeded else _outcome_failure(outcome)
     if failure is not None:
         _fail(state, cycle_state, failure)
     else:
         _store_cycle_state(state, cycle_state)
     _persist_before_external_call(args, state)
-    found = _add_references(state, cycle_state, adapter, repo_root)
-    if outcome.state == "completed" and failure is None:
-        if found:
-            _check_pull_requests(args, state, cycle_state, config, adapter)
-        else:
-            _park(state, cycle_state, "pull-request-lookup-unavailable")
-    return outcome
+    found = _add_references(state, cycle_state, adapter, _repo_root(args))
+    if outcome.state != "completed" or failure is not None:
+        return
+    if found:
+        _check_pull_requests(args, state, cycle_state, config, adapter)
+    else:
+        _park(state, cycle_state, "pull-request-lookup-unavailable")
 
 
 def _outcome_failure(outcome: HostOutcome) -> str | None:
@@ -596,6 +633,7 @@ def _host_request(
     state: Mapping[str, object],
     config: CycleConfig,
     lease: CycleLease,
+    *,
     repo_root: Path,
     binding: AuthorityBinding,
     bound: Mapping[str, str],
@@ -606,11 +644,12 @@ def _host_request(
     approval = _bound_approval(args, config, bound)
     if not isinstance(brief, RepairBrief) or isinstance(approval, str):
         return None
+    files = ", ".join(sorted(approval.files))
     return HostRequest(
         attempt_id=lease.attempt_id,
         brief=render_brief(brief)[1],
         source_revision=brief.revision,
-        authorized_scope=f"{binding.action} {binding.key}; files: {', '.join(sorted(approval.files))}",
+        authorized_scope=f"{binding.action} {binding.key}; files: {files}",
         repo_root=repo_root,
         deadline=lease.deadline,
     )
