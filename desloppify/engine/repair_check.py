@@ -60,10 +60,11 @@ class Claim:
 
 @dataclass(frozen=True)
 class _CitedBlob:
-    """What the check needs from one cited blob: its line count and its words."""
+    """What the check needs from one cited blob: its line count, words, and text."""
 
     lines: int
     words: frozenset[str]
+    text: str
 
 
 @dataclass(frozen=True)
@@ -106,12 +107,15 @@ def check_concern(root: Path, manifest: SourceManifest, issue: Mapping[str, Any]
 
 
 def check_finding(root: Path, manifest: SourceManifest, issue: Mapping[str, Any]) -> CheckResult:
-    """Check a ``dupes`` finding's own anchors: each function's line range and name."""
-    return _run_claims(root, manifest, _finding_claims(issue, manifest))
+    """Check a ``dupes`` finding's anchors and that its two spans are still duplicates."""
+    return _run_claims(root, manifest, _finding_claims(issue, manifest), _span_failure)
 
 
 def _run_claims(
-    root: Path, manifest: SourceManifest, claims: tuple[Claim, ...] | str
+    root: Path,
+    manifest: SourceManifest,
+    claims: tuple[Claim, ...] | str,
+    extra: Callable[[tuple[Claim, ...], Mapping[str, _CitedBlob]], str | None] | None = None,
 ) -> CheckResult:
     if isinstance(claims, str):
         return CheckResult("unknown", claims, ())
@@ -122,7 +126,23 @@ def _run_claims(
         failure = _claim_failure(claim, sources)
         if failure:
             return CheckResult("fail", failure, claims)
+    failure = extra(claims, sources) if extra else None
+    if failure:
+        return CheckResult("fail", failure, claims)
     return CheckResult("pass", "evidence anchors hold", claims)
+
+
+def _span_failure(claims: tuple[Claim, ...], sources: Mapping[str, _CitedBlob]) -> str | None:
+    """Each name sits on its span's first line; the spans' remaining lines are equal."""
+    bodies = []
+    for claim in claims:
+        citation = claim.citations[0]
+        lines = sources[citation.path].text.splitlines()[citation.start - 1 : citation.end]
+        words = set(_WORD.findall(lines[0])) if lines else set()
+        if any(name not in words for name in claim.identifiers):
+            return "function name is not on its first line"
+        bodies.append([line.strip() for line in lines[1:]])
+    return None if bodies[0] == bodies[1] else "duplicate spans differ"
 
 
 def passing_check(record: object, digest: object) -> bool:
@@ -241,7 +261,7 @@ def _read_cited(
         text = _bounded(root, object_id, deadline, read_blob)
         if isinstance(text, CheckResult):
             return text
-        sources[path] = _CitedBlob(_line_count(text), frozenset(_WORD.findall(text)))
+        sources[path] = _CitedBlob(_line_count(text), frozenset(_WORD.findall(text)), text)
     if time.monotonic() > deadline:
         return CheckResult("unknown", "time bound exceeded", (), transient=True)
     return sources

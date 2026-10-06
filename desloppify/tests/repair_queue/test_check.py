@@ -242,3 +242,22 @@ def test_finding_anchor_failures(tmp_path: Path, alpha: dict, reason: str) -> No
 def test_finding_without_bound_anchors_is_unknown(tmp_path: Path, issue: dict, reason: str) -> None:
     result = _check_finding(_finding_repo(tmp_path, _PAIR), issue)
     assert (result.outcome, result.reason) == ("unknown", reason)
+
+
+@pytest.mark.parametrize(
+    ("body", "reason"),
+    [
+        (
+            "def alpha():\n    return 1\n\n\ndef beta():\n    return alpha()\n",
+            "duplicate spans differ",
+        ),
+        (
+            "def alpha():\n    return 1\n\n\n# other\ndef beta():\n    return 1\n",
+            "function name is not on its first line",
+        ),
+    ],
+    ids=["duplication-removed", "name-moved"],
+)
+def test_finding_spans_must_still_duplicate(tmp_path: Path, body: str, reason: str) -> None:
+    result = _check_finding(_finding_repo(tmp_path, body), _finding())
+    assert (result.outcome, result.reason) == ("fail", reason)
