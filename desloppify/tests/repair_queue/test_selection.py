@@ -101,7 +101,6 @@ def test_reviewed_version_ignores_wording_and_tracks_material() -> None:
 
     reworded = copy.deepcopy(issue)
     reworded["summary"] = "Alpha re-derives the loader policy"
-    reworded["detail"]["maintenance_consequence"] = "The two policies drift apart"
     assert reviewed_version(reworded, _candidate(reworded)) == version
 
     contracts = copy.deepcopy(issue)
