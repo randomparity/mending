@@ -539,7 +539,7 @@ def _dispatch_host(
     _store_cycle_state(state, cycle_state)
     _persist_before_external_call(args, state)
     outcome = adapter.run(request, admission)
-    if outcome.reason == "timeout" and request.deadline < lease.deadline:
+    if outcome.reason in {"timeout", "runtime-exhausted"} and request.deadline < lease.deadline:
         outcome = replace(outcome, reason="authority-expired")  # the approval ran out first
     if outcome.state == "parked":
         cycle_state.dispatch = None
@@ -654,7 +654,7 @@ def _host_request(
         source_revision=brief.revision,
         authorized_scope=f"{binding.action} {binding.key}; files: {files}",
         repo_root=repo_root,
-        # The approval's expiry also bounds the run, so no work continues under expired authority.
+        # The approval's expiry also bounds the run: the host is not launched or is stopped there.
         deadline=min(lease.deadline, approval.expires_at),
     )
 

@@ -162,7 +162,7 @@ class ClaudeHostAdapter:
 
     def run(self, request: HostRequest, admission: BudgetAdmission) -> HostOutcome:
         """Launch the host within an admitted budget and establish its worker tree's state."""
-        preflight = _preflight(self._config, request, datetime.now(request.deadline.tzinfo))
+        preflight = _preflight(self._config, request)
         if isinstance(preflight, HostOutcome):
             return preflight
         executable, skills_dir, version = preflight
@@ -313,9 +313,7 @@ def _watch(
         time.sleep(_POLL_SECONDS)
 
 
-def _preflight(
-    config: CycleConfig, request: HostRequest, now: datetime
-) -> tuple[str, str, str] | HostOutcome:
+def _preflight(config: CycleConfig, request: HostRequest) -> tuple[str, str, str] | HostOutcome:
     if config.model is None:
         return HostOutcome("parked", "missing-model")
     executable = shutil.which(config.host_executable)
@@ -330,11 +328,12 @@ def _preflight(
         return HostOutcome("parked", "missing-host-skills")
     if manifest.get("name") != "adept" or manifest.get("version") != version:
         return HostOutcome("parked", "host-skills-mismatch")
-    if now >= request.deadline:
-        return HostOutcome("parked", "runtime-exhausted")
     executable = os.path.abspath(executable)
     if not _limits_enforceable(executable):
         return HostOutcome("parked", "unenforceable-limit")
+    # Checked after the probes, which can take seconds, so the launch follows it closely.
+    if datetime.now(request.deadline.tzinfo) >= request.deadline:
+        return HostOutcome("parked", "runtime-exhausted")
     return executable, skills_dir, version
 
 

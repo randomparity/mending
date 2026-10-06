@@ -51,7 +51,8 @@ def _world() -> Iterator[dict]:
 
 
 def _options(argv: list[str]) -> dict[str, str]:
-    return {flag: value for flag, value in zip(argv, argv[1:], strict=False) if flag.startswith("--")}
+    pairs = zip(argv, argv[1:], strict=False)
+    return {flag: value for flag, value in pairs if flag.startswith("--")}
 
 
 def _pick(item: dict, fields: str) -> dict:
@@ -151,6 +152,7 @@ def _step(step: dict, attempt: str) -> int | None:
 
 def _claude(argv: list[str]) -> int:
     if argv == ["--version"]:
+        (WORLD / "probed").touch()
         if (WORLD / "hold-probe").exists():  # hold Mending between dispatch intent and launch
             (WORLD / "probing").touch()
             _wait_for_go()

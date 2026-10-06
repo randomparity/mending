@@ -92,6 +92,7 @@ class _World:
         self.repo = root / "repo"
         self.offset = _next_noon_offset()
         self.late = False  # see the late_clock fixture
+        self.late_after = "pids.jsonl"
         self.source: _Source = _Source()
         self.check: Callable[..., CheckResult] = lambda issue, manifest: PASS
         self.config: dict = {}
@@ -135,7 +136,7 @@ class _World:
 
     def now(self, tz=UTC) -> datetime:
         """The one test clock, shared by the cycle and the adapter."""
-        late = self.late and (self.root / "pids.jsonl").exists()
+        late = self.late and (self.root / self.late_after).exists()
         return (datetime.now(UTC) + self.offset + (timedelta(hours=1) if late else timedelta(0))
                 ).astimezone(tz)
 
@@ -281,7 +282,7 @@ def short_grace(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture
 def late_clock(world: _World) -> None:
-    """The test clock jumps an hour once the host has spawned a child.
+    """The test clock jumps an hour once the host has spawned a child (``late_after``).
 
     A deadline then passes at a known point of the run instead of after a
     real-time margin that a slow machine could miss.
@@ -402,6 +403,17 @@ def test_approval_expiry_stops_a_running_host(world, short_grace, late_clock) ->
     assert world.cycle()["dispatch"]["outcome"] == "stopped"
     assert len(world.spawned()) == 1
     assert world.processes() == []
+
+
+def test_approval_expiring_during_the_host_probes_never_launches(world, late_clock) -> None:
+    world.late_after = "probed"  # the jump lands while the adapter probes the host
+    expires = world.now() + timedelta(minutes=30)
+    world.config["authority"] = world.authority(expires_at=expires.isoformat())
+
+    assert "Repair cycle parked: authority-expired." in world.run()
+
+    assert world.cycle()["dispatch"] is None
+    assert world.launches() == []
 
 
 # 5. Stale evidence or base.
