@@ -69,7 +69,7 @@ def test_render_followup_nudges_prints_subjective_summary(monkeypatch, capsys) -
     )
 
     out = capsys.readouterr().out
-    assert "North star: strict 90.0/100" in out
+    assert "Strict score: 90.0/100 (configured target: 95.0)" in out
     assert "integrity check" in out
     assert "Subjective:" in out
     assert "below target" in out

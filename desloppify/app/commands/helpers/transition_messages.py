@@ -115,9 +115,10 @@ def _switch_hermes_model(phase: str) -> bool:
 
 
 _AUTOREPLY_PROMPT = (
-    "You are an autonomous code repair agent working through a desloppify queue. "
+    "You are a code repair agent working through desloppify tasks. "
     "After each task, run the next desloppify command as instructed. "
-    "Do not stop or ask for confirmation — keep going until the queue is empty."
+    "Stop when the work you were given is done or nothing needs changing; "
+    "a no-op is a successful result."
 )
 
 

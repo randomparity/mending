@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from uuid import uuid4
@@ -12,6 +12,7 @@ DEFAULT_RUNTIME_SECONDS = 90 * 60
 DEFAULT_CALL_LIMIT = 100
 DEFAULT_OBSERVATION_CALL_LIMIT = 3
 DEFAULT_OBSERVATION_MINUTES = 5
+_DISPATCH_PHASES = frozenset({"intent", "returned", "unknown"})
 
 
 @dataclass(frozen=True)
@@ -144,6 +145,78 @@ class BudgetAdmission:
     calls: int
 
 
+@dataclass(frozen=True)
+class DispatchRecord:
+    """A host dispatch for the current attempt: its intent, then what it left behind.
+
+    ``phase`` is ``intent`` (persisted before launch), ``returned`` (the adapter
+    returned an outcome), or ``unknown`` (a lease persisted before dispatch
+    records existed, whose dispatch may or may not have happened).
+    """
+
+    attempt_id: str
+    phase: str
+    session_id: str | None = None
+    repository: str | None = None
+    repo_root: str | None = None
+    prior_worktrees: tuple[str, ...] = ()
+    outcome: str | None = None
+    pull_requests: tuple[str, ...] = ()
+    issues: tuple[str, ...] = ()
+    worktrees: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.attempt_id:
+            raise ValueError("dispatch attempt ID is required")
+        if self.phase not in _DISPATCH_PHASES:
+            raise ValueError(f"dispatch phase {self.phase!r} is invalid")
+
+    @classmethod
+    def from_mapping(cls, mapping: Mapping[str, object]) -> DispatchRecord:
+        """Decode one previously persisted dispatch record."""
+        return cls(
+            attempt_id=_required_text(mapping, "attempt_id"),
+            phase=_required_text(mapping, "phase"),
+            session_id=_optional_text(mapping, "session_id"),
+            repository=_optional_text(mapping, "repository"),
+            repo_root=_optional_text(mapping, "repo_root"),
+            prior_worktrees=_texts(mapping, "prior_worktrees"),
+            outcome=_optional_text(mapping, "outcome"),
+            pull_requests=_texts(mapping, "pull_requests"),
+            issues=_texts(mapping, "issues"),
+            worktrees=_texts(mapping, "worktrees"),
+        )
+
+    def to_mapping(self) -> dict[str, object]:
+        """Return JSON-safe dispatch facts."""
+        return {
+            "attempt_id": self.attempt_id,
+            "phase": self.phase,
+            "session_id": self.session_id,
+            "repository": self.repository,
+            "repo_root": self.repo_root,
+            "prior_worktrees": list(self.prior_worktrees),
+            "outcome": self.outcome,
+            "pull_requests": list(self.pull_requests),
+            "issues": list(self.issues),
+            "worktrees": list(self.worktrees),
+        }
+
+    def with_references(
+        self,
+        pull_requests: tuple[str, ...],
+        issues: tuple[str, ...],
+        worktrees: tuple[str, ...],
+    ) -> DispatchRecord:
+        """Add found references to the recorded ones; a later lookup never removes one."""
+        return replace(
+            self,
+            pull_requests=_union(self.pull_requests, pull_requests),
+            issues=_union(self.issues, issues),
+            worktrees=_union(self.worktrees, worktrees),
+        )
+
+
 @dataclass
 class CycleState:
     """The minimal state needed to reconcile one external scheduler attempt."""
@@ -159,6 +232,8 @@ class CycleState:
     consumed_calls: int = 0
     reserved_cost_usd: Decimal = Decimal(0)
     reserved_calls: int = 0
+    dispatch: DispatchRecord | None = None
+    attempt_history: list[dict[str, object]] = field(default_factory=list)
 
     @classmethod
     def empty(cls) -> CycleState:
@@ -184,8 +259,9 @@ class CycleState:
             if not isinstance(merge_day, str):
                 raise ValueError("merge permit day is invalid")
             _parse_day_key(merge_day)
+        lease = CycleLease.from_mapping(lease_value) if lease_value else None
         return cls(
-            current_lease=CycleLease.from_mapping(lease_value) if lease_value else None,
+            current_lease=lease,
             authoritative_receipt=dict(receipt_value) if receipt_value else None,
             parked_reason=parked_reason,
             merge_permit_day=merge_day,
@@ -196,6 +272,8 @@ class CycleState:
             consumed_calls=_count(mapping, "consumed_calls"),
             reserved_cost_usd=_cost(mapping, "reserved_cost_usd"),
             reserved_calls=_count(mapping, "reserved_calls"),
+            dispatch=_dispatch(mapping, lease),
+            attempt_history=_history(mapping),
         )
 
     def to_mapping(self) -> dict[str, object]:
@@ -212,12 +290,16 @@ class CycleState:
             "consumed_calls": self.consumed_calls,
             "reserved_cost_usd": str(self.reserved_cost_usd),
             "reserved_calls": self.reserved_calls,
+            "dispatch": self.dispatch.to_mapping() if self.dispatch else None,
+            "attempt_history": list(self.attempt_history),
         }
 
     def begin(self, config: CycleConfig, now: datetime, *, attempt_id: str | None = None) -> CycleLease | None:
         """Persist a new daily lease only when no active or same-day attempt exists."""
         if self.current_lease is not None and not self._may_replace_lease(now.date()):
             return None
+        if self.current_lease is not None:
+            self.attempt_history.append(self._archive(self.current_lease))
         self.current_lease = CycleLease.create(config, now, attempt_id=attempt_id)
         self.authoritative_receipt = None
         self.parked_reason = None
@@ -226,7 +308,23 @@ class CycleState:
         self.disposed_attempt = None
         self.consumed_cost_usd = self.reserved_cost_usd = Decimal(0)
         self.consumed_calls = self.reserved_calls = 0
+        self.dispatch = None
         return self.current_lease
+
+    def _archive(self, lease: CycleLease) -> dict[str, object]:
+        return {
+            "lease": lease.to_mapping(),
+            "authoritative_receipt": self.authoritative_receipt,
+            "parked_reason": self.parked_reason,
+            "attempt_failure": self.attempt_failure,
+            "disposed": self.disposed,
+            "observation_calls": self.observation_calls,
+            "consumed_cost_usd": str(self.consumed_cost_usd),
+            "consumed_calls": self.consumed_calls,
+            "reserved_cost_usd": str(self.reserved_cost_usd),
+            "reserved_calls": self.reserved_calls,
+            "dispatch": self.dispatch.to_mapping() if self.dispatch else None,
+        }
 
     def admit(self) -> BudgetAdmission | None:
         """Reserve the lease's whole remaining budget, or None when nothing remains."""
@@ -349,6 +447,50 @@ def _optional_text(mapping: Mapping[str, object], key: str) -> str | None:
     return value.strip()
 
 
+def _texts(mapping: Mapping[str, object], key: str) -> tuple[str, ...]:
+    value = mapping.get(key, [])
+    if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
+        raise ValueError(f"{key} must be a list of non-empty strings")
+    return tuple(value)
+
+
+def _union(recorded: tuple[str, ...], found: tuple[str, ...]) -> tuple[str, ...]:
+    return recorded + tuple(item for item in dict.fromkeys(found) if item not in recorded)
+
+
+def _dispatch(mapping: Mapping[str, object], lease: CycleLease | None) -> DispatchRecord | None:
+    if "dispatch" not in mapping:
+        # State from before dispatch records: whether this lease dispatched is unknown.
+        return DispatchRecord(lease.attempt_id, "unknown") if lease else None
+    value = mapping["dispatch"]
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ValueError("dispatch record is invalid")
+    record = DispatchRecord.from_mapping(value)
+    if lease is None or record.attempt_id != lease.attempt_id:
+        raise ValueError("dispatch record does not match the current lease")
+    return record
+
+
+def _history(mapping: Mapping[str, object]) -> list[dict[str, object]]:
+    value = mapping.get("attempt_history", [])
+    if not isinstance(value, list):
+        raise ValueError("attempt history must be a list")
+    entries: list[dict[str, object]] = []
+    for entry in value:
+        if not isinstance(entry, Mapping) or not isinstance(entry.get("lease"), Mapping):
+            raise ValueError("attempt history entry needs a lease")
+        CycleLease.from_mapping(entry["lease"])
+        dispatch = entry.get("dispatch")
+        if dispatch is not None:
+            if not isinstance(dispatch, Mapping):
+                raise ValueError("attempt history dispatch is invalid")
+            DispatchRecord.from_mapping(dispatch)
+        entries.append(dict(entry))
+    return entries
+
+
 def _count(mapping: Mapping[str, object], key: str) -> int:
     value = mapping.get(key, 0)
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
@@ -398,6 +540,7 @@ __all__ = [
     "CycleConfig",
     "CycleLease",
     "CycleState",
+    "DispatchRecord",
     "DEFAULT_CALL_LIMIT",
     "DEFAULT_RUNTIME_SECONDS",
 ]
