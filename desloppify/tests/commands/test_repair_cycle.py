@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -14,7 +15,6 @@ import pytest
 from desloppify.app.commands import repair_cycle
 from desloppify.app.commands.repair_cycle import (
     AdeptReceipt,
-    AuthorityProof,
     _dispatch_host,
     cmd_repair_cycle,
 )
@@ -27,40 +27,63 @@ from desloppify.app.commands.repair_cycle_host import (
 )
 from desloppify.base.exception_sets import CommandError
 from desloppify.cli import create_parser
+from desloppify.engine.repair_authority import (
+    AuthorityBinding,
+    UnsupportedAuthority,
+    authority_from_mapping,
+    check_authority,
+)
+from desloppify.engine.repair_brief import reviewed_version
 from desloppify.engine.repair_cycle import (
     BudgetAdmission,
     CycleConfig,
     CycleState,
     DispatchRecord,
 )
+from desloppify.engine.repair_manifest import AnalysisUnknown
+from desloppify.engine.repair_queue import candidate_from_issue, concern_key
+from desloppify.tests.commands.test_repair_queue import (
+    BASE,
+    EVIDENCE,
+    KEY,
+    PASS,
+    REPOSITORY,
+    _revalidated_state,
+    _Source,
+)
 
-REPOSITORY = "owner/repository"
 NOW = datetime(2026, 9, 13, 9, 0, tzinfo=UTC)
+ITEM = "concerns::item"
+
+
+def _version() -> str:
+    issue = _revalidated_state()["work_items"][ITEM]
+    version = reviewed_version(issue, candidate_from_issue(issue, REPOSITORY))
+    assert version is not None
+    return version
+
+
+VERSION = _version()
 
 
 class _Client:
     def __init__(self) -> None:
-        self.verifications = 0
         self.reconciliations = 0
         self.selections = 0
-        self.proof = AuthorityProof(REPOSITORY, "policy", "7", "proof")
+        self.bindings: list[AuthorityBinding] = []
         self.receipt: AdeptReceipt | None = None
         self.select_error: Exception | None = None
-
-    def verify_authority(self, repository: str) -> AuthorityProof:
-        self.verifications += 1
-        assert repository == REPOSITORY
-        return self.proof
 
     def reconcile(self, repository: str, lease) -> AdeptReceipt:
         self.reconciliations += 1
         assert repository == REPOSITORY
         return self._receipt(lease, state="terminal")
 
-    def select(self, config, lease, authority) -> AdeptReceipt:
+    def select(self, config, lease, binding) -> AdeptReceipt:
         self.selections += 1
         assert config.repository == REPOSITORY
-        assert authority == self.proof
+        assert isinstance(binding, AuthorityBinding)
+        self.bindings.append(binding)
         if self.select_error is not None:
             raise self.select_error
         return self._receipt(lease, state="terminal")
@@ -77,12 +100,33 @@ class _Client:
         )
 
 
+def _approval(**overrides: object) -> dict[str, object]:
+    approval: dict[str, object] = {
+        "key": KEY,
+        "reviewed_brief_version": VERSION,
+        "evidence_digest": EVIDENCE,
+        "files": ["src/impl.py"],
+        "actions": ["repair"],
+        "call_limit": 100,
+        "cost_cap_usd": "2.00",
+        "runtime_minutes": 90,
+        "expires_at": (NOW + timedelta(days=30)).isoformat(),
+    }
+    approval.update(overrides)
+    return approval
+
+
+def _authority(revision: str = "r1", **overrides: object) -> dict[str, object]:
+    return {"schema": 1, "revision": revision, "approvals": [_approval(**overrides)]}
+
+
 def _config(**overrides: object) -> dict[str, object]:
     result: dict[str, object] = {
         "enabled": True,
         "repository": REPOSITORY,
         "model": "orchestrator-model",
         "cost_cap_usd": "2.00",
+        "authority": _authority(),
     }
     result.update(overrides)
     return result
@@ -96,14 +140,20 @@ def _args(state_data: dict | None, client: _Client, **overrides: object) -> argp
         "state": None,
         "state_data": state_data,
         "client": client,
+        "source": _Source(),
+        "check": lambda issue, manifest: PASS,
         "now": NOW,
     }
     values.update(overrides)
     return argparse.Namespace(**values)
 
 
+BOUND = {"issue_id": ITEM, "key": KEY, "revision": "r1"}
+LINK = {**BASE, "number": 7, "url": "https://example.invalid/issues/7", "state": "open"}
+
+
 def _state() -> dict:
-    return {}
+    return _revalidated_state(github_repair=dict(LINK))
 
 
 def test_parser_wires_one_shot_repair_cycle() -> None:
@@ -119,27 +169,43 @@ def test_terminal_attempt_restarts_without_second_selection() -> None:
     client = _Client()
 
     cmd_repair_cycle(_args(state, client))
-    cmd_repair_cycle(_args(state, client))
+    stale = _Source(AnalysisUnknown("git unavailable"))
+    cmd_repair_cycle(_args(state, client, source=stale))
 
     assert client.selections == 1
     assert client.reconciliations == 0
+    assert stale.calls == 0
     assert state["repair_cycle"]["authoritative_receipt"]["state"] == "terminal"
+    assert state["repair_cycle"]["parked_reason"] == "daily-attempt-complete"
 
 
-def test_lease_is_persisted_before_authority_verification(tmp_path) -> None:
+def test_selection_binds_authority_before_client_selection(tmp_path) -> None:
     state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps(_state()))
 
     class _PersistingClient(_Client):
-        def verify_authority(self, repository: str) -> AuthorityProof:
-            persisted = json.loads(state_path.read_text())
-            assert persisted["repair_cycle"]["current_lease"]["attempt_id"]
-            return super().verify_authority(repository)
+        def select(self, config, lease, binding) -> AdeptReceipt:
+            persisted = json.loads(state_path.read_text())["repair_cycle"]
+            assert persisted["current_lease"]["attempt_id"] == lease.attempt_id
+            assert persisted["authority"] == BOUND
+            return super().select(config, lease, binding)
 
-    cmd_repair_cycle(_args(None, _PersistingClient(), state=str(state_path)))
+    client = _PersistingClient()
+    cmd_repair_cycle(_args(None, client, state=str(state_path)))
+
+    assert client.selections == 1
+    binding = client.bindings[0]
+    assert (binding.key, binding.reviewed_brief_version, binding.evidence_digest) == (
+        KEY,
+        VERSION,
+        EVIDENCE,
+    )
+    assert (binding.files, binding.action) == (frozenset({"src/impl.py"}), "repair")
 
 
 def test_process_lock_allows_only_one_selection_for_concurrent_invocations(tmp_path) -> None:
     state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps(_state()))
 
     class _BlockingClient(_Client):
         def __init__(self) -> None:
@@ -175,35 +241,11 @@ def test_missing_model_or_cost_cap_parks_without_external_calls() -> None:
 
     cmd_repair_cycle(_args(state, client, config_data=_config(model=None)))
 
-    assert client.verifications == 0
     assert client.selections == 0
     assert state["repair_cycle"]["parked_reason"] == "missing-model"
 
 
-def test_invalid_authority_proof_parks_before_selection() -> None:
-    state = _state()
-    client = _Client()
-    client.proof = AuthorityProof("other/repository", "policy", "7", "proof")
-
-    cmd_repair_cycle(_args(state, client))
-
-    assert client.selections == 0
-    assert state["repair_cycle"]["parked_reason"] == "invalid-authority-proof"
-
-
 def test_malformed_adapter_results_park_before_attribute_access() -> None:
-    class _MalformedAuthorityClient(_Client):
-        def verify_authority(self, repository: str):
-            self.verifications += 1
-            return "not-a-proof"
-
-    malformed_authority_state = _state()
-    malformed_authority_client = _MalformedAuthorityClient()
-    cmd_repair_cycle(_args(malformed_authority_state, malformed_authority_client))
-
-    assert malformed_authority_client.selections == 0
-    assert malformed_authority_state["repair_cycle"]["parked_reason"] == "invalid-authority-proof"
-
     class _MalformedReceiptClient(_Client):
         def select(self, config, lease, authority):
             self.selections += 1
@@ -246,7 +288,7 @@ def test_overdue_adapter_result_is_recorded_as_runtime_failure() -> None:
         def select(self, config, lease, authority) -> AdeptReceipt:
             return self._receipt(lease, state="terminal")
 
-    times = iter((NOW, NOW, NOW, NOW + timedelta(minutes=2)))
+    times = iter((NOW, NOW, NOW + timedelta(minutes=2)))
     state = _state()
     cmd_repair_cycle(
         _args(
@@ -400,6 +442,7 @@ def test_only_an_exact_replayed_merge_receipt_reuses_a_daily_permit() -> None:
     )
     cycle_state.record_receipt(initial_receipt.to_mapping())
     cycle_state.consume_merge_permit(lease)
+    cycle_state.authority = BOUND
     state["repair_cycle"] = cycle_state.to_mapping()
 
     client = _Client()
@@ -440,7 +483,6 @@ def test_expired_lease_is_observed_without_execution() -> None:
     cmd_repair_cycle(_args(state, client, now=NOW + timedelta(minutes=2)))
 
     assert client.reconciliations == 1
-    assert client.verifications == 0
     assert client.selections == 0
     recorded = state["repair_cycle"]
     assert recorded["authoritative_receipt"]["state"] == "terminal"
@@ -528,7 +570,7 @@ def test_failed_attempt_requires_disposition_before_new_work() -> None:
     next_day = NOW + timedelta(days=1)
     cmd_repair_cycle(_args(state, client, now=next_day))
 
-    assert (client.reconciliations, client.verifications, client.selections) == (1, 0, 0)
+    assert (client.reconciliations, client.selections) == (1, 0)
     assert state["repair_cycle"]["parked_reason"] == "disposition-required"
     assert state["repair_cycle"]["current_lease"]["attempt_id"] == "recorded-attempt"
 
@@ -562,6 +604,11 @@ def test_parser_wires_dispose_attempt() -> None:
     )
 
     assert args.dispose_attempt == "a1"
+    assert args.confirm_stopped is False
+    confirmed = create_parser().parse_args(
+        ["repair-cycle", "--config", "c.json", "--dispose-attempt", "a1", "--confirm-stopped"]
+    )
+    assert confirmed.confirm_stopped is True
 
 
 def test_deadline_timer_interrupts_before_adapter_selection(monkeypatch) -> None:
@@ -576,7 +623,6 @@ def test_deadline_timer_interrupts_before_adapter_selection(monkeypatch) -> None
 
     cmd_repair_cycle(_args(state, client))
 
-    assert client.verifications == 0
     assert client.selections == 0
     assert state["repair_cycle"]["parked_reason"] == "timeout"
 
@@ -629,10 +675,14 @@ def test_legacy_state_decodes_and_new_fields_validate() -> None:
             "consumed_calls",
             "reserved_cost_usd",
             "reserved_calls",
+            "authority",
         }
     }
 
     decoded = CycleState.from_mapping(legacy)
+    assert decoded.authority is None
+    for malformed in ({"issue_id": ITEM, "key": KEY}, {**BOUND, "revision": 1}, "bound"):
+        assert CycleState.from_mapping({**legacy, "authority": malformed}).authority is None
 
     assert decoded.current_lease == lease
     assert (decoded.observation_calls, decoded.attempt_failure, decoded.disposed_attempt) == (
@@ -725,10 +775,14 @@ def test_begin_archives_replaced_attempt() -> None:
             "reserved_cost_usd": "0",
             "reserved_calls": 0,
             "dispatch": DispatchRecord("a1", "returned", "s", outcome="failed").to_mapping(),
+            "authority": None,
         }
     ]
     round_trip = CycleState.from_mapping(json.loads(json.dumps(cycle_state.to_mapping())))
     assert round_trip.attempt_history == cycle_state.attempt_history
+
+
+CONFIG = CycleConfig.from_mapping(_config())
 
 
 def _budget_state() -> CycleState:
@@ -820,6 +874,8 @@ def _leased(state: dict) -> tuple[CycleState, HostRequest]:
     cycle_state = _budget_state()
     lease = cycle_state.current_lease
     assert lease is not None
+    cycle_state.authority = BOUND
+    state.update(_state())
     state["repair_cycle"] = cycle_state.to_mapping()
     request = HostRequest(
         attempt_id=lease.attempt_id,
@@ -857,7 +913,8 @@ def test_dispatch_budget_outcomes(outcome, consumed, failure, parked) -> None:
     cycle_state, request = _leased(state)
     host = _FakeHost(outcome)
 
-    assert _dispatch_host(_args(state, _Client()), state, cycle_state, host, request) == outcome
+    args = _args(state, _Client())
+    assert _dispatch_host(args, state, cycle_state, CONFIG, host, request) == outcome
 
     assert host.admissions == [BudgetAdmission(Decimal("2.00"), 10)]
     recorded = state["repair_cycle"]
@@ -874,14 +931,15 @@ def test_dispatch_refuses_without_admission() -> None:
     cycle_state, request = _leased(state)
     host = _FakeHost()
     late = _args(state, _Client(), now=request.deadline)
-    assert _dispatch_host(late, state, cycle_state, host, request) is None
+    assert _dispatch_host(late, state, cycle_state, CONFIG, host, request) is None
     assert state["repair_cycle"]["attempt_failure"] == "runtime-exhausted"
     assert cycle_state.reserved_calls == 0
 
     state = _state()
     cycle_state, request = _leased(state)
     cycle_state.consumed_calls = 10
-    assert _dispatch_host(_args(state, _Client()), state, cycle_state, host, request) is None
+    args = _args(state, _Client())
+    assert _dispatch_host(args, state, cycle_state, CONFIG, host, request) is None
     assert state["repair_cycle"]["attempt_failure"] == "budget-exhausted"
     assert host.admissions == []
 
@@ -890,7 +948,7 @@ def test_dispatch_refuses_without_admission() -> None:
         replace(request, deadline=request.deadline + timedelta(seconds=1)),
     ):
         with pytest.raises(ValueError, match="current lease"):
-            _dispatch_host(_args(state, _Client()), state, cycle_state, host, mismatched)
+            _dispatch_host(_args(state, _Client()), state, cycle_state, CONFIG, host, mismatched)
 
 
 def test_dispatch_persists_reservation_before_launch(tmp_path) -> None:
@@ -903,7 +961,7 @@ def test_dispatch_persists_reservation_before_launch(tmp_path) -> None:
 
     with repair_cycle._locked_state(args) as state:
         cycle_state, request = _leased(state)
-        _dispatch_host(args, state, cycle_state, _FakeHost(on_run=read_disk), request)
+        _dispatch_host(args, state, cycle_state, CONFIG, _FakeHost(on_run=read_disk), request)
 
     assert (seen[0]["reserved_cost_usd"], seen[0]["reserved_calls"]) == ("2.00", 10)
     assert seen[0]["dispatch"] == DispatchRecord(
@@ -920,14 +978,15 @@ def test_interrupted_dispatch_keeps_reservation(tmp_path) -> None:
 
     with pytest.raises(KeyboardInterrupt), repair_cycle._locked_state(args) as state:
         cycle_state, request = _leased(state)
-        _dispatch_host(args, state, cycle_state, _FakeHost(error=KeyboardInterrupt()), request)
+        interrupted = _FakeHost(error=KeyboardInterrupt())
+        _dispatch_host(args, state, cycle_state, CONFIG, interrupted, request)
 
     host = _FakeHost()
     after_deadline = _args(None, _Client(), state=str(state_path), now=request.deadline)
     with repair_cycle._locked_state(after_deadline) as state:
         restarted = repair_cycle._cycle_state(state)
         assert (restarted.reserved_cost_usd, restarted.reserved_calls) == (Decimal("2.00"), 10)
-        assert _dispatch_host(after_deadline, state, restarted, host, request) is None
+        assert _dispatch_host(after_deadline, state, restarted, CONFIG, host, request) is None
 
     assert host.admissions == []
     recorded = json.loads(state_path.read_text())["repair_cycle"]
@@ -945,7 +1004,7 @@ def test_returned_dispatch_is_persisted_before_reference_lookup(tmp_path) -> Non
 
     with repair_cycle._locked_state(args) as state:
         cycle_state, request = _leased(state)
-        _dispatch_host(args, state, cycle_state, host, request)
+        _dispatch_host(args, state, cycle_state, CONFIG, host, request)
 
     assert seen[0]["dispatch"]["phase"] == "returned"
     assert seen[0]["dispatch"]["outcome"] == "completed"
@@ -959,14 +1018,14 @@ def test_dispatch_record_follows_the_outcome() -> None:
     state = _state()
     cycle_state, request = _leased(state)
     parked = _FakeHost(HostOutcome("parked", "missing-host"))
-    assert _dispatch_host(_args(state, _Client()), state, cycle_state, parked, request)
+    assert _dispatch_host(_args(state, _Client()), state, cycle_state, CONFIG, parked, request)
     assert cycle_state.dispatch is None
     assert parked.lookups == []
 
     state = _state()
     cycle_state, request = _leased(state)
     offline = _FakeHost(found=HostLookupError("gh exited 1"))
-    assert _dispatch_host(_args(state, _Client()), state, cycle_state, offline, request)
+    assert _dispatch_host(_args(state, _Client()), state, cycle_state, CONFIG, offline, request)
     assert cycle_state.dispatch is not None
     assert (cycle_state.dispatch.phase, cycle_state.dispatch.pull_requests) == ("returned", ())
     assert state["repair_cycle"]["parked_reason"] is None
@@ -974,7 +1033,8 @@ def test_dispatch_record_follows_the_outcome() -> None:
     state = _state()
     cycle_state, request = _leased(state)
     no_git = _FakeHost(snapshot=HostLookupError("git exited 128"))
-    assert _dispatch_host(_args(state, _Client()), state, cycle_state, no_git, request) is None
+    args = _args(state, _Client())
+    assert _dispatch_host(args, state, cycle_state, CONFIG, no_git, request) is None
     assert no_git.admissions == []
     assert (cycle_state.dispatch, cycle_state.reserved_calls) == (None, 0)
     assert state["repair_cycle"]["parked_reason"] == "dispatch-lookup-unavailable"
@@ -1012,7 +1072,7 @@ def test_replay_never_relaunches(phase, reserved, alive, found, failure, parked)
     host = _FakeHost(alive=alive, found=lookup)
     late = _args(state, _Client(), now=request.deadline + timedelta(days=1))
 
-    assert _dispatch_host(late, state, cycle_state, host, request) is None
+    assert _dispatch_host(late, state, cycle_state, CONFIG, host, request) is None
 
     assert host.admissions == []
     assert (state["repair_cycle"]["attempt_failure"], state["repair_cycle"]["parked_reason"]) == (
@@ -1030,3 +1090,344 @@ def test_replay_never_relaunches(phase, reserved, alive, found, failure, parked)
     assert record["pull_requests"][0] == "https://example.invalid/pull/0"
     assert len(record["pull_requests"]) == (1 if found == "error" else 2)
     assert record["worktrees"] == ([] if phase == "unknown" or found == "error" else ["/wt"])
+
+
+def _binding(**overrides: object) -> AuthorityBinding:
+    values: dict[str, object] = {
+        "repository": REPOSITORY,
+        "key": KEY,
+        "reviewed_brief_version": VERSION,
+        "evidence_digest": EVIDENCE,
+        "files": frozenset({"src/impl.py"}),
+        "action": "repair",
+        "call_limit": 100,
+        "cost_cap_usd": Decimal("2.00"),
+        "runtime_seconds": 90 * 60,
+    }
+    values.update(overrides)
+    return AuthorityBinding(**values)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("authority", "binding", "bound", "reason"),
+    [
+        (_authority(), {}, False, None),
+        (_authority("r2"), {}, True, None),
+        (None, {}, False, "authority-missing"),
+        (_authority(key="other"), {}, False, "authority-missing"),
+        (None, {}, True, "authority-revoked"),
+        (_authority(key="other"), {}, True, "authority-revoked"),
+        (_authority(revoked=True), {}, False, "authority-revoked"),
+        (_authority(), {"repository": "other/repository"}, False, "authority-mismatch"),
+        (_authority(), {"reviewed_brief_version": "f" * 64}, False, "authority-mismatch"),
+        (_authority(), {"evidence_digest": "f" * 64}, False, "authority-mismatch"),
+        (_authority(expires_at=NOW.isoformat()), {}, False, "authority-expired"),
+        (_authority(), {"action": "merge"}, False, "authority-scope-exceeded"),
+        (_authority(), {"files": frozenset({"src/impl.py", "x.py"})}, False,
+         "authority-scope-exceeded"),
+        (_authority(), {"call_limit": 101}, False, "authority-limits-exceeded"),
+        (_authority(), {"cost_cap_usd": Decimal("2.01")}, False, "authority-limits-exceeded"),
+        (_authority(), {"runtime_seconds": 90 * 60 + 1}, False, "authority-limits-exceeded"),
+    ],
+)
+def test_check_authority_reasons(authority, binding, bound, reason) -> None:
+    decoded = authority_from_mapping(REPOSITORY, authority)
+
+    assert check_authority(decoded, _binding(**binding), NOW, bound) == reason
+
+
+def test_authority_decoding() -> None:
+    assert authority_from_mapping(REPOSITORY, None) is None
+    with pytest.raises(UnsupportedAuthority):
+        authority_from_mapping(REPOSITORY, {**_authority(), "schema": 2})
+    with pytest.raises(UnsupportedAuthority):
+        authority_from_mapping(REPOSITORY, _authority(actions=["repair", "merge"]))
+    duplicate = {**_authority(), "approvals": [_approval(), _approval()]}
+    for bad in (
+        "authority",
+        {**_authority(), "approvals": {}},
+        {**_authority(), "revision": ""},
+        duplicate,
+        _authority(expires_at="2026-09-13T09:00:00"),
+        _authority(expires_at="soon"),
+        _authority(files=[]),
+        _authority(call_limit=True),
+        _authority(cost_cap_usd="0"),
+        _authority(cost_cap_usd=1.5),
+        _authority(revoked="no"),
+    ):
+        with pytest.raises(ValueError):
+            authority_from_mapping(REPOSITORY, bad)
+
+
+@pytest.mark.parametrize(
+    ("state", "overrides", "reason"),
+    [
+        (_revalidated_state(), {}, "selected-repair-unavailable"),
+        (_revalidated_state(github_repair={**LINK, "state": "closed"}), {},
+         "selected-repair-unavailable"),
+        (None, {"config_data": _config(authority="yes")}, "authority-invalid"),
+        (None, {"config_data": _config(authority={**_authority(), "schema": 2})},
+         "authority-unsupported"),
+        (None, {"config_data": _config(authority=None)}, "authority-missing"),
+        (None, {"config_data": _config(authority=_authority(reviewed_brief_version="f" * 64))},
+         "authority-mismatch"),
+        (None, {"config_data": _config(authority=_authority(revoked=True))}, "authority-revoked"),
+        (None, {"config_data": _config(authority=_authority(expires_at=NOW.isoformat()))},
+         "authority-expired"),
+        (None, {"config_data": _config(authority=_authority(files=["src/other.py"]))},
+         "authority-scope-exceeded"),
+        (None, {"config_data": _config(call_limit=500)}, "authority-limits-exceeded"),
+        (None, {"source": _Source(AnalysisUnknown("git unavailable"))}, "source-unreadable"),
+        (None, {"check": lambda issue, manifest: replace(PASS, outcome="fail")},
+         "source-not-current"),
+    ],
+)
+def test_selection_parks_without_authority(state, overrides, reason) -> None:
+    state = state or _state()
+    client = _Client()
+
+    cmd_repair_cycle(_args(state, client, **overrides))
+
+    assert client.selections == 0
+    assert state["repair_cycle"]["parked_reason"] == reason
+    assert state["repair_cycle"]["authority"] is None
+
+
+@pytest.mark.parametrize(
+    ("foreign_owner", "writable", "reason", "selections"),
+    [
+        (False, set(), "authority-untrusted", 0),
+        (True, {"file"}, "authority-untrusted", 0),
+        (True, {"parent"}, "authority-untrusted", 0),
+        (True, {"ancestor"}, "authority-untrusted", 0),
+        (True, set(), None, 1),
+    ],
+)
+def test_only_a_foreign_read_only_config_grants_authority(
+    tmp_path, monkeypatch, foreign_owner, writable, reason, selections
+) -> None:
+    path = (tmp_path / "etc" / "repair-cycle.json").resolve()
+    path.parent.mkdir()
+    path.write_text(json.dumps(_config()))
+    named = {"file": path, "parent": path.parent, "ancestor": path.parent.parent}
+    writable_paths = {named[name] for name in writable}
+    if foreign_owner:
+        monkeypatch.setattr(repair_cycle.os, "geteuid", lambda: os.getuid() + 1)
+    monkeypatch.setattr(repair_cycle.os, "access", lambda entry, _mode: entry in writable_paths)
+    state = _state()
+    client = _Client()
+
+    cmd_repair_cycle(_args(state, client, config=str(path), config_data=None))
+
+    assert client.selections == selections
+    assert state["repair_cycle"]["parked_reason"] == reason
+
+
+def test_missing_or_symlinked_config_is_untrusted(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(repair_cycle.os, "geteuid", lambda: os.getuid() + 1)
+    monkeypatch.setattr(repair_cycle.os, "access", lambda _entry, _mode: False)
+    target = (tmp_path / "repair-cycle.json").resolve()
+    target.write_text("{}")
+    link = tmp_path / "link.json"
+    link.symlink_to(target)
+
+    def trusted(path: Path) -> bool:
+        return repair_cycle._trusted_config(argparse.Namespace(config=str(path), config_data=None))
+
+    (tmp_path / "sub").mkdir()
+    assert trusted(target) is True
+    assert trusted(link) is False
+    assert trusted(tmp_path / "sub" / ".." / "repair-cycle.json") is False
+    assert trusted(tmp_path / "gone.json") is False
+
+
+def test_dispatch_authority_check_is_time_bounded(monkeypatch) -> None:
+    state = _state()
+    cycle_state, request = _leased(state)
+    host = _FakeHost()
+
+    def overdue(*_args, **_kwargs):
+        raise TimeoutError("repair-cycle call bound exceeded")
+
+    monkeypatch.setattr(repair_cycle, "source_comparison", overdue)
+    args = _args(state, _Client())
+    assert _dispatch_host(args, state, cycle_state, CONFIG, host, request) is None
+
+    assert host.admissions == []
+    assert state["repair_cycle"]["parked_reason"] == "timeout"
+
+
+@pytest.mark.parametrize(
+    ("bound", "config", "reason"),
+    [
+        (False, _config(), "authority-missing"),
+        (True, _config(authority=_authority(revoked=True)), "authority-revoked"),
+        (True, _config(authority=None), "authority-revoked"),
+        (True, _config(authority=_authority(key="other")), "authority-revoked"),
+        (True, _config(authority=_authority(expires_at=NOW.isoformat())), "authority-expired"),
+        (True, _config(cost_cap_usd="1.00", authority=_authority(cost_cap_usd="1.00")),
+         "authority-limits-exceeded"),
+    ],
+)
+def test_dispatch_rechecks_authority(bound, config, reason) -> None:
+    state = _state()
+    cycle_state, request = _leased(state)
+    if not bound:
+        cycle_state.authority = None
+    host = _FakeHost()
+
+    result = _dispatch_host(
+        _args(state, _Client()), state, cycle_state, CycleConfig.from_mapping(config), host, request
+    )
+
+    assert result is None
+    assert (host.admissions, host.lookups, cycle_state.dispatch) == ([], [], None)
+    assert state["repair_cycle"]["parked_reason"] == reason
+    assert state["repair_cycle"]["reserved_calls"] == 0
+
+
+def test_dispatch_rechecks_source() -> None:
+    state = _state()
+    cycle_state, request = _leased(state)
+    host = _FakeHost()
+    stale = _args(state, _Client(), source=_Source(AnalysisUnknown("git unavailable")))
+
+    assert _dispatch_host(stale, state, cycle_state, CONFIG, host, request) is None
+
+    assert host.admissions == []
+    assert state["repair_cycle"]["parked_reason"] == "source-unreadable"
+
+
+class _ActiveClient(_Client):
+    def reconcile(self, repository: str, lease) -> AdeptReceipt:
+        self.reconciliations += 1
+        return self._receipt(lease, state="active")
+
+
+def _bound_attempt(state: dict) -> None:
+    _recorded_attempt(state)
+    state["repair_cycle"]["authority"] = BOUND
+
+
+@pytest.mark.parametrize(
+    ("config", "failure"),
+    [
+        (_config(), None),
+        (_config(authority=_authority("r2")), None),
+        (_config(authority=_authority(revoked=True)), "authority-revoked"),
+        (_config(authority=_authority(key="other")), "authority-revoked"),
+    ],
+)
+def test_resume_rechecks_an_active_attempt(config, failure) -> None:
+    state = _state()
+    _bound_attempt(state)
+    client = _ActiveClient()
+
+    cmd_repair_cycle(_args(state, client, config_data=config))
+
+    recorded = state["repair_cycle"]
+    assert (client.reconciliations, client.selections) == (1, 0)
+    assert recorded["authoritative_receipt"]["state"] == "active"
+    assert (recorded["attempt_failure"], recorded["parked_reason"]) == (failure, failure)
+
+
+def test_resume_of_a_changed_brief_fails_the_attempt() -> None:
+    state = _state()
+    _bound_attempt(state)
+    state["work_items"][ITEM]["detail"]["verification"] = "Run a different suite"
+
+    cmd_repair_cycle(_args(state, _ActiveClient()))
+
+    assert state["repair_cycle"]["attempt_failure"] == "authority-mismatch"
+
+
+def test_dispose_refuses_an_attempt_last_reported_active() -> None:
+    state = _state()
+    _bound_attempt(state)
+    client = _ActiveClient()
+    cmd_repair_cycle(_args(state, client, config_data=_config(authority=_authority(revoked=True))))
+    assert state["repair_cycle"]["attempt_failure"] == "authority-revoked"
+
+    with pytest.raises(CommandError, match="--confirm-stopped"):
+        cmd_repair_cycle(_args(state, client, dispose_attempt="recorded-attempt"))
+    assert state["repair_cycle"]["disposed_attempt"] is None
+
+    cmd_repair_cycle(
+        _args(state, client, dispose_attempt="recorded-attempt", confirm_stopped=True)
+    )
+    assert state["repair_cycle"]["disposed_attempt"] == "recorded-attempt"
+
+
+@pytest.mark.parametrize(
+    "dispatch",
+    [
+        DispatchRecord("a1", "intent"),
+        DispatchRecord("a1", "returned", outcome="unknown"),
+    ],
+)
+def test_dispose_refuses_an_unsettled_dispatch(dispatch) -> None:
+    cycle_state = _budget_state()
+    cycle_state.dispatch = dispatch
+    cycle_state.fail("host-error")
+
+    with pytest.raises(ValueError, match="--confirm-stopped"):
+        cycle_state.dispose("a1")
+    cycle_state.dispose("a1", confirm_stopped=True)
+    assert cycle_state.disposed
+
+
+def test_resume_of_an_unbound_active_attempt_fails() -> None:
+    state = _state()
+    _recorded_attempt(state)
+
+    cmd_repair_cycle(_args(state, _ActiveClient()))
+
+    assert state["repair_cycle"]["attempt_failure"] == "authority-missing"
+
+
+def test_resume_of_a_rebound_work_item_is_a_mismatch() -> None:
+    state = _state()
+    _bound_attempt(state)
+    state["repair_cycle"]["authority"] = {**BOUND, "key": "f" * 64}
+
+    cmd_repair_cycle(_args(state, _ActiveClient()))
+
+    assert state["repair_cycle"]["attempt_failure"] == "authority-mismatch"
+
+
+def test_selection_prefers_an_approved_published_repair() -> None:
+    state = _state()
+    other_key = concern_key(REPOSITORY, "d" * 64)
+    assert other_key < KEY  # ranks first on the key tie-break unless approval decides
+    other = json.loads(json.dumps(state["work_items"][ITEM]))
+    other["id"] = "concerns::other"
+    other["detail"]["concern_identity"] = "d" * 64
+    for record in ("github_repair_revalidated", "github_repair"):
+        other["detail"][record]["key"] = other_key
+    state["work_items"]["concerns::other"] = other
+    client = _Client()
+
+    cmd_repair_cycle(_args(state, client))
+
+    assert client.bindings[0].key == KEY
+    assert state["repair_cycle"]["authority"] == BOUND
+
+
+def test_resume_parks_on_unreadable_source_without_failing() -> None:
+    state = _state()
+    _bound_attempt(state)
+    unreadable = _Source(AnalysisUnknown("git unavailable"))
+
+    cmd_repair_cycle(_args(state, _ActiveClient(), source=unreadable))
+
+    assert state["repair_cycle"]["parked_reason"] == "source-unreadable"
+    assert state["repair_cycle"]["attempt_failure"] is None
+
+
+def test_config_authority_is_copied_from_the_source_mapping() -> None:
+    raw = _config()
+    config = CycleConfig.from_mapping(raw)
+    raw["authority"]["approvals"].append(_approval(key="other"))  # type: ignore[index]
+
+    assert config.authority == _config()["authority"]

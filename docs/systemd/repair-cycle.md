@@ -35,9 +35,63 @@ below.
   "model": "SELECTED_ORCHESTRATOR_MODEL",
   "runtime_minutes": 90,
   "call_limit": 100,
-  "cost_cap_usd": "25.00"
+  "cost_cap_usd": "25.00",
+  "authority": {
+    "schema": 1,
+    "revision": "2026-10-06.1",
+    "approvals": [
+      {
+        "key": "CONCERN_KEY",
+        "reviewed_brief_version": "REVIEWED_BRIEF_VERSION",
+        "evidence_digest": "EVIDENCE_DIGEST",
+        "files": ["src/module.py"],
+        "actions": ["repair"],
+        "call_limit": 100,
+        "cost_cap_usd": "25.00",
+        "runtime_minutes": 90,
+        "expires_at": "2026-10-13T00:00:00+00:00"
+      }
+    ]
+  }
 }
 ```
+
+`authority` is the only source of repair authority
+([ADR 0015](../adr/0015-trusted-repair-authority.md)). Each approval names one
+published repair by its stable key and the `reviewed_brief_version` and
+`evidence_digest` of its current brief. Copy them from the repair's
+`github_repair` link record right after a `repair-queue sync --apply`, which
+rewrites the record and prints `Changed ...` when they move; the cycle
+recomputes both and refuses a stale pair. The pair is computed from work items
+in the state file, which the coding host can write, so approve it only for a
+brief you reviewed: the published issue shows the brief as it was created, and
+a `Changed ...` line means the pair no longer matches that text. The cycle reads work items and link
+records from its own `--state` file, so `scan` and `repair-queue` must use that
+same file; wiring the recipe for this is #31.
+It allows the files of the brief's evidence manifest, the `repair` action
+(the only one supported), limits at or above the cycle's own, and an expiry.
+A selection binds the attempt to the approved repair and records the
+`revision` for audit. Before
+dispatch, and whenever a recorded attempt is observed still active, the cycle
+checks again: it recomputes the brief version, rechecks the source files and
+their evidence, and re-reads the approval. To revoke, set `"revoked": true`
+or remove the approval; changing `revision` alone revokes nothing. A
+revocation stops dispatch and
+fails an active attempt, which then needs a disposition. A changed brief or
+evidence version voids its approval the same way, and an active attempt also
+fails when its source files change in the checkout (including when its own
+repair lands there) or when it was recorded before authority existed. Every refusal parks with a
+named reason (`authority-missing`, `authority-revoked`, `authority-expired`,
+`authority-mismatch`, `authority-scope-exceeded`, `authority-limits-exceeded`,
+`authority-invalid`, `authority-unsupported`, `authority-untrusted`,
+`source-not-current`, `source-unreadable`, or `selected-repair-unavailable`).
+
+The configuration grants authority only when the account running the cycle
+neither owns nor can write it, or any directory above it, and `--config` is
+not a symbolic link or under one; otherwise every run parks as
+`authority-untrusted`. The root-owned files above meet this. Never
+run the cycle as root, and keep a manual pilot's configuration in a directory
+owned by another account.
 
 The command enforces the selected runtime while each authority or selection
 call is running. Reading a recorded attempt's outcome is separate: each run may
@@ -62,9 +116,12 @@ desloppify repair-cycle --config /etc/mending/repair-cycle.json \
 
 The attempt ID is `current_lease.attempt_id` in the state file. Disposing makes
 no external call and cancels nothing: it asserts the attempt has stopped or is
-abandoned. If the recorded receipt (`authoritative_receipt.state`) is `active`
-or absent, first confirm on the host that the attempt's worker and pull request
-are finished, or a second repair can run beside it. The next timer window on a
+abandoned. If the recorded receipt (`authoritative_receipt.state`) is `active`,
+or a host dispatch is unsettled (`dispatch.phase` is `intent` or `unknown`, or
+`dispatch.outcome` is `unknown`), disposal is refused until you confirm on the
+host that the attempt's worker and pull request are finished and add
+`--confirm-stopped`; otherwise a second repair can run beside it. If the
+receipt is absent, make the same check before disposing. The next timer window on a
 later day may start new work.
 
 Set `enabled` to `false` to park new work while retaining enough local state to

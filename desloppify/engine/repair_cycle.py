@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -30,6 +31,8 @@ class CycleConfig:
     adept_skills_version: str | None = None
     observation_call_limit: int = DEFAULT_OBSERVATION_CALL_LIMIT
     observation_seconds: int = DEFAULT_OBSERVATION_MINUTES * 60
+    # Decoded only by the authority check (ADR 0015), so a bad block never blocks observation.
+    authority: object = None
 
     @classmethod
     def from_mapping(cls, mapping: Mapping[str, object]) -> CycleConfig:
@@ -53,6 +56,7 @@ class CycleConfig:
             ),
             observation_seconds=60
             * _positive_int(mapping, "observation_minutes", default=DEFAULT_OBSERVATION_MINUTES),
+            authority=deepcopy(mapping.get("authority")),
         )
 
     @property
@@ -233,6 +237,7 @@ class CycleState:
     reserved_cost_usd: Decimal = Decimal(0)
     reserved_calls: int = 0
     dispatch: DispatchRecord | None = None
+    authority: dict[str, str] | None = None
     attempt_history: list[dict[str, object]] = field(default_factory=list)
 
     @classmethod
@@ -273,6 +278,7 @@ class CycleState:
             reserved_cost_usd=_cost(mapping, "reserved_cost_usd"),
             reserved_calls=_count(mapping, "reserved_calls"),
             dispatch=_dispatch(mapping, lease),
+            authority=_bound_authority(mapping.get("authority")),
             attempt_history=_history(mapping),
         )
 
@@ -291,6 +297,7 @@ class CycleState:
             "reserved_cost_usd": str(self.reserved_cost_usd),
             "reserved_calls": self.reserved_calls,
             "dispatch": self.dispatch.to_mapping() if self.dispatch else None,
+            "authority": self.authority,
             "attempt_history": list(self.attempt_history),
         }
 
@@ -309,6 +316,7 @@ class CycleState:
         self.consumed_cost_usd = self.reserved_cost_usd = Decimal(0)
         self.consumed_calls = self.reserved_calls = 0
         self.dispatch = None
+        self.authority = None
         return self.current_lease
 
     def _archive(self, lease: CycleLease) -> dict[str, object]:
@@ -324,6 +332,7 @@ class CycleState:
             "reserved_cost_usd": str(self.reserved_cost_usd),
             "reserved_calls": self.reserved_calls,
             "dispatch": self.dispatch.to_mapping() if self.dispatch else None,
+            "authority": self.authority,
         }
 
     def admit(self) -> BudgetAdmission | None:
@@ -384,8 +393,12 @@ class CycleState:
         lease = self.current_lease
         return lease is not None and self.disposed_attempt == lease.attempt_id
 
-    def dispose(self, attempt_id: str) -> None:
-        """Record the operator's disposition of the current failed attempt."""
+    def dispose(self, attempt_id: str, *, confirm_stopped: bool = False) -> None:
+        """Record the operator's disposition of the current failed attempt.
+
+        An attempt last reported active needs ``confirm_stopped``: the operator's
+        assertion that its worker and pull request are finished.
+        """
         lease = self.current_lease
         if lease is None or lease.attempt_id != attempt_id:
             current = lease.attempt_id if lease else "none"
@@ -394,7 +407,22 @@ class CycleState:
             )
         if self.attempt_failure is None:
             raise ValueError(f"attempt {attempt_id} has no recorded failure to dispose")
+        if self.reported_active and not confirm_stopped:
+            raise ValueError(
+                f"attempt {attempt_id} was last reported active; confirm on the host that its "
+                "worker and pull request are finished, then pass --confirm-stopped"
+            )
         self.disposed_attempt = attempt_id
+
+    @property
+    def reported_active(self) -> bool:
+        """Return whether the last report left the attempt running or its dispatch unsettled."""
+        receipt = self.authoritative_receipt or {}
+        dispatch = self.dispatch
+        return receipt.get("state") == "active" or (
+            dispatch is not None
+            and (dispatch.phase in {"intent", "unknown"} or dispatch.outcome == "unknown")
+        )
 
     def merge_permit_available(self, now: datetime) -> bool:
         """Return whether the host-local day has not consumed its merge permit."""
@@ -471,6 +499,17 @@ def _dispatch(mapping: Mapping[str, object], lease: CycleLease | None) -> Dispat
     if lease is None or record.attempt_id != lease.attempt_id:
         raise ValueError("dispatch record does not match the current lease")
     return record
+
+
+def _bound_authority(value: object) -> dict[str, str] | None:
+    # A malformed record reads as unbound, which every later check refuses (ADR 0015);
+    # raising here would block observation and disposal of the attempt instead.
+    keys = ("issue_id", "key", "revision")
+    if not isinstance(value, Mapping) or set(value) != set(keys) or not all(
+        isinstance(value[key], str) and value[key] for key in keys
+    ):
+        return None
+    return {key: value[key] for key in keys}
 
 
 def _history(mapping: Mapping[str, object]) -> list[dict[str, object]]:

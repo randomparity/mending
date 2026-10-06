@@ -18,6 +18,11 @@ def _add_repair_cycle_parser(sub) -> None:
         metavar="ATTEMPT_ID",
         help="Record the operator's disposition of the current failed attempt, then exit",
     )
+    parser.add_argument(
+        "--confirm-stopped",
+        action="store_true",
+        help="With --dispose-attempt: assert that an attempt last reported active has stopped",
+    )
 
 
 __all__ = ["_add_repair_cycle_parser"]

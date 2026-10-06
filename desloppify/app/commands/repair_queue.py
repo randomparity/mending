@@ -328,7 +328,7 @@ def _source_current(
     args: argparse.Namespace, state: Mapping[str, Any], candidate: PromotionCandidate
 ) -> bool:
     """Compare without the lock; on a mismatch, clear under the lock (``--apply`` only)."""
-    if _comparison(args, _issues(state)[candidate.issue_id]).current:
+    if source_comparison(args, _issues(state)[candidate.issue_id]).current:
         return True
     if not args.apply:
         print(f"Skipped {candidate.issue_id}: source evidence is not current.")
@@ -345,7 +345,7 @@ def _recheck_locked(
 ) -> bool:
     """Inside a state-lock transaction: proceed only on current source evidence."""
     issue = _issues(state)[candidate.issue_id]
-    recheck = _comparison(args, issue)
+    recheck = source_comparison(args, issue)
     if recheck.current:
         return True
     if recheck.keep:
@@ -371,7 +371,7 @@ class _Recheck:
 _CHECK_REASONS = {"fail": "check-failed", "unknown": "check-unknown"}
 
 
-def _comparison(args: argparse.Namespace, issue: Mapping[str, Any]) -> _Recheck:
+def source_comparison(args: argparse.Namespace, issue: Mapping[str, Any]) -> _Recheck:
     """Compare the stored manifest, then re-run the check on the rebuilt one."""
     record = issue["detail"].get("github_repair_revalidated")
     record = record if isinstance(record, Mapping) else {}
@@ -650,4 +650,4 @@ def _require_apply(args: argparse.Namespace, action: str) -> None:
         raise CommandError(f"repair-queue {action} requires --apply", exit_code=2)
 
 
-__all__ = ["cmd_repair_queue"]
+__all__ = ["cmd_repair_queue", "source_comparison"]
