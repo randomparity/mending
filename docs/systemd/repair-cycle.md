@@ -101,7 +101,8 @@ unreadable fails the attempt with that authority reason instead of settling,
 so remove an approval only after its attempt has settled. The approval also names the
 `repair` action (the only one supported), limits at or above the cycle's own,
 and an expiry; set `expires_at` past the expected review of the pull request,
-because an expired approval fails an attempt whose pull request is still open.
+because an expired approval fails an attempt whose pull request is still open,
+and a host still running at `expires_at` is stopped there (`authority-expired`).
 A selection binds the attempt to the approved repair and records the
 `revision` for audit. Before
 dispatch, and whenever a recorded attempt is observed still active, the cycle
@@ -143,7 +144,7 @@ merged or closed. A pull request closed unmerged also settles the attempt and
 leaves its repair issue open and approved, so a later window may select it
 again; close the repair issue or remove the approval to stop that. A completed
 host run without a pull request (`no-pull-request`), a failed run
-(`host-failed`), a stopped run (`runtime-exhausted` or `budget-exhausted`), and
+(`host-failed`), a stopped run (`runtime-exhausted`, `authority-expired`, or `budget-exhausted`), and
 a run whose worker could not be verified stopped (`dispatch-outcome-unknown`)
 fail the attempt; the last stays reported active.
 
@@ -220,3 +221,21 @@ Claude Code CLI that runs the installed Adept skills
 ([ADR 0010](../adr/0010-claude-code-host-adapter.md)); Adept is not a service.
 Target opt-in, the manual pilot, and timer activation remain #7
 responsibilities, and merge is outside the pilot.
+
+## Limit enforcement
+
+What stops each limit on a repair attempt. The proof column names tests in
+`desloppify/tests/commands/test_repair_cycle_e2e.py`, which run the cycle
+through the production adapter and `gh` client against a scripted host and a
+fake `gh`; no live host, credentials, or GitHub calls are involved (#7 owns
+the live pilot).
+
+| Limit | Claude Code host | Mending | Proof | Unsupported or unverified |
+|---|---|---|---|---|
+| USD cost | `--max-budget-usd` set to the lease's remaining cap; its stop is a failed run (`host-failed`) | charges the host-reported `total_cost_usd` after the run, or the whole admission when the run reports none (crash, stop, unknown); a cost over the cap fails `budget-exhausted` after the fact | `test_budget_limits_fail_the_attempt` (`host-budget`, `cost-overrun`), `test_a_crashed_host_fails_the_attempt` | Mending cannot stop a run on cost while it runs: the stream carries no running cost. Whether `--max-budget-usd` binds under the deployment's login is unverified: Claude Code 2.1.292 documents it as "Maximum dollar amount to spend on API calls (only works with --print)", and a subscription login may not be bound by it. Checking needs a paid run (#7). |
+| Model calls | none; the host has no call-limit option | counts streamed assistant messages, including forwarded subagent messages, and stops the worker tree past `call_limit` (`budget-exhausted`); background tasks are disabled through `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` | `test_budget_limits_fail_the_attempt` (`call-limit`) | A model process launched through a host tool, such as a nested `claude -p` from the Bash tool, does not stream into the host's output, so its calls and cost are not counted; it is still stopped with the tree (`test_a_nested_model_process_is_stopped_but_not_counted`). |
+| Runtime | none | at the lease deadline, `SIGTERM` then `SIGKILL` to the host's process group and every process carrying its `MENDING_HOST_SESSION` marker (`runtime-exhausted`); a tree it cannot verify empty fails `dispatch-outcome-unknown` and stays reported active | `test_timeout_stops_a_surviving_child_and_never_relaunches`, `test_an_unverifiable_worker_stays_reported_active` | A descendant that leaves the group and clears its environment, or changes user, is not seen ([ADR 0010](../adr/0010-claude-code-host-adapter.md)). |
+| Approval expiry and revocation | none | checked at selection, before dispatch, and on each observation of an active attempt; the host run ends at the earlier of the lease deadline and `expires_at` (`authority-expired`) | `test_expired_approval_never_launches`, `test_approval_expiry_stops_a_running_host`, `test_revoked_or_expired_attempt_fails_on_resume_and_never_relaunches` | A revocation does not stop a host that is already running; the next observation fails the attempt. |
+| Permissions | the account's Claude Code settings and the managed settings file | passes no permission option (`--permission-mode`, `--settings`, `--dangerously-skip-permissions`) and passes `CLAUDE_CONFIG_DIR` through unchanged; a run that ends without a pull request fails `no-pull-request` | `test_approved_repair_runs_once_through_the_adapter_and_settles`, `test_permission_denied_host_fails_without_a_pull_request` | Unverified: that `/etc/claude-code/managed-settings.json` overrides the writable configuration directory, and that `ProtectHome=true` with `CLAUDE_CONFIG_DIR=/var/lib/mending/claude` leaves the host its credentials (#7). |
+| Edit scope | told the approved files | after the run, compares each tagged pull request's changed paths from `gh pr view URL --json state,files` with the approval (`authority-scope-exceeded`) | `test_mismatched_results_fail_the_attempt` (`outside-approval`) | Edits are not blocked while the host runs. The `gh pr view` output shape was checked by hand against gh 2.97.0 only; renames and paths past the first 100 are not caught (above). |
+| One worker, one pull request | none | the cycle lock, one lease per window, a dispatch intent persisted before launch, and a replay that observes a recorded dispatch and never relaunches it | `test_overlapping_invocation_leaves_the_running_cycle_alone`, the `test_a_cycle_killed_*` tests, `test_an_open_pull_request_holds_the_attempt_past_its_lease` | If Mending dies while its host runs outside systemd, the host keeps running past the lease deadline and the approval's expiry; later runs park `dispatch-in-flight` until it exits; the manual pilot (#7) owns that risk. Under the unit, systemd's default `KillMode=control-group` should stop the host with the service; that is unverified. A cycle killed after its lease is written but before dispatch spends its window without launching. |
