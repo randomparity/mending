@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import errno
 import importlib
 import json
@@ -45,15 +44,6 @@ def _locked_write(persistence_mod, state_path):
         state["scan_count"] = 99
 
 
-def _surviving_bytes(state_path):
-    candidates = (
-        state_path,
-        state_path.with_suffix(".json.bak"),
-        state_path.with_suffix(".json.corrupted"),
-    )
-    return [path.read_bytes() for path in candidates if path.exists()]
-
-
 def test_state_lock_refuses_to_save_over_state_with_invalid_invariants(tmp_path):
     persistence_mod = importlib.import_module("desloppify.engine._state.persistence")
     state_path = tmp_path / "state.json"
@@ -79,11 +69,13 @@ def test_state_lock_keeps_undecodable_state_without_backup(tmp_path):
     with pytest.raises(CommandError, match=re.escape(str(state_path))) as excinfo:
         _locked_write(persistence_mod, state_path)
     assert "state.json.corrupted" in excinfo.value.message
+    assert "scan" in excinfo.value.message
 
-    with contextlib.suppress(CommandError):
-        _locked_write(persistence_mod, state_path)
+    # The original now sits in .json.corrupted, so the next locked write is a
+    # missing-file first run: it saves a fresh state and leaves the copy alone.
+    _locked_write(persistence_mod, state_path)
 
-    assert original in _surviving_bytes(state_path)
+    assert state_path.with_suffix(".json.corrupted").read_bytes() == original
 
 
 def test_state_lock_refuses_undecodable_state_it_cannot_move_aside(tmp_path):

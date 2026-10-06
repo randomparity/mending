@@ -231,7 +231,8 @@ def _load_state_reporting_fallback(state_path: Path) -> tuple[StateModel, str | 
         corrupted_path = state_path.with_suffix(".json.corrupted")
         reason = (
             f"it could not be decoded ({ex}) and no usable backup was found; "
-            f"the original was moved to {corrupted_path}"
+            f"the original was moved to {corrupted_path}. Repair it and move it back "
+            f"to {state_path.name}, or rerun `desloppify scan` to rebuild state"
         )
         try:
             state_path.rename(corrupted_path)
@@ -244,7 +245,8 @@ def _load_state_reporting_fallback(state_path: Path) -> tuple[StateModel, str | 
             )
             reason = (
                 f"it could not be decoded ({ex}) and no usable backup was found; "
-                "the original was left in place"
+                "the original was left in place. Repair or remove it, "
+                "or rerun `desloppify scan` to rebuild state"
             )
         return _reconstruct_from_saved_plan_if_available(state_path, empty_state()), reason
 
@@ -270,7 +272,10 @@ def _load_state_reporting_fallback(state_path: Path) -> tuple[StateModel, str | 
             f"  ⚠ State invariants invalid ({normalize_ex}). Starting fresh.",
             file=sys.stderr,
         )
-        reason = f"its state invariants are invalid ({normalize_ex}); the file was left in place"
+        reason = (
+            f"its state invariants are invalid ({normalize_ex}); the file was left in place. "
+            "Repair or remove it, or rerun `desloppify scan` to rebuild state"
+        )
         return _reconstruct_from_saved_plan_if_available(state_path, empty_state()), reason
 
 
@@ -351,9 +356,10 @@ def state_lock(
     Acquires an exclusive file lock, reloads state from disk (to pick up the
     latest version), yields it for mutation, then saves on clean exit.
 
-    Raises ``CommandError`` instead of yielding when an existing state file
-    could not be loaded, so a fresh fallback state never overwrites it (or,
-    on the next save, its backup). A missing state file stays writable.
+    Raises ``CommandError`` instead of yielding when the state file exists but
+    could not be loaded, so a fresh fallback state never overwrites it (or, on
+    the next save, its backup). A missing state file stays writable, including
+    one that ``load_state`` already moved aside to ``.json.corrupted``.
 
     Usage::
 
@@ -386,10 +392,7 @@ def state_lock(
         state, fallback_reason = _load_state_reporting_fallback(state_path)
         if fallback_reason is not None:
             raise CommandError(
-                f"Refusing to save state over {state_path}: {fallback_reason}. "
-                f"Restore {state_path.with_suffix('.json.bak').name} or "
-                f"{state_path.with_suffix('.json.corrupted').name} to {state_path.name}, "
-                "or rerun `desloppify scan` to rebuild state."
+                f"Refusing to save state over {state_path}: {fallback_reason}."
             )
         yield state
         save_state(
