@@ -29,6 +29,13 @@ def test_systemd_recipe_is_one_shot_restricted_and_does_not_catch_up() -> None:
     assert service["StateDirectoryMode"] == "0700"
     assert service["NoNewPrivileges"] == "true"
     assert service["ProtectSystem"] == "strict"
+    assert service["ProtectHome"] == "true"
+    assert service["Environment"] == "CLAUDE_CONFIG_DIR=/var/lib/mending/claude"
+    assert set(service["ReadWritePaths"].split()) == {
+        "/var/lib/mending/repository",
+        "/var/lib/mending/repository-worktrees",
+        "/var/lib/mending/claude",
+    }
     assert service["ExecStart"] == (
         "/usr/local/bin/desloppify repair-cycle "
         "--config ${MENDING_REPAIR_CYCLE_CONFIG} "
@@ -51,4 +58,5 @@ def test_recipe_documents_host_timezone_and_restricted_operator_inputs() -> None
     assert "OnCalendar" in guide
     assert "0640" in guide
     assert "systemctl disable --now mending-repair-cycle.timer" in guide
-    assert "parks before selection" in normalized_guide
+    assert '"host_executable": "/' in guide
+    assert '"window_minutes"' in guide

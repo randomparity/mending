@@ -1,20 +1,23 @@
-"""One-shot, fail-closed orchestration for an external Adept repair cycle."""
+"""One-shot, fail-closed composition of one bounded repair cycle (ADRs 0015, 0016)."""
 
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import math
 import os
 import signal
+import subprocess  # nosec B404
+import sys
 import threading
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Callable, Protocol, TypeVar, cast
+from typing import Any, TypeVar, cast
 
 from desloppify.app.commands.helpers.state import state_path
 from desloppify.app.commands.repair_cycle_host import (
@@ -22,25 +25,35 @@ from desloppify.app.commands.repair_cycle_host import (
     HostLookupError,
     HostOutcome,
     HostRequest,
+    PullRequest,
     host_session_id,
 )
-from desloppify.app.commands.repair_queue import source_comparison
+from desloppify.app.commands.repair_queue import cmd_repair_queue, source_comparison
+from desloppify.base.discovery.paths import get_project_root
 from desloppify.base.exception_sets import CommandError
 from desloppify.engine._state.persistence import save_state, state_lock
+from desloppify.engine._state.schema import get_state_file
 from desloppify.engine._state.schema_types import StateModel
 from desloppify.engine.repair_authority import (
+    Approval,
     Authority,
     AuthorityBinding,
     UnsupportedAuthority,
     authority_from_mapping,
     check_authority,
 )
-from desloppify.engine.repair_brief import reviewed_version
+from desloppify.engine.repair_brief import (
+    RepairBrief,
+    build_brief,
+    render_brief,
+    reviewed_version,
+)
 from desloppify.engine.repair_cycle import (
     CycleConfig,
     CycleLease,
     CycleState,
     DispatchRecord,
+    window_start,
 )
 from desloppify.engine.repair_manifest import SourceManifest, manifest_from_record
 from desloppify.engine.repair_queue import (
@@ -52,66 +65,22 @@ from desloppify.engine.repair_queue import (
 from desloppify.engine.repair_selection import rank_key
 
 _Result = TypeVar("_Result")
-
-
-@dataclass(frozen=True)
-class AdeptReceipt:
-    """The narrow correlated outcome the scheduler may persist and reconcile."""
-
-    attempt_id: object
-    state: object
-    reference: object
-    merge_consumed: object
-    calls: object
-    cost_usd: object
-    currency: object
-
-    def to_mapping(self) -> dict[str, object]:
-        """Return JSON-safe receipt fields without any external claim payload."""
-        return {
-            "attempt_id": self.attempt_id,
-            "state": self.state,
-            "reference": self.reference,
-            "merge_consumed": self.merge_consumed,
-            "calls": self.calls,
-            "cost_usd": str(self.cost_usd),
-            "currency": self.currency,
-        }
-
-
-class AdeptCycleClient(Protocol):
-    """The reconciliation and selection boundary; authority stays with Mending (ADR 0015)."""
-
-    def reconcile(self, repository: str, lease: CycleLease) -> AdeptReceipt: ...
-
-    def select(
-        self,
-        config: CycleConfig,
-        lease: CycleLease,
-        binding: AuthorityBinding,
-    ) -> AdeptReceipt: ...
-
-
-class _UnavailableAdeptCycleClient:
-    """Prevent live dispatch until Adept installs its owned protocol adapter."""
-
-    def reconcile(self, repository: str, lease: CycleLease) -> AdeptReceipt:
-        raise RuntimeError("Adept repair-cycle adapter is not installed")
-
-    def select(
-        self,
-        config: CycleConfig,
-        lease: CycleLease,
-        binding: AuthorityBinding,
-    ) -> AdeptReceipt:
-        raise RuntimeError("Adept repair-cycle adapter is not installed")
+# Discovery-only runs: nothing published is selectable, or nothing selectable is approved.
+_NO_OP_REASONS = frozenset({"selected-repair-unavailable", "authority-missing"})
 
 
 def cmd_repair_cycle(args: argparse.Namespace) -> None:
-    """Run at most one local scheduler attempt and park on every unsafe outcome."""
+    """Run one bounded cycle: observe, refresh, publish, select, then dispatch at most once."""
     config = _load_config(args)
-    now = _now(args)
-    client = cast(AdeptCycleClient, getattr(args, "client", None) or _UnavailableAdeptCycleClient())
+    with _cycle_lock(args) as held:
+        if not held:
+            print("Repair cycle already running.")
+            return
+        _run_cycle(args, config)
+
+
+def _run_cycle(args: argparse.Namespace, config: CycleConfig) -> None:
+    host = cast(ClaudeHostAdapter, getattr(args, "host", None) or ClaudeHostAdapter(config))
     dispose_attempt = getattr(args, "dispose_attempt", None)
     with _locked_state(args) as state:
         cycle_state = _cycle_state(state)
@@ -119,37 +88,53 @@ def cmd_repair_cycle(args: argparse.Namespace) -> None:
             confirm_stopped = getattr(args, "confirm_stopped", False) is True
             _dispose(state, cycle_state, dispose_attempt, confirm_stopped)
             return
-        if cycle_state.current_lease is not None:
-            if _has_terminal_receipt(cycle_state) or cycle_state.disposed:
-                _begin_and_select(args, state, cycle_state, config, client)
+        if not cycle_state.settled:
+            _observe(args, state, cycle_state, config, host)
+            if not cycle_state.settled:
                 return
-            if _reconcile(args, state, cycle_state, config, client):
-                _begin_and_select(args, state, cycle_state, config, client)
+        if _refused_new_work(state, cycle_state, config, _now(args)):
             return
-        if config.park_reason is not None:
-            _park(state, cycle_state, config.park_reason)
+    # scan and sync write the state file themselves, so the state lock is released here;
+    # the cycle lock keeps another cycle out meanwhile (ADR 0016).
+    refused = _refresh(args, config) or _publish(args, config)
+    with _locked_state(args) as state:
+        cycle_state = _cycle_state(state)
+        if refused is not None:
+            _park(state, cycle_state, refused)
             return
-        _begin_and_select(args, state, cycle_state, config, client, now)
+        now = _now(args)
+        if not _refused_new_work(state, cycle_state, config, now):
+            _begin_and_dispatch(args, state, cycle_state, config, host, now)
 
 
-def _begin_and_select(
+def _refused_new_work(
+    state: dict[str, Any], cycle_state: CycleState, config: CycleConfig, now: datetime
+) -> bool:
+    """Park and return True when this run may not select new work."""
+    lease = cycle_state.current_lease
+    if config.park_reason is not None:
+        reason: str | None = config.park_reason
+    elif cycle_state.awaiting_disposition:
+        reason = "disposition-required"
+    elif not cycle_state.settled:
+        reason = "attempt-active"
+    elif lease is not None and lease.window_start == window_start(now, config.window_minutes):
+        reason = "window-attempt-complete"
+    else:
+        reason = None
+    if reason is not None:
+        _park(state, cycle_state, reason)
+    return reason is not None
+
+
+def _begin_and_dispatch(
     args: argparse.Namespace,
     state: dict[str, Any],
     cycle_state: CycleState,
     config: CycleConfig,
-    client: AdeptCycleClient,
-    now: datetime | None = None,
+    host: ClaudeHostAdapter,
+    now: datetime,
 ) -> None:
-    if config.park_reason is not None:
-        return
-    if cycle_state.awaiting_disposition:
-        _park(state, cycle_state, "disposition-required")
-        return
-    now = now or _now(args)
-    lease = cycle_state.current_lease
-    if lease is not None and lease.day_key == now.date().isoformat():
-        _park(state, cycle_state, "daily-attempt-complete")
-        return
     # Authorized before the lease exists, so a refusal leaves no attempt to reconcile.
     try:
         authorized = _call_within(
@@ -160,75 +145,187 @@ def _begin_and_select(
         _park(state, cycle_state, "timeout")
         return
     if isinstance(authorized, str):
-        _park(state, cycle_state, authorized)
+        if authorized in _NO_OP_REASONS:
+            _no_op(state, cycle_state, authorized)
+        else:
+            _park(state, cycle_state, authorized)
         return
-    binding, bound = authorized
     lease = cycle_state.begin(config, now)
     if lease is None:
-        _park(state, cycle_state, "daily-attempt-complete")
+        _park(state, cycle_state, "window-attempt-complete")
         return
-    cycle_state.authority = bound
+    cycle_state.authority = authorized[1]
     _store_cycle_state(state, cycle_state)
     _persist_before_external_call(args, state)
-    _select(args, state, cycle_state, config, client, lease, binding)
+    _dispatch_host(args, state, cycle_state, config, host)
 
 
-def _select(
-    args: argparse.Namespace,
-    state: dict[str, Any],
-    cycle_state: CycleState,
-    config: CycleConfig,
-    client: AdeptCycleClient,
-    lease: CycleLease,
-    binding: AuthorityBinding,
-) -> None:
+def _refresh(args: argparse.Namespace, config: CycleConfig) -> str | None:
+    """Rescan the checkout into the cycle's own state file; a park reason on failure."""
+    supplied = getattr(args, "refresh", None)
+    if callable(supplied):
+        return cast("str | None", supplied())
+    # -P keeps a checkout package from shadowing the installed desloppify.
+    argv = [
+        sys.executable, "-P", "-m", "desloppify", "scan", "--no-badge",
+        "--state", str(_state_file(args).resolve()),
+    ]
     try:
-        receipt = _call_before_deadline(
-            args,
-            lease,
-            lambda: client.select(config, lease, binding),
+        done = subprocess.run(  # nosec B603
+            argv, cwd=_repo_root(args), timeout=config.runtime_seconds, check=False
         )
-    except TimeoutError:
-        _park(state, cycle_state, "timeout")
-        return
-    except Exception:
-        _park(state, cycle_state, "selection-unavailable")
-        return
-    _accept_receipt(state, cycle_state, lease, receipt, _now(args))
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"Repair cycle refresh failed: {exc}")
+        return "refresh-failed"
+    return None if done.returncode == 0 else "refresh-failed"
 
 
-def _reconcile(
+def _publish(args: argparse.Namespace, config: CycleConfig) -> str | None:
+    """Revalidate and publish through repair-queue sync (ADR 0014); a park reason on failure."""
+    sync = argparse.Namespace(
+        repair_queue_action="sync",
+        repository=config.repository,
+        apply=True,
+        state=getattr(args, "state", None),
+        state_data=getattr(args, "state_data", None),
+        source=getattr(args, "source", None),
+        check=getattr(args, "check", None),
+        client=getattr(args, "queue_client", None),
+        source_root=None,
+        revision="HEAD",
+    )
+    try:
+        _call_within(config.runtime_seconds, lambda: cmd_repair_queue(sync))
+    except (CommandError, RuntimeError, OSError, ValueError, TimeoutError) as exc:
+        print(f"Repair cycle publication failed: {exc}")
+        return "publication-failed"
+    return None
+
+
+def _observe(
     args: argparse.Namespace,
     state: dict[str, Any],
     cycle_state: CycleState,
     config: CycleConfig,
-    client: AdeptCycleClient,
-) -> bool:
-    lease = cycle_state.current_lease
-    if lease is None:
-        return False
+    host: ClaudeHostAdapter,
+) -> None:
+    """Spend one bounded observation on an unsettled attempt; never start work (#28)."""
     if cycle_state.observation_calls >= config.observation_call_limit:
         _fail(state, cycle_state, "observation-exhausted")
-        return False
+        return
     cycle_state.observation_calls += 1
     _store_cycle_state(state, cycle_state)
     _persist_before_external_call(args, state)
     try:
-        receipt = _call_within(
+        _call_within(
             config.observation_seconds,
-            lambda: client.reconcile(config.repository, lease),
+            lambda: _observe_once(args, state, cycle_state, config, host),
         )
     except TimeoutError:
         _park(state, cycle_state, "observation-timeout")
-        return False
-    except Exception:
-        _park(state, cycle_state, "reconciliation-unavailable")
-        return False
-    accepted = _accept_receipt(state, cycle_state, lease, receipt, _now(args))
-    if accepted and isinstance(receipt, AdeptReceipt) and receipt.state == "active":
+
+
+def _observe_once(
+    args: argparse.Namespace,
+    state: dict[str, Any],
+    cycle_state: CycleState,
+    config: CycleConfig,
+    host: ClaudeHostAdapter,
+) -> None:
+    record = cycle_state.dispatch
+    repo_root = _repo_root(args)
+    if record is None:
+        # No dispatch record, yet unsettled: a legacy active receipt or a held reservation.
+        reserved = cycle_state.reserved_calls or cycle_state.reserved_cost_usd
+        reason = "unsettled-reservation" if reserved else "dispatch-outcome-unknown"
+        _fail(state, cycle_state, reason)
+        return
+    if record.phase != "returned" or record.outcome == "unknown":
+        if _replay_dispatch(state, cycle_state, host, repo_root):
+            prs = _read_pull_requests(state, cycle_state, host)
+            scope = _scope_failure(args, config, cycle_state, prs) if prs is not None else None
+            if scope is not None:
+                _fail(state, cycle_state, scope)
+        return
+    if not _add_references(state, cycle_state, host, repo_root):
+        _park(state, cycle_state, "pull-request-lookup-unavailable")
+        return
+    _check_pull_requests(args, state, cycle_state, config, host)
+
+
+def _check_pull_requests(
+    args: argparse.Namespace,
+    state: dict[str, Any],
+    cycle_state: CycleState,
+    config: CycleConfig,
+    host: ClaudeHostAdapter,
+) -> None:
+    """Settle a returned dispatch by its pull requests (ADR 0016)."""
+    record = cycle_state.dispatch
+    prs = _read_pull_requests(state, cycle_state, host)
+    if record is None or prs is None:
+        return
+    cycle_state.observation_calls = 0  # a verdict was reached; the allowance bounds misses
+    scope = _scope_failure(args, config, cycle_state, prs)
+    if scope == "authority-scope-exceeded":
+        _fail(state, cycle_state, scope)
+    elif not prs and record.outcome == "completed":
+        _fail(state, cycle_state, "no-pull-request")
+    elif any(pr.open for pr in prs):
+        # The resume recheck names a missing or changed approval more precisely.
+        print("Repair cycle active: pull request open.")
+        _store_cycle_state(state, cycle_state)
         _recheck_active(args, state, cycle_state, config)
-        return False
-    return accepted and isinstance(receipt, AdeptReceipt) and receipt.state == "terminal"
+    elif scope is not None:
+        _fail(state, cycle_state, scope)
+    else:
+        cycle_state.dispatch = replace(record, phase="settled")
+        _store_cycle_state(state, cycle_state)
+        print("Repair cycle settled.")
+
+
+def _read_pull_requests(
+    state: dict[str, Any], cycle_state: CycleState, host: ClaudeHostAdapter
+) -> tuple[PullRequest, ...] | None:
+    record = cycle_state.dispatch
+    try:
+        return host.pull_requests(record.pull_requests if record else ())
+    except HostLookupError as exc:
+        print(f"Repair cycle lookup failed: {exc}")
+        _park(state, cycle_state, "pull-request-lookup-unavailable")
+        return None
+
+
+def _scope_failure(
+    args: argparse.Namespace,
+    config: CycleConfig,
+    cycle_state: CycleState,
+    prs: tuple[PullRequest, ...],
+) -> str | None:
+    """Why the pull requests' edits are not within the bound approval (#26), if they are not.
+
+    Edits that cannot be compared, because the approval is gone or unreadable,
+    fail closed rather than settle.
+    """
+    if not prs:
+        return None
+    approval = _bound_approval(args, config, cycle_state.authority)
+    if isinstance(approval, str):
+        return approval
+    return "authority-scope-exceeded" if any(not pr.files <= approval.files for pr in prs) else None
+
+
+def _bound_approval(
+    args: argparse.Namespace, config: CycleConfig, bound: Mapping[str, str] | None
+) -> Approval | str:
+    """The trusted configuration's approval for the bound key, or why there is none."""
+    authority = _trusted_authority(args, config)
+    if isinstance(authority, str):
+        return authority
+    if bound is None:
+        return "authority-missing"
+    approvals = authority.approvals if authority else ()
+    return next((a for a in approvals if a.key == bound["key"]), None) or "authority-revoked"
 
 
 def _recheck_active(
@@ -237,15 +334,11 @@ def _recheck_active(
     cycle_state: CycleState,
     config: CycleConfig,
 ) -> None:
-    """On resume, an active attempt whose authority no longer holds fails (ADR 0015)."""
-    try:
-        authorized = _call_within(
-            config.observation_seconds,
-            lambda: _authorize(args, state, cycle_state, config, _now(args)),
-        )
-    except TimeoutError:
-        _park(state, cycle_state, "observation-timeout")
-        return
+    """On resume, an active attempt whose authority no longer holds fails (ADR 0015).
+
+    It runs inside the observation's time bound.
+    """
+    authorized = _authorize(args, state, cycle_state, config, _now(args))
     if authorized == "source-unreadable":
         _park(state, cycle_state, authorized)  # transient: the next observation rechecks
     elif isinstance(authorized, str):
@@ -398,73 +491,34 @@ def _trusted_config(args: argparse.Namespace) -> bool:
     return True
 
 
-def _accept_receipt(
-    state: dict[str, Any],
-    cycle_state: CycleState,
-    lease: CycleLease,
-    receipt: object,
-    now: datetime,
-) -> bool:
-    if not isinstance(receipt, AdeptReceipt):
-        _park(state, cycle_state, "invalid-receipt")
-        return False
-    reason = _receipt_reason(cycle_state, lease, receipt)
-    if reason is not None:
-        _park(state, cycle_state, reason)
-        return False
-    if receipt.state == "unknown":
-        _park(state, cycle_state, "unknown-receipt")
-        return False
-    cycle_state.record_receipt(receipt.to_mapping())
-    if receipt.merge_consumed:
-        cycle_state.consume_merge_permit(lease)
-    print(f"Repair cycle {receipt.state}.")
-    failure = _limit_failure(lease, receipt, now)
-    if failure is not None:
-        _fail(state, cycle_state, failure)
-        return False
-    _store_cycle_state(state, cycle_state)
-    return True
-
-
 def _dispatch_host(
     args: argparse.Namespace,
     state: dict[str, Any],
     cycle_state: CycleState,
     config: CycleConfig,
     adapter: ClaudeHostAdapter,
-    request: HostRequest,
 ) -> HostOutcome | None:
-    """Admit, persist, run, and settle one host dispatch under the held state lock.
+    """Recheck, admit, persist, run, and settle one host dispatch under the held state lock.
 
-    An attempt that already has a dispatch record is replayed, never launched
-    again. Returns None when nothing was dispatched. #31 composes this into the cycle.
+    The authority check here is the execution-time source and authority recheck,
+    and the request is built from the binding it returns. An attempt that already
+    has a dispatch record is replayed, never launched again. Returns None when
+    nothing was dispatched.
     """
     lease = cycle_state.current_lease
-    if lease is None or request.attempt_id != lease.attempt_id or request.deadline > lease.deadline:
-        raise ValueError("host request does not match the current lease")
+    if lease is None:
+        raise ValueError("no current lease to dispatch")
+    repo_root = _repo_root(args)
     if cycle_state.dispatch is not None:
-        _replay_dispatch(state, cycle_state, adapter, request)
+        _replay_dispatch(state, cycle_state, adapter, repo_root)
         return None
-    if cycle_state.reserved_calls or cycle_state.reserved_cost_usd:
-        # An interrupted dispatch may still be spending; that outranks every other refusal.
-        _fail(state, cycle_state, "unsettled-reservation")
-        return None
-    if _now(args) >= lease.deadline:
-        _fail(state, cycle_state, "runtime-exhausted")
+    request = _authorized_request(
+        args, state, cycle_state, config, lease=lease, repo_root=repo_root
+    )
+    if request is None:
         return None
     try:
-        authorized = _call_before_deadline(
-            args, lease, lambda: _authorize(args, state, cycle_state, config, _now(args))
-        )
-    except TimeoutError:
-        _park(state, cycle_state, "timeout")
-        return None
-    if isinstance(authorized, str):
-        _park(state, cycle_state, authorized)
-        return None
-    try:
-        prior_worktrees = adapter.worktrees(request.repo_root)
+        prior_worktrees = adapter.worktrees(repo_root)
     except HostLookupError as exc:
         print(f"Repair cycle lookup failed: {exc}")
         _park(state, cycle_state, "dispatch-lookup-unavailable")
@@ -478,7 +532,7 @@ def _dispatch_host(
         "intent",
         host_session_id(lease.attempt_id),
         adapter.repository,
-        str(request.repo_root.resolve()),
+        str(repo_root.resolve()),
         prior_worktrees,
     )
     cycle_state.dispatch = record
@@ -496,43 +550,143 @@ def _dispatch_host(
         cycle_state.settle(admission, None, max(outcome.calls, admission.calls))
     else:
         cycle_state.settle(admission, outcome.cost_usd, outcome.calls)
-    if cycle_state.budget_exceeded:
-        _fail(state, cycle_state, "budget-exhausted")
+    _settle_run(args, state, cycle_state, config, adapter, outcome)
+    return outcome
+
+
+def _authorized_request(
+    args: argparse.Namespace,
+    state: dict[str, Any],
+    cycle_state: CycleState,
+    config: CycleConfig,
+    *,
+    lease: CycleLease,
+    repo_root: Path,
+) -> HostRequest | None:
+    """The execution-time recheck, and the request built from the binding it returns.
+
+    Returns None after recording why nothing may be dispatched.
+    """
+    if cycle_state.reserved_calls or cycle_state.reserved_cost_usd:
+        # An interrupted dispatch may still be spending; that outranks every other refusal.
+        _fail(state, cycle_state, "unsettled-reservation")
+        return None
+    if _now(args) >= lease.deadline:
+        _fail(state, cycle_state, "runtime-exhausted")
+        return None
+    try:
+        authorized = _call_before_deadline(
+            args, lease, lambda: _authorize(args, state, cycle_state, config, _now(args))
+        )
+    except TimeoutError:
+        _park(state, cycle_state, "timeout")
+        return None
+    if isinstance(authorized, str):
+        _park(state, cycle_state, authorized)
+        return None
+    binding, bound = authorized
+    request = _host_request(
+        args, state, config, lease, repo_root=repo_root, binding=binding, bound=bound
+    )
+    if request is None:
+        _park(state, cycle_state, "selected-repair-unavailable")
+    return request
+
+
+def _settle_run(
+    args: argparse.Namespace,
+    state: dict[str, Any],
+    cycle_state: CycleState,
+    config: CycleConfig,
+    adapter: ClaudeHostAdapter,
+    outcome: HostOutcome,
+) -> None:
+    """Fail a run that did not complete; otherwise settle it by its pull requests."""
+    failure = "budget-exhausted" if cycle_state.budget_exceeded else _outcome_failure(outcome)
+    if failure is not None:
+        _fail(state, cycle_state, failure)
     else:
         _store_cycle_state(state, cycle_state)
     _persist_before_external_call(args, state)
-    _add_references(state, cycle_state, adapter, request)
-    return outcome
+    found = _add_references(state, cycle_state, adapter, _repo_root(args))
+    if outcome.state != "completed" or failure is not None:
+        return
+    if found:
+        _check_pull_requests(args, state, cycle_state, config, adapter)
+    else:
+        _park(state, cycle_state, "pull-request-lookup-unavailable")
+
+
+def _outcome_failure(outcome: HostOutcome) -> str | None:
+    """A host run that did not complete stops new repairs until a disposition."""
+    if outcome.state == "failed":
+        return "host-failed"
+    if outcome.state == "stopped":
+        return "runtime-exhausted" if outcome.reason == "timeout" else "budget-exhausted"
+    if outcome.state == "unknown":
+        return "dispatch-outcome-unknown"
+    return None
+
+
+def _host_request(
+    args: argparse.Namespace,
+    state: Mapping[str, object],
+    config: CycleConfig,
+    lease: CycleLease,
+    *,
+    repo_root: Path,
+    binding: AuthorityBinding,
+    bound: Mapping[str, str],
+) -> HostRequest | None:
+    """The reviewed brief and approved scope for the binding the dispatch check returned."""
+    item = _work_item(state, bound["issue_id"], config.repository)
+    brief = build_brief(item[0], item[1]) if item else None
+    approval = _bound_approval(args, config, bound)
+    if not isinstance(brief, RepairBrief) or isinstance(approval, str):
+        return None
+    files = ", ".join(sorted(approval.files))
+    return HostRequest(
+        attempt_id=lease.attempt_id,
+        brief=render_brief(brief)[1],
+        source_revision=brief.revision,
+        authorized_scope=f"{binding.action} {binding.key}; files: {files}",
+        repo_root=repo_root,
+        deadline=lease.deadline,
+    )
 
 
 def _replay_dispatch(
     state: dict[str, Any],
     cycle_state: CycleState,
     adapter: ClaudeHostAdapter,
-    request: HostRequest,
-) -> None:
-    """Observe what a recorded dispatch left behind; never launch it again."""
-    alive = adapter.worker_alive(request.attempt_id)
+    repo_root: Path,
+) -> bool:
+    """Observe what a recorded dispatch left behind; never launch it again.
+
+    True when the worker is verified stopped and its references were read.
+    """
+    record = cycle_state.dispatch
+    alive = adapter.worker_alive(record.attempt_id) if record else None
     if alive is not False:
         _park(state, cycle_state, "dispatch-in-flight" if alive else "dispatch-unverified")
-        return
-    found = _add_references(state, cycle_state, adapter, request)
-    record = cycle_state.dispatch
+        return False
+    found = _add_references(state, cycle_state, adapter, repo_root)
     if cycle_state.reserved_calls or cycle_state.reserved_cost_usd:
         _fail(state, cycle_state, "unsettled-reservation")
-    elif record is not None and record.phase == "unknown":
+    elif record is not None and (record.phase == "unknown" or record.outcome == "unknown"):
         _fail(state, cycle_state, "dispatch-outcome-unknown")
     elif not found:
         _park(state, cycle_state, "dispatch-lookup-unavailable")
     else:
         _park(state, cycle_state, "already-dispatched")
+    return found
 
 
 def _add_references(
     state: dict[str, Any],
     cycle_state: CycleState,
     adapter: ClaudeHostAdapter,
-    request: HostRequest,
+    repo_root: Path,
 ) -> bool:
     """Add what the adapter finds for the recorded dispatch; False when the lookup failed."""
     record = cycle_state.dispatch
@@ -542,7 +696,7 @@ def _add_references(
         found = adapter.references(
             record.attempt_id,
             record.repository or adapter.repository,
-            Path(record.repo_root) if record.repo_root else request.repo_root,
+            Path(record.repo_root) if record.repo_root else repo_root,
             record.prior_worktrees,
         )
     except HostLookupError as exc:
@@ -555,65 +709,10 @@ def _add_references(
     return True
 
 
-def _receipt_reason(
-    cycle_state: CycleState,
-    lease: CycleLease,
-    receipt: AdeptReceipt,
-) -> str | None:
-    if not isinstance(receipt.attempt_id, str) or not receipt.attempt_id:
-        return "invalid-receipt"
-    if receipt.attempt_id != lease.attempt_id:
-        return "receipt-correlation-mismatch"
-    if not isinstance(receipt.state, str) or receipt.state not in {"active", "terminal", "unknown"}:
-        return "invalid-receipt"
-    if receipt.reference is not None and not isinstance(receipt.reference, str):
-        return "invalid-receipt"
-    if not isinstance(receipt.merge_consumed, bool):
-        return "invalid-receipt"
-    if not isinstance(receipt.currency, str) or receipt.currency != "USD":
-        return "non-usd-receipt"
-    if isinstance(receipt.calls, bool) or not isinstance(receipt.calls, int) or receipt.calls < 0:
-        return "invalid-receipt"
-    if not isinstance(receipt.cost_usd, Decimal) or not receipt.cost_usd.is_finite() or receipt.cost_usd < 0:
-        return "invalid-receipt"
-    if receipt.merge_consumed and not _merge_permit_accepts(cycle_state, lease, receipt):
-        return "merge-permit-exhausted"
-    return None
-
-
-def _limit_failure(lease: CycleLease, receipt: AdeptReceipt, now: datetime) -> str | None:
-    # The receipt has no completion time, so observation time stands in for it.
-    if now > lease.deadline:
-        return "runtime-exhausted"
-    if receipt.calls > lease.call_limit or receipt.cost_usd > lease.cost_cap_usd:
-        return "budget-exhausted"
-    return None
-
-
-def _merge_permit_accepts(
-    cycle_state: CycleState,
-    lease: CycleLease,
-    receipt: AdeptReceipt,
-) -> bool:
-    if not lease.merge_permit:
-        return False
-    if cycle_state.merge_permit_day is None:
-        return True
-    return (
-        cycle_state.merge_permit_day == lease.day_key
-        and cycle_state.authoritative_receipt == receipt.to_mapping()
-    )
-
-
-def _has_terminal_receipt(cycle_state: CycleState) -> bool:
-    lease = cycle_state.current_lease
-    receipt = cycle_state.authoritative_receipt
-    return (
-        lease is not None
-        and receipt is not None
-        and receipt.get("attempt_id") == lease.attempt_id
-        and receipt.get("state") == "terminal"
-    )
+def _repo_root(args: argparse.Namespace) -> Path:
+    """The checkout the cycle scans, rechecks, and hands to the host."""
+    supplied = getattr(args, "repo_root", None)
+    return Path(supplied) if supplied else get_project_root()
 
 
 def _call_before_deadline(
@@ -697,6 +796,12 @@ def _dispose(
     print(f"Repair cycle attempt {attempt_id} disposed.")
 
 
+def _no_op(state: dict[str, Any], cycle_state: CycleState, reason: str) -> None:
+    cycle_state.parked_reason = None
+    _store_cycle_state(state, cycle_state)
+    print(f"Repair cycle no-op: {reason}.")
+
+
 def _park(state: dict[str, Any], cycle_state: CycleState, reason: str) -> None:
     cycle_state.park(reason)
     _store_cycle_state(state, cycle_state)
@@ -719,6 +824,31 @@ def _persist_before_external_call(args: argparse.Namespace, state: dict[str, Any
     save_state(cast(StateModel, state), state_path(args))
 
 
+def _state_file(args: argparse.Namespace) -> Path:
+    """The state file every step of the cycle reads and writes."""
+    return state_path(args) or get_state_file()
+
+
+@contextmanager
+def _cycle_lock(args: argparse.Namespace) -> Iterator[bool]:
+    """Hold one cycle per state file across the unlocked refresh; False when another runs."""
+    if isinstance(getattr(args, "state_data", None), dict):
+        yield True
+        return
+    lock_path = _state_file(args).with_suffix(".json.cycle.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        yield True
+    finally:
+        os.close(descriptor)
+
+
 @contextmanager
 def _locked_state(args: argparse.Namespace) -> Iterator[dict[str, Any]]:
     supplied = getattr(args, "state_data", None)
@@ -729,4 +859,4 @@ def _locked_state(args: argparse.Namespace) -> Iterator[dict[str, Any]]:
         yield cast(dict[str, Any], state)
 
 
-__all__ = ["AdeptCycleClient", "AdeptReceipt", "cmd_repair_cycle"]
+__all__ = ["cmd_repair_cycle"]

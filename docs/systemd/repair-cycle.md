@@ -12,8 +12,21 @@ window, and limits.
 Perform these steps only after the pilot and approval above. Install
 `desloppify` at `/usr/local/bin/desloppify`. Create the dedicated
 unprivileged `mending` account and make it the owner of the one target checkout
-at `/var/lib/mending/repository`. Copy the two unit files in this directory to
-`/etc/systemd/system/`.
+at `/var/lib/mending/repository`, and keep that checkout current with its
+default branch: the cycle scans and rechecks it as it is and never fetches.
+The scan also writes its working files under `.desloppify/` in the checkout,
+which the target repository should ignore; confirm it commits no
+`.desloppify/` files, because a committed `.desloppify/config.json` with
+`trust_plugins` makes every refresh run the checkout's plugins.
+Create `/var/lib/mending/repository-worktrees` (where the Adept skills put the
+repair worktree) and `/var/lib/mending/claude` (the Claude Code configuration
+directory, holding the account's credentials and session files), both owned
+by `mending`, the second with mode `0700`. Put the host's permission rules in
+Claude Code's managed settings file, `/etc/claude-code/managed-settings.json`,
+owned by root and not writable by `mending`: anything in the writable
+configuration directory, the host itself could change; the unit can write only these two and the checkout, and
+hides `/home`. Install the `claude` executable outside `/home`. Copy the two
+unit files in this directory to `/etc/systemd/system/`.
 
 Create `/etc/mending/repair-cycle.env`, owned by `root:mending` and mode `0640`:
 
@@ -23,10 +36,12 @@ MENDING_REPAIR_CYCLE_CONFIG=/etc/mending/repair-cycle.json
 
 Create `/etc/mending/repair-cycle.json`, owned by `root:mending` and mode
 `0640`. The operator selects the repository identity, model, runtime, call
-limit, and USD cost cap. Runtime and call limit may be omitted to use their
-90-minute and 100-call defaults. `observation_call_limit` (default 3) and
-`observation_minutes` (default 5) bound how a recorded attempt is observed; see
-below.
+limit, USD cost cap, the host executable as an absolute path, and the Adept
+plugin directory and version the host loads. Runtime and call limit may be
+omitted to use their 90-minute and 100-call defaults. `window_minutes`
+(default 1440, one host-local day) is the window in which at most one new
+repair starts. `observation_call_limit` (default 3) and `observation_minutes`
+(default 5) bound how a recorded attempt is observed; see below.
 
 ```json
 {
@@ -36,6 +51,10 @@ below.
   "runtime_minutes": 90,
   "call_limit": 100,
   "cost_cap_usd": "25.00",
+  "window_minutes": 1440,
+  "host_executable": "/usr/local/bin/claude",
+  "adept_skills_dir": "/opt/adept",
+  "adept_skills_version": "ADEPT_PLUGIN_VERSION",
   "authority": {
     "schema": 1,
     "revision": "2026-10-06.1",
@@ -44,7 +63,7 @@ below.
         "key": "CONCERN_KEY",
         "reviewed_brief_version": "REVIEWED_BRIEF_VERSION",
         "evidence_digest": "EVIDENCE_DIGEST",
-        "files": ["src/module.py"],
+        "files": ["src/module.py", "tests/test_module.py"],
         "actions": ["repair"],
         "call_limit": 100,
         "cost_cap_usd": "25.00",
@@ -65,11 +84,22 @@ rewrites the record and prints `Changed ...` when they move; the cycle
 recomputes both and refuses a stale pair. The pair is computed from work items
 in the state file, which the coding host can write, so approve it only for a
 brief you reviewed: the published issue shows the brief as it was created, and
-a `Changed ...` line means the pair no longer matches that text. The cycle reads work items and link
-records from its own `--state` file, so `scan` and `repair-queue` must use that
-same file; wiring the recipe for this is #31.
-It allows the files of the brief's evidence manifest, the `repair` action
-(the only one supported), limits at or above the cycle's own, and an expiry.
+a `Changed ...` line means the pair no longer matches that text. The cycle runs
+`scan` and `repair-queue sync --apply` itself with its own `--state` file; do
+not run either by hand against that file while the unit is active.
+`files` is the whole set of paths the repair may change: the brief's evidence
+manifest files and any test or documentation file the repair will touch. The
+host is told this set, and a repair pull request that changes any other path
+fails the attempt (`authority-scope-exceeded`). The check compares each pull
+request's changed paths after the change, and reads at most 100 of them, so a
+file renamed onto an approved path, or a path past the first 100, is not
+caught; review renames before merging. A pull request whose edits
+cannot be compared because its approval was removed or the configuration is
+unreadable fails the attempt with that authority reason instead of settling,
+so remove an approval only after its attempt has settled. The approval also names the
+`repair` action (the only one supported), limits at or above the cycle's own,
+and an expiry; set `expires_at` past the expected review of the pull request,
+because an expired approval fails an attempt whose pull request is still open.
 A selection binds the attempt to the approved repair and records the
 `revision` for audit. Before
 dispatch, and whenever a recorded attempt is observed still active, the cycle
@@ -85,6 +115,8 @@ named reason (`authority-missing`, `authority-revoked`, `authority-expired`,
 `authority-mismatch`, `authority-scope-exceeded`, `authority-limits-exceeded`,
 `authority-invalid`, `authority-unsupported`, `authority-untrusted`,
 `source-not-current`, `source-unreadable`, or `selected-repair-unavailable`).
+When no published repair is selectable, or none has an approval, the run is a
+discovery-only no-op (`Repair cycle no-op: ...`) and creates no attempt.
 
 The configuration grants authority only when the account running the cycle
 neither owns nor can write it, or any directory above it, and `--config` is
@@ -93,19 +125,36 @@ not a symbolic link or under one; otherwise every run parks as
 run the cycle as root, and keep a manual pilot's configuration in a directory
 owned by another account.
 
+Each run does, in order: observe a recorded attempt that is not settled, and
+stop there; refresh with `desloppify scan`; revalidate and publish with
+`repair-queue sync --apply`, both bounded by the configured runtime; select and authorize one published repair; then
+dispatch it once to the Claude Code host, which runs the Adept skills and stops
+at a draft pull request. A second run that starts while one is running prints
+`Repair cycle already running.` and exits. A failed refresh or publication
+parks as `refresh-failed` or `publication-failed` before selection.
+
 The command enforces the selected runtime while each authority or selection
-call is running. Reading a recorded attempt's outcome is separate: each run may
-make one read-only reconcile call, up to `observation_call_limit` calls per
-attempt, each bounded by `observation_minutes`, even after the runtime has
-expired. It never extends the runtime or starts work. A receipt observed after
-the deadline, or over the call or cost limit, is recorded with its usage and
-the attempt is marked failed (`runtime-exhausted` or `budget-exhausted`).
-Because receipts carry no completion time, any interrupted attempt first
-observed after its deadline is marked failed this way. When the allowance is
-spent, runs park as `observation-exhausted` and no further reads occur.
+call is running, and the host adapter enforces it, the call limit, and the USD
+cap on the host run. An attempt stays active after the host stops while a pull
+request it opened is still open; it settles once every such pull request is
+merged or closed. A pull request closed unmerged also settles the attempt and
+leaves its repair issue open and approved, so a later window may select it
+again; close the repair issue or remove the approval to stop that. A completed
+host run without a pull request (`no-pull-request`), a failed run
+(`host-failed`), a stopped run (`runtime-exhausted` or `budget-exhausted`), and
+a run whose worker could not be verified stopped (`dispatch-outcome-unknown`)
+fail the attempt; the last stays reported active.
+
+Observing a recorded attempt is separate from starting work: each run may spend
+one observation, bounded by `observation_minutes`, even after the runtime has
+expired or the configuration is disabled, and it never starts work. A run that
+reads the attempt's pull requests resets the count; `observation_call_limit`
+bounds consecutive observations that reached no verdict, such as an unreadable
+pull request (`pull-request-lookup-unavailable`) or a worker that cannot be
+verified. When it is spent, the attempt fails as `observation-exhausted`.
 
 The state file's `attempt_failure` keeps the attempt's first failure. While it
-is set, no new work starts: a terminal attempt parks later runs as
+is set, no new work starts: a settled attempt parks later runs as
 `disposition-required`, and a still-active one keeps parking with its
 observation reason. Review the attempt, then record a disposition:
 
@@ -116,25 +165,31 @@ desloppify repair-cycle --config /etc/mending/repair-cycle.json \
 
 The attempt ID is `current_lease.attempt_id` in the state file. Disposing makes
 no external call and cancels nothing: it asserts the attempt has stopped or is
-abandoned. If the recorded receipt (`authoritative_receipt.state`) is `active`,
-or a host dispatch is unsettled (`dispatch.phase` is `intent` or `unknown`, or
-`dispatch.outcome` is `unknown`), disposal is refused until you confirm on the
-host that the attempt's worker and pull request are finished and add
-`--confirm-stopped`; otherwise a second repair can run beside it. If the
-receipt is absent, make the same check before disposing. The next timer window on a
-later day may start new work.
+abandoned. If a host dispatch may still be running or have an open pull
+request (`dispatch.phase` is `intent` or `unknown`, `dispatch.outcome` is
+`unknown` or `completed`, or `dispatch.pull_requests` is not empty and the phase
+is not `settled`), or a legacy `authoritative_receipt.state` is `active`,
+disposal is refused until you confirm on the host that the attempt's worker
+and pull request are finished, check that the pull request changed only the
+approved files, and add `--confirm-stopped`; otherwise a second repair can run
+beside it. A later window may then start new work.
 
 Set `enabled` to `false` to park new work while retaining enough local state to
-reconcile an already-recorded attempt. A missing model or positive USD cap also
-parks before model work. Only USD-measured usage is accepted; another currency
-parks instead of being converted.
+observe an already-recorded attempt. A missing model or positive USD cap also
+parks before model work.
 
 ## Window and activation
 
-Edit `OnCalendar` only in `mending-repair-cycle.timer` to choose the daily
-window. With no timezone suffix, systemd interprets it in the host system
-timezone. Do not add a second window check to configuration. `Persistent=false`
-deliberately skips missed windows rather than catching them up.
+Edit `OnCalendar` in `mending-repair-cycle.timer` to choose when runs happen,
+and set `window_minutes` to the same cadence: the timer schedules runs, and the
+configured window bounds new repairs to one per window for timer and manual
+runs alike ([ADR 0016](../adr/0016-composed-repair-cycle.md)). Windows start at
+consecutive blocks of `window_minutes` counted from 2000-01-01 00:00 host-local
+time; choose a value that divides 1440 so they start at the same times each
+day. With no timezone suffix,
+systemd interprets `OnCalendar` in the host system timezone. `Persistent=false`
+deliberately skips missed windows rather than catching them up. A run in a
+window that already started a repair parks as `window-attempt-complete`.
 
 After copying the units and creating the restricted files, activate the
 timer:
@@ -153,14 +208,13 @@ systemctl disable --now mending-repair-cycle.timer
 ```
 
 Re-enabling invokes a later timer window; it does not replay a skipped one. If
-the scheduler finds an unresolved recorded attempt, it reconciles that attempt
-before any new selection. An already-recorded terminal receipt needs no second
-external reconciliation.
+the scheduler finds an unsettled recorded attempt, it observes that attempt
+before any new selection.
 
 ## Host adapter and pilot
 
-Repairs run through a Mending-owned adapter for one concrete coding host, which
-runs the installed Adept skills; Adept is not a service. That adapter is not
-implemented yet (#19). Until it is, the command parks before selection. Target
-opt-in, the manual pilot, and timer activation remain #7 responsibilities, and
-merge is outside the pilot.
+Repairs run through `ClaudeHostAdapter`, a Mending-owned adapter for the
+Claude Code CLI that runs the installed Adept skills
+([ADR 0010](../adr/0010-claude-code-host-adapter.md)); Adept is not a service.
+Target opt-in, the manual pilot, and timer activation remain #7
+responsibilities, and merge is outside the pilot.

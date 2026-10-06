@@ -67,10 +67,10 @@ desloppify review --run-batches   # bounded subjective and architecture-concern 
 desloppify repair-queue revalidate ID --repo OWNER/REPO --apply
 desloppify repair-queue sync --repo OWNER/REPO            # dry run; --apply publishes
 desloppify repair-queue recover MARKER --repo OWNER/REPO --apply
-desloppify repair-cycle --config FILE --state FILE        # parks: no host adapter yet
+desloppify repair-cycle --config FILE --state FILE        # one bounded repair through the host
 ```
 
-Planned, not yet available: a Mending-owned host adapter that runs one bounded repair ([#19](https://github.com/randomparity/mending/issues/19)).
+`repair-cycle` refreshes, publishes, and dispatches at most one approved repair per window to a Claude Code host running the Adept skills, which stops at a draft pull request ([ADR 0016](docs/adr/0016-composed-repair-cycle.md)).
 A manual pilot ([#7](https://github.com/randomparity/mending/issues/7)) comes before any scheduled run; the
 [systemd recipe](docs/systemd/repair-cycle.md) stays disabled until then.
 

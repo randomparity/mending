@@ -9,10 +9,11 @@ User=mending
 Group=mending
 WorkingDirectory=/var/lib/mending/repository
 EnvironmentFile=/etc/mending/repair-cycle.env
+Environment=CLAUDE_CONFIG_DIR=/var/lib/mending/claude
 ExecStart=/usr/local/bin/desloppify repair-cycle --config ${MENDING_REPAIR_CYCLE_CONFIG} --state /var/lib/mending-repair-cycle/state.json
 StateDirectory=mending-repair-cycle
 StateDirectoryMode=0700
-ReadWritePaths=/var/lib/mending/repository
+ReadWritePaths=/var/lib/mending/repository /var/lib/mending/repository-worktrees /var/lib/mending/claude
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true

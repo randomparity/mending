@@ -23,6 +23,7 @@ from desloppify.app.commands.repair_cycle_host import (
     HostLookupError,
     HostReferences,
     HostRequest,
+    PullRequest,
     host_session_id,
 )
 from desloppify.engine.repair_cycle import BudgetAdmission, CycleConfig
@@ -497,3 +498,40 @@ def test_lookup_without_gh_or_git_repository_fails_closed(lookup, tmp_path, monk
     monkeypatch.setenv("PATH", str(tmp_path / "empty"))
     with pytest.raises(HostLookupError):
         lookup["adapter"].references("a1", "owner/repository", lookup["repo"], ())
+
+
+def test_pull_requests_read_state_and_files(lookup, monkeypatch):
+    adapter = lookup["adapter"]
+    url = "https://github.com/owner/repository/pull/7"
+    monkeypatch.setenv("FAKE_GH_PR", json.dumps(
+        {"state": "MERGED", "files": [{"path": "a.py"}, {"path": "tests/test_a.py"}]}
+    ))
+
+    assert adapter.pull_requests((url,)) == (
+        PullRequest(url, False, frozenset({"a.py", "tests/test_a.py"})),
+    )
+    monkeypatch.setenv("FAKE_GH_PR", json.dumps({"state": "OPEN", "files": []}))
+    renamed = "https://github.com/Owner/Repository/pull/8"
+    assert adapter.pull_requests((renamed,)) == (PullRequest(renamed, True, frozenset()),)
+    calls = lookup["log"].read_text().splitlines()
+    assert calls == [f"pr view {url} --json state,files", f"pr view {renamed} --json state,files"]
+
+
+@pytest.mark.parametrize("payload", ['{"state": 1, "files": []}', '{"state": "OPEN"}',
+                                     '{"state": "OPEN", "files": [{"path": 3}]}', "[]"])
+def test_pull_requests_reject_malformed_output(lookup, monkeypatch, payload):
+    monkeypatch.setenv("FAKE_GH_PR", payload)
+    with pytest.raises(HostLookupError, match="gh pr view"):
+        lookup["adapter"].pull_requests(("https://github.com/owner/repository/pull/7",))
+
+
+@pytest.mark.parametrize("url", [
+    "https://github.com/other/repository/pull/7",
+    "https://github.com/owner/repository/pull/7 --web",
+    "https://github.com/owner/repository/issues/7",
+    "--web",
+])
+def test_pull_requests_refuse_foreign_urls_without_running_gh(lookup, url):
+    with pytest.raises(HostLookupError, match="not a pull request"):
+        lookup["adapter"].pull_requests((url,))
+    assert not lookup["log"].exists()
