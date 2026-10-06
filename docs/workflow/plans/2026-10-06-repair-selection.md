@@ -124,7 +124,9 @@ the current behavior named):
 - `test_three_candidates_create_only_the_rank_first` — red: three creates.
 - `test_clean_state_records_no_op_and_dry_run_records_nothing` — red: no
   `repair_queue_selection` key.
-- `test_pending_repair_blocks_selection` — red: a create happens.
+- `test_pending_repair_blocks_selection` — red: a create happens; asserts the
+  printed line names the blocking item and its key, and a non-mapping pending
+  prints the reconcile-manually line.
 - `test_human_edited_and_closed_links_are_kept_and_another_is_selected` and
   `test_dismissed_item_is_never_selected` — red: the version assertion on the
   read-back link fails.
@@ -146,10 +148,16 @@ Steps:
    the spec's `_select` section states (messages verbatim; `at` from
    `datetime.now(UTC).isoformat()`; `_record_selection` returns early without
    `--apply`).
-5. `_create_once`: `return False` on each early exit inside the lock, `return
-   True` after it (create outcome no longer changes the result).
+5. `_create_once`: inside the lock, after the existing stale checks, add
+   `if candidate.kind == "small_repair" and _pending_repair(state, candidate.repository):`
+   print `Skipped <id>: another repair publication is pending.` and `return
+   False`; `return False` on each other early exit inside the lock, `return
+   True` after it (create outcome no longer changes the result). Test:
+   `test_create_once_refuses_while_another_repair_is_pending` (red: create runs).
 6. `_write_link`: inside the lock read `previous = _expected_record(detail,
-   lane.link, candidate)`, compute `version = reviewed_version(issue, candidate)`,
+   lane.link, candidate)`, compute
+   `version = reviewed_version(_issues(state)[candidate.issue_id], candidate)`
+   (the locked work item, not the `GitHubIssue` argument),
    add it to the record when not `None`, set `changed = previous is not None and
    (previous["evidence_digest"] != candidate.evidence_digest or
    previous.get("reviewed_brief_version", version) != version)`; print the
@@ -165,7 +173,12 @@ Mode: task-test-not-applicable — README and argparse help are prose with no
 executable consumer. Edit README's repair-queue paragraph (both routes,
 one-per-run selection, recorded no-op, non-dispatchable proposals) and drop
 the #18 entry from "Planned"; change the `repair-queue` parser help to
-`Publish revalidated small repairs (one per sync) and non-dispatchable proposals to GitHub`.
+`Publish revalidated small repairs (one per sync) and non-dispatchable proposals to GitHub`
+and give the `sync` subparser `help=` and `description=`: `Reconcile linked
+issues, then publish at most one ranked small repair (a high-confidence concern
+in one directory of at most 3 files, or an exact same-file duplicate pair);
+records a no-op when none is safe. Proposals publish without status:ready and
+are never dispatched.`
 Run `make tests`; commit `docs: describe repair selection and proposal path`.
 
 ## Final

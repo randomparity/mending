@@ -23,8 +23,10 @@ repair is returned to `_sync` as selectable instead. After the loop,
 
 1. Any work item's `detail.github_repair_pending` is not `None` and is either
    not a mapping or names this repository → no-op, reason
-   `unresolved repair publication`; print
-   `No repair selected: an earlier repair publication is unresolved; resolve it with repair-queue recover.`
+   `unresolved repair publication`; print, per blocking item,
+   `No repair selected: repair publication for <id> is unresolved; check GitHub, then run repair-queue recover <key>.`
+   (`<key>` is the record's `key` or legacy `marker`), or for a non-mapping
+   record `No repair selected: the pending repair record on <id> is unrecognized; reconcile it manually.`
 2. For each selectable candidate, `build_brief`; a parked one prints the
    existing park line (`Would park …` dry, `Parked …` with `--apply`) and is
    dropped. None left → no-op, reason `no safe small repair`; print
@@ -32,7 +34,10 @@ repair is returned to `_sync` as selectable instead. After the loop,
 3. Otherwise rank (below); print `Deferred <id>: <chosen id> ranked first.`
    for each other. Dry run prints `Would create a repair issue for <id>.`;
    `--apply` calls `_create_once(args, client, chosen)`, which now returns
-   `True` when it wrote the pending record. `False` → no-op, reason
+   `True` when it wrote the pending record. Inside its lock, for a small
+   repair, it also refuses (prints `Skipped <id>: another repair publication
+   is pending.`, returns `False`) when `_pending_repair` holds, so concurrent
+   syncs sharing the state file cannot both create. `False` → no-op, reason
    `selected candidate changed before create`; `True` → `selected`.
 
 With `--apply` only, `_record_selection` writes under the state lock
@@ -62,7 +67,8 @@ differs, or it carried a version different from the new value, it prints
 approval bound to the earlier version no longer applies.` instead of
 `Linked …`.
 
-**Docs.** README repair-queue paragraph and the parser help describe both
+**Docs.** README repair-queue paragraph and the parser help (top-level and
+the `sync` subcommand) describe both
 eligibility routes (concerns; exact same-file `dupes` pairs), the one-per-run
 selection with recorded no-op, and the non-dispatchable proposal path; the
 README "Planned" line drops the #18 brief/proposal entry.
@@ -84,7 +90,11 @@ No change to: classification, keys, markers, search, adoption, recover,
    the lock yields a no-op this run (bounded: next run selects again); an
    unrecoverable pending record halts new repairs until `recover` (intended);
    the GitHub body lags a material change (bounded: approval binds the stored
-   version, #26); weak benefit signal for single-line concern citations
+   version, #26); the stored version is the last successful link write, so a
+   linked item sync no longer reaches (reclassified to proposal, revalidation
+   dropped, ambiguous key) keeps its earlier version — #26 must recompute
+   `reviewed_version` from the current work item and refuse when it parks or
+   cannot be built (ADR 0013's reclassified-repair case, owned by #19/#26); weak benefit signal for single-line concern citations
    (cost: ordering only).
 4. **Covered elsewhere** — approval binding and recheck (#26); one active
    repair, PR observation, dispatch (#19/#31); body edits/live publication

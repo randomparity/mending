@@ -25,7 +25,8 @@ change and stay put on a wording-only one.
 - **At most one create.** If any work item still holds a
   `github_repair_pending` record for the repository, nothing is selected: an
   uncertain earlier create must be resolved (adopted, or cleared by
-  `recover`) first. Otherwise selectable items whose brief parks are dropped,
+  `recover`) first; `_create_once` repeats this check under the state lock.
+  Otherwise selectable items whose brief parks are dropped,
   the rest are ranked, and only the first goes through ADR 0005's
   pending-before-create path. The others are reported as deferred.
 - **Ranking.** Lexicographic over values the stored revalidation already holds:
@@ -54,7 +55,10 @@ several runs. One unresolved pending create stops new repairs until it is
 adopted or recovered. The published issue body is not rewritten on a material
 change, so the issue can lag the stored version until a later publication
 owner (#7) handles edits; #26 binds approval to the stored version, not the
-body. Problem and consequence rewording, renderer text, and re-revalidation at
+body. The stored version is the last successful link write: a linked item
+sync no longer reaches (reclassified to proposal, revalidation dropped,
+ambiguous key) keeps its earlier version, so #26 recomputes it from the
+current work item rather than trusting the stored value alone. Problem and consequence rewording, renderer text, and re-revalidation at
 a new commit with the same blobs do not move the version. A concern's
 consequence still moves its evidence digest. Benefit is measured only by
 cited lines, which is weak for single-line concern citations. Proposals stay
