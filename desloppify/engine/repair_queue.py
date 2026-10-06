@@ -205,7 +205,12 @@ def _kind_fields(kind: str, record: Mapping[str, Any]) -> dict[str, Any]:
             raise RepairRecordError(f"{kind} has an invalid issue number")
         if not isinstance(url, str) or not url or state not in {"open", "closed", None}:
             raise RepairRecordError(f"{kind} has an invalid url or state")
-        return {"number": number, "url": url, "state": state}
+        fields = {"number": number, "url": url, "state": state}
+        if "reviewed_brief_version" in record:
+            if not _is_digest(record["reviewed_brief_version"]):
+                raise RepairRecordError(f"{kind} has an invalid reviewed brief version")
+            fields["reviewed_brief_version"] = record["reviewed_brief_version"]
+        return fields
     if kind == "github_repair_revalidated":
         manifest = manifest_from_record(record.get("manifest"))
         check, check_digest = record.get("check"), record.get("check_digest")

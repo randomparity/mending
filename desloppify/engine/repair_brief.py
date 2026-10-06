@@ -28,6 +28,9 @@ from desloppify.engine.repair_queue import (
 
 BRIEF_SCHEMA = "desloppify-repair-brief:v1"
 PROPOSAL_SCHEMA = "desloppify-proposal-brief:v1"
+REVIEWED_SCHEMA = "desloppify-reviewed-brief:v1"
+# Wording and bookkeeping fields: changing only these never invalidates an approval.
+_WORDING = frozenset({"problem", "consequence", "revision", "manifest_digest"})
 MAX_TEXT = 1000
 MAX_ITEMS = 20
 # Below GitHub's 65536-character body limit and Linux's 131072-byte argv string limit.
@@ -180,6 +183,18 @@ def build_brief(
     if len(render_brief(brief)[1].encode()) > MAX_BODY_BYTES:
         return ParkedBrief("body", "too-large")
     return brief
+
+
+def reviewed_version(issue: Mapping[str, Any], candidate: PromotionCandidate) -> str | None:
+    """Digest of the brief's material fields and source blobs; ``None`` when the brief parks."""
+    brief = build_brief(issue, candidate)
+    if isinstance(brief, ParkedBrief):
+        return None
+    fields = {key: value for key, value in asdict(brief).items() if key not in _WORDING}
+    sources = [[d.path, d.role, d.object_id] for d in _manifest(issue["detail"]).dependencies]
+    record = {"schema": REVIEWED_SCHEMA, "brief_schema": brief.schema, **fields, "sources": sources}
+    canonical = json.dumps(record, sort_keys=True, separators=(",", ":"))
+    return sha256(canonical.encode()).hexdigest()
 
 
 def _concern_source(detail: Mapping[str, Any]) -> dict[str, Any]:
@@ -428,7 +443,9 @@ __all__ = [
     "PROPOSAL_SCHEMA",
     "ParkedBrief",
     "ProposalBrief",
+    "REVIEWED_SCHEMA",
     "RepairBrief",
     "build_brief",
     "render_brief",
+    "reviewed_version",
 ]
