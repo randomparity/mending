@@ -391,6 +391,19 @@ def test_expired_approval_never_launches(world) -> None:
     assert world.launches() == []
 
 
+def test_approval_expiry_stops_a_running_host(world, short_grace, late_clock) -> None:
+    # Expiry falls inside the lease: the jumped clock passes it, not the lease deadline.
+    expires = world.now() + timedelta(minutes=30)
+    world.config["authority"] = world.authority(expires_at=expires.isoformat())
+    world.host({"do": "child", "ignore_term": True}, {"do": "hang"})
+
+    assert "Repair cycle parked: authority-expired." in world.run()
+
+    assert world.cycle()["dispatch"]["outcome"] == "stopped"
+    assert len(world.spawned()) == 1
+    assert world.processes() == []
+
+
 # 5. Stale evidence or base.
 def test_stale_evidence_at_sync_is_a_no_op(world) -> None:
     world.check = lambda issue, manifest: CheckResult("fail", "anchor moved", ())
