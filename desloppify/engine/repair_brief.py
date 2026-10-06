@@ -23,6 +23,7 @@ from desloppify.engine.repair_queue import (
     PROPOSAL_LINE,
     PromotionCandidate,
     concern_failures,
+    proposal_marker,
 )
 
 BRIEF_SCHEMA = "desloppify-repair-brief:v1"
@@ -328,17 +329,18 @@ def _contracts(brief: RepairBrief) -> list[str]:
 
 
 def _provenance(brief: RepairBrief) -> list[str]:
-    lane = "proposal" if isinstance(brief, ProposalBrief) else brief.route
-    line = {"proposal": PROPOSAL_LINE, "finding": FINDING_KEY_LINE}.get(lane, KEY_LINE)
+    if isinstance(brief, ProposalBrief):
+        marker = proposal_marker(brief.key)
+        identity = [PROPOSAL_LINE.format(marker), "", "```text", f"schema: {brief.schema}"]
+        identity.append(f"proposal-key: {marker}")
+    else:
+        line = FINDING_KEY_LINE if brief.route == "finding" else KEY_LINE
+        identity = [line.format(brief.key), "", "```text", f"schema: {brief.schema}"]
+        identity += [f"{brief.route}-key: {brief.key}", f"{brief.route}-identity: {brief.identity}"]
     return [
         "## Provenance",
         "",
-        line.format(brief.key),
-        "",
-        "```text",
-        f"schema: {brief.schema}",
-        f"{lane}-key: {brief.key}",
-        f"{brief.route}-identity: {brief.identity}",
+        *identity,
         f"evidence-digest: {brief.evidence_digest}",
         f"manifest-digest: {brief.manifest_digest}",
         f"source-revision: {brief.revision}",

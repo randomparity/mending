@@ -68,7 +68,9 @@ duplication still exists). A failed span check is `fail`.
 **Lanes.** A `small_repair` uses the existing records
 (`github_repair`, `github_repair_pending`), key line, and `status:ready`
 label. A `proposal` uses `github_proposal`/`github_proposal_pending`, the
-line `<!-- desloppify-proposal-key: KEY -->`, and is created with no label.
+line `<!-- desloppify-proposal-key: MARKER -->` (MARKER = SHA-256 of
+`desloppify-proposal-key:v1\n<repair key>`; the body omits the key and
+identity), and is created with no label.
 Sync verifies and adopts only bodies carrying the lane's own line, so a
 proposal issue is never linked as a repair and vice versa; any record of
 either lane on the item blocks a create. An item holding a record of its
@@ -120,8 +122,10 @@ Out of scope: selection (#22), dispatch (#19), brief schema (#20).
   public issue body; review output reaches a new public proposal body. Added:
   none (same `gh` adapter, same repository identity check).
 - **Actors.** Untrusted: whoever wrote the scanned source (function names,
-  paths) and the model that wrote review text. Trusted: the operator and the
-  installed `gh` credentials.
+  paths), the model that wrote review text, and anyone who can open an issue
+  on the repository (their bodies reach sync through search). Trusted: the
+  operator and the installed `gh` credentials. A proposal publishes only a
+  one-way marker, so it never hands an issue author the repair key early.
 - **Controls.** Every published value goes through ADR 0009's `_text`
   sanitizer and code-span rendering; dupe evidence uses the item's relative
   `file`, never the raw detector `fn_*.file` (which may be absolute); shape

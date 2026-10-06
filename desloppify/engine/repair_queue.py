@@ -23,6 +23,7 @@ KEY_LINE = "<!-- desloppify-concern-key: {} -->"
 LEGACY_LINE = "<!-- desloppify-concern: {} -->"
 FINDING_KEY_SCHEMA = "desloppify-finding-key:v1"
 FINDING_KEY_LINE = "<!-- desloppify-finding-key: {} -->"
+PROPOSAL_KEY_SCHEMA = "desloppify-proposal-key:v1"
 PROPOSAL_LINE = "<!-- desloppify-proposal-key: {} -->"
 MAX_SMALL_FILES = 3
 
@@ -90,6 +91,11 @@ def concern_key(repository: str, identity: str) -> str:
 def finding_key(repository: str, identity: str) -> str:
     """Return a mechanical finding's key; a distinct schema keeps it out of the concern space."""
     return sha256(f"{FINDING_KEY_SCHEMA}\n{repository}\n{identity}".encode()).hexdigest()
+
+
+def proposal_marker(key: str) -> str:
+    """A proposal's public marker: one-way, so its body never discloses the repair key."""
+    return sha256(f"{PROPOSAL_KEY_SCHEMA}\n{key}".encode()).hexdigest()
 
 
 def record_key(route: str, repository: str, identity: str) -> str:
@@ -333,7 +339,7 @@ def lane_for(candidate: PromotionCandidate) -> Lane:
 def marker_line(candidate: PromotionCandidate) -> str:
     """The body line that identifies this candidate's lane and key."""
     if candidate.kind == "proposal":
-        return PROPOSAL_LINE.format(candidate.key)
+        return PROPOSAL_LINE.format(proposal_marker(candidate.key))
     line = FINDING_KEY_LINE if candidate.route == "finding" else KEY_LINE
     return line.format(candidate.key)
 
@@ -407,7 +413,7 @@ class GitHubIssueClient:
         issues = _decode_issues([payload], allow_state=True)
         return issues[0]
 
-    def create(self, repository: str, title: str, body: str, *, ready: bool = True) -> None:
+    def create(self, repository: str, title: str, body: str, *, ready: bool) -> None:
         """Attempt one creation; only a dispatchable (``ready``) issue gets ``status:ready``."""
         labels = ["--label", "status:ready"] if ready else []
         self._call(
@@ -463,6 +469,7 @@ __all__ = [
     "LINK_KINDS",
     "Lane",
     "PROPOSAL_LANE",
+    "PROPOSAL_KEY_SCHEMA",
     "PROPOSAL_LINE",
     "PromotionCandidate",
     "REPAIR_LANE",
@@ -480,5 +487,6 @@ __all__ = [
     "marker_line",
     "matching_record",
     "normalize_record",
+    "proposal_marker",
     "record_key",
 ]

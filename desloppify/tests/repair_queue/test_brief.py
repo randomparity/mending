@@ -24,6 +24,7 @@ from desloppify.engine.repair_queue import (
     concern_key,
     finding_key,
     item_hashes,
+    proposal_marker,
 )
 
 IDENTITY = "a" * 64
@@ -323,8 +324,9 @@ def test_proposal_renders_decision_content_without_a_repair_key() -> None:
     assert "` review confidence is not high `" in body
     assert "` Call the loader helper from the parser `" in body
     assert f"\nschema: {PROPOSAL_SCHEMA}\n" in body
-    assert PROPOSAL_LINE.format(KEY) in body.splitlines()
+    assert PROPOSAL_LINE.format(proposal_marker(KEY)) in body.splitlines()
     assert "desloppify-concern-key" not in body and "## Completion criterion" not in body
+    assert KEY not in body and IDENTITY not in body
     assert brief.version != _valid().version
 
 

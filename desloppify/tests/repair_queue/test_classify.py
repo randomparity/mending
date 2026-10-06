@@ -27,6 +27,7 @@ from desloppify.engine.repair_queue import (
     item_hashes,
     lane_for,
     normalize_record,
+    proposal_marker,
 )
 
 REPOSITORY = "owner/repository"
@@ -170,7 +171,8 @@ def test_each_lane_accepts_only_its_own_body_line() -> None:
     repair = classify(_concern(), REPOSITORY).candidate
     finding = classify(_dupe(), REPOSITORY).candidate
     assert proposal is not None and repair is not None and finding is not None
-    assert carries_concern_marker(PROPOSAL_LINE.format(proposal.key), proposal)
+    assert carries_concern_marker(PROPOSAL_LINE.format(proposal_marker(proposal.key)), proposal)
+    assert not carries_concern_marker(PROPOSAL_LINE.format(proposal.key), proposal)
     assert not carries_concern_marker(KEY_LINE.format(proposal.key), proposal)
     assert not carries_concern_marker(PROPOSAL_LINE.format(repair.key), repair)
     assert carries_concern_marker(FINDING_KEY_LINE.format(finding.key), finding)

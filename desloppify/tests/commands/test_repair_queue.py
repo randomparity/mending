@@ -24,6 +24,7 @@ from desloppify.engine.repair_queue import (
     finding_key,
     item_hashes,
     legacy_marker,
+    proposal_marker,
 )
 
 IDENTITY = "a" * 64
@@ -769,7 +770,8 @@ def test_proposal_is_published_outside_the_dispatch_queue() -> None:
     _sync(state, client)
     [(title, body, ready)] = client.created
     assert title.startswith("Proposal: ") and ready is False
-    assert PROPOSAL_LINE.format(KEY) in body.splitlines() and KEY_BODY not in body
+    assert PROPOSAL_LINE.format(proposal_marker(KEY)) in body.splitlines()
+    assert KEY not in body and IDENTITY not in body
     detail = _detail(state)
     assert detail["github_proposal"]["number"] == 9
     assert not {"github_repair", "github_repair_pending", "github_proposal_pending"} & set(detail)
@@ -782,8 +784,10 @@ def test_proposal_dry_run_names_the_lane(capsys) -> None:
 
 def test_repair_lane_never_adopts_a_proposal_issue() -> None:
     state = _revalidated_state()
-    proposal = GitHubIssue(9, "https://example.test/9", "open", PROPOSAL_LINE.format(KEY))
-    client = _Recorder({KEY: [proposal]})
+    proposal = GitHubIssue(
+        9, "https://example.test/9", "open", PROPOSAL_LINE.format(proposal_marker(KEY))
+    )
+    client = _Recorder({KEY: [proposal], IDENTITY: [proposal]})
     _sync(state, client)
     assert client.create_calls == 0
     assert not {"github_repair", "github_repair_pending"} & set(_detail(state))
@@ -857,9 +861,10 @@ def test_revalidate_names_why_an_item_is_ineligible() -> None:
         cmd_repair_queue(args)
 
 
-def test_recover_clears_a_proposal_pending_record() -> None:
+@pytest.mark.parametrize("marker", [KEY, proposal_marker(KEY)], ids=["key", "public-marker"])
+def test_recover_clears_a_proposal_pending_record(marker: str) -> None:
     state = _proposal_state(github_proposal_pending=dict(BASE))
-    cmd_repair_queue(_args("recover", state, apply=True, marker=KEY))
+    cmd_repair_queue(_args("recover", state, apply=True, marker=marker))
     assert "github_proposal_pending" not in _detail(state)
 
 

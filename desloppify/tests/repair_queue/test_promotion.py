@@ -262,7 +262,7 @@ def test_client_creates_actionable_issue_with_fixed_arguments() -> None:
         return subprocess.CompletedProcess(argv, 0, "", "")
 
     title, body = "Repair: problem", "## Source-bound"
-    GitHubIssueClient(run).create(REPOSITORY, title, body)
+    GitHubIssueClient(run).create(REPOSITORY, title, body, ready=True)
     assert calls == [[
         "gh", "issue", "create", "--repo", REPOSITORY, "--title", title,
         "--body", body, "--label", "status:ready",

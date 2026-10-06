@@ -44,7 +44,10 @@ proposals are published to GitHub as non-dispatchable issues.
   and its fields, with fixed guidance text and `finding-key` provenance
   labels.
 - **Proposal lane.** A proposal is published with no label, a
-  `desloppify-proposal-key` line, and a `desloppify-proposal-brief:v1` body
+  `desloppify-proposal-key` line carrying a one-way marker (SHA-256 of
+  `desloppify-proposal-key:v1` and the repair key) and no concern identity,
+  so a proposal body never discloses the repair key before a repair exists,
+  and a `desloppify-proposal-brief:v1` body
   (observed evidence, alternatives and trade-offs, ownership and contracts,
   open questions, decision needed). It is recorded only as `github_proposal`
   or `github_proposal_pending`. Sync adopts a GitHub issue only when its body
@@ -66,9 +69,9 @@ Medium- and low-confidence or multi-directory concerns now publish as
 proposals instead of repairs. A repair issue published before this change, or
 before a reclassification, is not withdrawn; the dispatch-time recheck
 (#19/#26) and selection (#22) own that. A renamed file gives a duplicate pair
-a new identity. A proposal blocks automatic repair creation for the same
-concern, because its body holds the concern identity that repair search
-finds as an unverified hit. A lane flip while the other lane holds a record
+a new identity. Repair-lane adoption still trusts any body carrying the key
+line without an author check (ADR 0008); this change adds no earlier
+disclosure of that key. A lane flip while the other lane holds a record
 parks the item until a human reconciles it. `candidate_from_issue` keeps its
 meaning, a current small-repair candidate, so any caller of it never sees a
 proposal; sync reads both kinds through `classify`.

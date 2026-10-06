@@ -34,6 +34,7 @@ from desloppify.engine.repair_queue import (
     legacy_marker,
     matching_record,
     normalize_record,
+    proposal_marker,
     record_key,
 )
 
@@ -135,7 +136,11 @@ def _pending_matches(issue: Mapping[str, Any], kind: str, repository: str, marke
         record = normalize_record(kind, pending, repository, identity, evidence, route=route)
     except RepairRecordError:
         return False
-    return record is not None and record["key"] == marker
+    if record is None:
+        return False
+    if kind == "github_proposal_pending":
+        return marker in {record["key"], proposal_marker(record["key"])}
+    return bool(record["key"] == marker)
 
 
 def _sync(args: argparse.Namespace, client: Any) -> None:
@@ -335,9 +340,11 @@ def _read_link(
 
 
 def _search(client: Any, candidate: PromotionCandidate) -> list[Any] | None:
-    """Search the stable key, the identity digest, and a concern's current legacy marker."""
+    """Search the key, the identity digest, a proposal's marker, and a concern's legacy marker."""
     terms = [candidate.key, candidate.identity]
-    if candidate.route == "concern":
+    if candidate.kind == "proposal":
+        terms.insert(0, proposal_marker(candidate.key))
+    elif candidate.route == "concern":
         terms.append(legacy_marker(candidate.identity, candidate.evidence_digest))
     try:
         found = [issue for term in terms for issue in client.search(candidate.repository, term)]
