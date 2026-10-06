@@ -166,7 +166,8 @@ def _load_state_reporting_fallback(state_path: Path) -> tuple[StateModel, str | 
     """Load state and say why an existing file was replaced by a fresh state.
 
     The reason is ``None`` when the file loaded, a backup was recovered, or no
-    state file exists yet (first run).
+    state file exists yet (first run). A missing file whose ``.json.corrupted``
+    copy exists is not a first run: an earlier load moved the original aside.
     """
     if not state_path.exists():
         plan_path = plan_path_for_state(state_path)
@@ -175,7 +176,15 @@ def _load_state_reporting_fallback(state_path: Path) -> tuple[StateModel, str | 
                 f"  ⚠ State file missing ({state_path.name}); attempting recovery from {plan_path.name}.",
                 file=sys.stderr,
             )
-        return _reconstruct_from_saved_plan_if_available(state_path, empty_state()), None
+        corrupted_path = state_path.with_suffix(".json.corrupted")
+        reason = None
+        if corrupted_path.exists():
+            reason = (
+                f"it is missing and an earlier load moved an undecodable copy to "
+                f"{corrupted_path}. Repair it and move it back to {state_path.name}, "
+                "delete it to start fresh, or rerun `desloppify scan` to rebuild state"
+            )
+        return _reconstruct_from_saved_plan_if_available(state_path, empty_state()), reason
 
     try:
         data = _load_json(state_path)
@@ -356,10 +365,11 @@ def state_lock(
     Acquires an exclusive file lock, reloads state from disk (to pick up the
     latest version), yields it for mutation, then saves on clean exit.
 
-    Raises ``CommandError`` instead of yielding when the state file exists but
-    could not be loaded, so a fresh fallback state never overwrites it (or, on
-    the next save, its backup). A missing state file stays writable, including
-    one that ``load_state`` already moved aside to ``.json.corrupted``.
+    Raises ``CommandError`` instead of yielding when the state file could not
+    be loaded, so a fresh fallback state never overwrites it (or, on the next
+    save, its backup). That includes a missing file whose undecodable original
+    an earlier ``load_state`` moved to ``.json.corrupted``. A first run, with
+    no state file and no ``.json.corrupted`` copy, stays writable.
 
     Usage::
 

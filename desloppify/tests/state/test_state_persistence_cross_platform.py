@@ -71,11 +71,56 @@ def test_state_lock_keeps_undecodable_state_without_backup(tmp_path):
     assert "state.json.corrupted" in excinfo.value.message
     assert "scan" in excinfo.value.message
 
-    # The original now sits in .json.corrupted, so the next locked write is a
-    # missing-file first run: it saves a fresh state and leaves the copy alone.
-    _locked_write(persistence_mod, state_path)
+    with pytest.raises(CommandError, match="state.json.corrupted"):
+        _locked_write(persistence_mod, state_path)
 
+    assert not state_path.exists()
     assert state_path.with_suffix(".json.corrupted").read_bytes() == original
+
+
+def test_state_lock_refuses_after_unlocked_load_moved_undecodable_state(tmp_path):
+    persistence_mod = importlib.import_module("desloppify.engine._state.persistence")
+    state_path = tmp_path / "state.json"
+    original = b"{not json"
+    state_path.write_bytes(original)
+
+    persistence_mod.load_state(state_path)
+
+    with pytest.raises(CommandError, match=re.escape(str(state_path))):
+        _locked_write(persistence_mod, state_path)
+    assert not state_path.exists()
+    assert state_path.with_suffix(".json.corrupted").read_bytes() == original
+
+
+def test_state_lock_saves_state_recovered_from_backup(tmp_path):
+    persistence_mod = importlib.import_module("desloppify.engine._state.persistence")
+    state_path = tmp_path / "state.json"
+    state_path.write_bytes(b"{not json")
+    state_path.with_suffix(".json.bak").write_text(json.dumps({"version": 2, "scan_count": 4}))
+
+    with persistence_mod.state_lock(state_path) as state:
+        assert state["scan_count"] == 4
+        state["scan_count"] = 5
+
+    assert json.loads(state_path.read_text())["scan_count"] == 5
+
+
+def test_state_lock_saves_state_reconstructed_from_saved_plan(tmp_path):
+    persistence_mod = importlib.import_module("desloppify.engine._state.persistence")
+    state_path = tmp_path / "state.json"
+    issue_id = "review::src/foo.ts::abcd1234"
+    plan = {
+        "queue_order": [issue_id],
+        "clusters": {},
+        "epic_triage_meta": {"triage_stages": {"observe": {"report": "done"}}},
+        "skipped": {},
+    }
+    (tmp_path / "plan.json").write_text(json.dumps(plan))
+
+    with persistence_mod.state_lock(state_path) as state:
+        assert issue_id in state["work_items"]
+
+    assert issue_id in json.loads(state_path.read_text())["work_items"]
 
 
 def test_state_lock_refuses_undecodable_state_it_cannot_move_aside(tmp_path):
