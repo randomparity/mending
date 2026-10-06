@@ -184,6 +184,11 @@ contract wording stays as #16 left it.
   runs `scan` and GitHub publication itself.
 - **Actors.** The coding host's model (same account; untrusted for authority);
   GitHub content authors. Trust sits in the root-owned config (ADR 0015).
+- **Checkout and host settings.** The checkout is untrusted input to the
+  refresh: `scan` runs with `-P`, so checkout files are never imported. The
+  Claude configuration directory is writable by the host account, so the
+  host's permission rules belong in Claude Code's root-owned managed settings,
+  not in that directory (guide).
 - **Controls.** URLs must match the configured repository's PR URL pattern
   (case-insensitive owner/name) before use, argv only, no shell. PR files are checked against the trusted
   approval, not the state copy. Subprocesses use fixed argv and bounded time.
@@ -219,7 +224,7 @@ unless noted.
    the state file; with a file-backed `--state`, a refresh that writes a work
    item and a sync that links it lead to a lease bound to that item, and the
    saved file holds both the link record and the lease. The production refresh
-   argv is `[sys.executable, "-m", "desloppify", "scan", "--no-badge", "--state", <abs>]`
+   argv is `[sys.executable, "-P", "-m", "desloppify", "scan", "--no-badge", "--state", <abs>]`
    with the project root as working directory.
 9. `_dispatch_host` builds the request from the dispatch-time binding: a brief
    changed between selection and dispatch parks without `run`.

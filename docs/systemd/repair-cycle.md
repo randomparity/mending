@@ -18,8 +18,11 @@ The scan also writes its working files under `.desloppify/` in the checkout,
 which the target repository should ignore.
 Create `/var/lib/mending/repository-worktrees` (where the Adept skills put the
 repair worktree) and `/var/lib/mending/claude` (the Claude Code configuration
-directory, holding the account's credentials and permission settings), both
-owned by `mending`; the unit can write only these two and the checkout, and
+directory, holding the account's credentials and session files), both owned
+by `mending`, the second with mode `0700`. Put the host's permission rules in
+Claude Code's managed settings file, `/etc/claude-code/managed-settings.json`,
+owned by root and not writable by `mending`: anything in the writable
+configuration directory, the host itself could change; the unit can write only these two and the checkout, and
 hides `/home`. Install the `claude` executable outside `/home`. Copy the two
 unit files in this directory to `/etc/systemd/system/`.
 

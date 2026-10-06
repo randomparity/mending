@@ -165,8 +165,9 @@ def _refresh(args: argparse.Namespace, config: CycleConfig) -> str | None:
     supplied = getattr(args, "refresh", None)
     if callable(supplied):
         return cast("str | None", supplied())
+    # -P keeps the checkout, which merged content controls, off the import path.
     argv = [
-        sys.executable, "-m", "desloppify", "scan", "--no-badge",
+        sys.executable, "-P", "-m", "desloppify", "scan", "--no-badge",
         "--state", str(_state_file(args).resolve()),
     ]
     try:
