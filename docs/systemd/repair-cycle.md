@@ -90,10 +90,12 @@ not run either by hand against that file while the unit is active.
 `files` is the whole set of paths the repair may change: the brief's evidence
 manifest files and any test or documentation file the repair will touch. The
 host is told this set, and a repair pull request that changes any other path
-fails the attempt (`authority-scope-exceeded`). The check compares each pull
-request's changed paths after the change, and reads at most 100 of them, so a
-file renamed onto an approved path, or a path past the first 100, is not
-caught; review renames before merging. A pull request whose edits
+fails the attempt (`authority-scope-exceeded`). The check reads every page of
+each pull request's changed files and counts the old path of a renamed file as
+changed, so a rename out of an unapproved path fails too. A pull request whose
+file list does not account for its whole changed-file count, such as one past
+the 3000 files GitHub lists, is not settled: the run parks as
+`pull-request-lookup-unavailable`. A pull request whose edits
 cannot be compared because its approval was removed or the configuration is
 unreadable fails the attempt with that authority reason instead of settling,
 so remove an approval only after its attempt has settled. The approval also names the
