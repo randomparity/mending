@@ -12,13 +12,15 @@ dispatched repair per configured window" and no merge permit. The code still
 keys leases to the host-local day (ADR 0006), settles an attempt only from an
 Adept receipt the stub never returns, and lets a receipt consume a merge
 permit. ADR 0006 named `OnCalendar` the sole window authority; the systemd
-guide says not to add a window check to configuration. Issue #31 asks for a
-configured window and for an open repair pull request to keep an attempt
-active after the host stops.
+guide says not to add a window check to configuration. ADR 0007 adopted "the `OnCalendar` window" and
+also says "per configured window"; this record refines it: the timer schedules
+runs, the configuration keys leases. Issue #31 asks for a configured window and
+for an open repair pull request to keep an attempt active after the host stops.
 
 ## Decision
 
-- **Order.** Observe recorded work; if it is unsettled, stop. Otherwise gate,
+- **Order.** Hold a cycle lock (`<state>.cycle.lock`) for the invocation,
+  because `scan` rewrites the state file without the state lock. Observe recorded work; if it is unsettled, stop. Otherwise gate,
   then run `scan` as a subprocess and repair-queue `sync --apply` in process
   with the cycle's `--state`, then `_authorize` at selection, `begin`, and
   `_dispatch_host`, whose own `_authorize` is the execution-time recheck and
@@ -44,12 +46,15 @@ active after the host stops.
 
 ## Consequences
 
-A manual run or a timer run with no approved published repair does discovery
+A second invocation during a run exits without touching state. A pull
+request closed unmerged settles the attempt and leaves its repair issue
+selectable; the operator closes the issue or removes the approval to stop a
+retry. A manual run or a timer run with no approved published repair does discovery
 and publication and exits as a no-op. A second timer in the same window, or a
 manual run after a timer run, parks `window-attempt-complete`. The observation
-allowance (#28) now counts runs that read an open pull request, so a pull
-request left open longer than `observation_call_limit` runs fails
-`observation-exhausted` and needs a disposition. The state file stays
+allowance (#28) counts consecutive observations that reached no verdict; a
+successful pull-request read resets it, so a long review does not exhaust it,
+but approval expiry during review still fails the attempt. The state file stays
 host-writable (ADR 0015), so the settlement facts it holds are as trustworthy
 as the account boundary. Running `scan` inside the cycle makes its runtime
 part of the unit's run time but not of the host budget. Changing
@@ -57,6 +62,7 @@ part of the unit's run time but not of the host budget. Changing
 
 ## Considered & rejected
 
+- **Do nothing.** judgment: fit; issue #31's outcome is the composed path.
 - **Keep the host-local day.** judgment: fit; issue #31 and ADR 0007 ask for a
   configured window, and a twice-daily timer would get one repair per day.
 - **Take the window from `OnCalendar` alone.** verified: `man systemd.exec`
