@@ -7,6 +7,7 @@ from collections import Counter
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +15,12 @@ from desloppify.app.commands.helpers.state import state_path
 from desloppify.base.discovery.paths import get_project_root
 from desloppify.base.exception_sets import CommandError
 from desloppify.engine._state.persistence import load_state, state_lock
-from desloppify.engine.repair_brief import ParkedBrief, build_brief, render_brief
+from desloppify.engine.repair_brief import (
+    ParkedBrief,
+    build_brief,
+    render_brief,
+    reviewed_version,
+)
 from desloppify.engine.repair_check import CheckResult, check_concern, check_finding
 from desloppify.engine.repair_manifest import (
     SourceCheckout,
@@ -37,6 +43,7 @@ from desloppify.engine.repair_queue import (
     proposal_marker,
     record_key,
 )
+from desloppify.engine.repair_selection import rank_key
 
 
 def cmd_repair_queue(args: argparse.Namespace) -> None:
@@ -144,21 +151,25 @@ def _pending_matches(issue: Mapping[str, Any], kind: str, repository: str, marke
 
 
 def _sync(args: argparse.Namespace, client: Any) -> None:
+    """Reconcile every candidate, then publish at most one ranked small repair (ADR 0014)."""
     state = _read_state(args)
     candidates = _candidates(state, args.repository)
     key_counts = Counter(candidate.key for candidate in candidates)
+    selectable = []
     for candidate in candidates:
         if key_counts[candidate.key] > 1:
             print(f"Skipped {candidate.issue_id}: concern key is ambiguous across work items.")
-        else:
-            _sync_one(args, client, state, candidate)
+        elif _sync_one(args, client, state, candidate):
+            selectable.append(candidate)
+    _select(args, client, selectable)
 
 
 def _sync_one(
     args: argparse.Namespace, client: Any, state: Mapping[str, Any], candidate: PromotionCandidate
-) -> None:
+) -> bool:
+    """Reconcile one candidate; True when it is a small repair with nothing to reconcile."""
     if not _source_current(args, state, candidate):
-        return
+        return False
     detail = _issues(state)[candidate.issue_id]["detail"]
     lane = lane_for(candidate)
     other = [kind for kind in LINK_KINDS if kind not in (lane.link, lane.pending)]
@@ -167,7 +178,7 @@ def _sync_one(
             f"Skipped {candidate.issue_id}: it holds a record from its other classification;"
             " a human reconciles it."
         )
-        return
+        return False
     try:
         link = matching_record(detail, lane.link, candidate)
         pending = matching_record(detail, lane.pending, candidate)
@@ -175,12 +186,12 @@ def _sync_one(
         print(
             f"Skipped {candidate.issue_id}: repair record is unrecognized; reconcile it manually."
         )
-        return
+        return False
     if link is not None:
         _read_link(args, client, candidate, link, expected_key=lane.link)
-        return
+        return False
     if pending is None and _resolved_by_peer(args, client, state, candidate):
-        return
+        return False
     found = _search(client, candidate)
     matches = _verified_matches(candidate, found)
     if found is None:
@@ -198,20 +209,101 @@ def _sync_one(
         _adopt_if_unique(args, candidate, matches, None)
     elif len(matches) > 1:
         print(f"Skipped {candidate.issue_id}: concern key is ambiguous on GitHub.")
+    elif candidate.kind != "proposal":
+        return True
     elif args.apply:
         _create_once(args, client, candidate)
     else:
-        _preview_create(state, candidate)
+        _preview_proposal(state, candidate)
+    return False
 
 
-def _preview_create(state: Mapping[str, Any], candidate: PromotionCandidate) -> None:
+def _preview_proposal(state: Mapping[str, Any], candidate: PromotionCandidate) -> None:
     brief = build_brief(_issues(state)[candidate.issue_id], candidate)
     if isinstance(brief, ParkedBrief):
         print(f"Would park {_parked(candidate, brief)}")
-    elif candidate.kind == "proposal":
-        print(f"Would publish a non-dispatchable proposal issue for {candidate.issue_id}.")
     else:
-        print(f"Would create a repair issue for {candidate.issue_id}.")
+        print(f"Would publish a non-dispatchable proposal issue for {candidate.issue_id}.")
+
+
+def _select(
+    args: argparse.Namespace, client: Any, selectable: list[PromotionCandidate]
+) -> None:
+    """Create at most one ranked small repair, or record why none was (ADR 0014)."""
+    state = _read_state(args)
+    blockers = _pending_repairs(state, args.repository)
+    for issue_id, pending in blockers:
+        if isinstance(pending, Mapping):
+            print(
+                f"No repair selected: repair publication for {issue_id} is unresolved; check"
+                f" GitHub, then run repair-queue recover {pending.get('key', pending.get('marker'))}."
+            )
+        else:
+            print(
+                f"No repair selected: the pending repair record on {issue_id} is unrecognized;"
+                " reconcile it manually."
+            )
+    if blockers:
+        _record_selection(args, "no-op", "unresolved repair publication", None)
+        return
+    safe = [candidate for candidate in selectable if _safe(args, state, candidate)]
+    if not safe:
+        print("No repair selected: no safe small repair.")
+        _record_selection(args, "no-op", "no safe small repair", None)
+        return
+    chosen, *others = sorted(
+        safe, key=lambda candidate: rank_key(_issues(state)[candidate.issue_id], candidate)
+    )
+    for other in others:
+        print(f"Deferred {other.issue_id}: {chosen.issue_id} ranked first.")
+    if not args.apply:
+        print(f"Would create a repair issue for {chosen.issue_id}.")
+    elif _create_once(args, client, chosen):
+        _record_selection(args, "selected", "ranked first", chosen.issue_id)
+    else:
+        _record_selection(args, "no-op", "selected candidate changed before create", None)
+
+
+def _safe(args: argparse.Namespace, state: Mapping[str, Any], candidate: PromotionCandidate) -> bool:
+    """A selectable candidate is still current and its brief can be published."""
+    if _candidate_by_id(state, candidate.issue_id, candidate.repository) != candidate:
+        print(f"Skipped {candidate.issue_id}: result is stale.")
+        return False
+    brief = build_brief(_issues(state)[candidate.issue_id], candidate)
+    if isinstance(brief, ParkedBrief):
+        print(f"{'Parked' if args.apply else 'Would park'} {_parked(candidate, brief)}")
+        return False
+    return True
+
+
+def _pending_repairs(state: Mapping[str, Any], repository: str) -> list[tuple[str, Any]]:
+    """Every work item's repair pending record for ``repository``, or one that is unrecognized."""
+    found = []
+    for issue_id, issue in _issues(state).items():
+        detail = issue.get("detail") if isinstance(issue, Mapping) else None
+        pending = detail.get("github_repair_pending") if isinstance(detail, Mapping) else None
+        if pending is not None and (
+            not isinstance(pending, Mapping) or pending.get("repository") == repository
+        ):
+            found.append((issue_id, pending))
+    return found
+
+
+def _record_selection(
+    args: argparse.Namespace, outcome: str, reason: str, issue_id: str | None
+) -> None:
+    if not args.apply:
+        return
+    with _locked_state(args) as state:
+        records = state.get("repair_queue_selection")
+        if not isinstance(records, dict):
+            records = state["repair_queue_selection"] = {}
+        records[args.repository] = {
+            "outcome": outcome,
+            "reason": reason,
+            "issue_id": issue_id,
+            "at": datetime.now(UTC).isoformat(),
+        }
 
 
 def _parked(candidate: PromotionCandidate, brief: ParkedBrief) -> str:
@@ -378,7 +470,8 @@ def _adopt_if_unique(args: argparse.Namespace, candidate: PromotionCandidate, ma
         print(f"Would adopt issue #{matches[0].number} for {candidate.issue_id}.")
 
 
-def _create_once(args: argparse.Namespace, client: Any, candidate: PromotionCandidate) -> None:
+def _create_once(args: argparse.Namespace, client: Any, candidate: PromotionCandidate) -> bool:
+    """Create one issue for ``candidate``; True once its pending record is written."""
     with _locked_state(args) as state:
         fresh = _candidate_by_id(state, candidate.issue_id, candidate.repository)
         detail = _issues(state)[candidate.issue_id]["detail"]
@@ -388,29 +481,32 @@ def _create_once(args: argparse.Namespace, client: Any, candidate: PromotionCand
             or _key_claimed_elsewhere(state, candidate)
         ):
             print(f"Skipped {candidate.issue_id}: concern changed while preparing create.")
-            return
+            return False
+        if candidate.kind == "small_repair" and _pending_repairs(state, candidate.repository):
+            print(f"Skipped {candidate.issue_id}: another repair publication is pending.")
+            return False
         if not _recheck_locked(args, state, candidate):
-            return
+            return False
         brief = build_brief(_issues(state)[candidate.issue_id], candidate)
         if isinstance(brief, ParkedBrief):
             print(f"Parked {_parked(candidate, brief)}")
-            return
+            return False
         lane = lane_for(candidate)
         detail[lane.pending] = _record_base(candidate)
     try:
         client.create(candidate.repository, *render_brief(brief), ready=lane.ready)
     except (RuntimeError, ValueError):
         print(f"Pending {candidate.issue_id}: create outcome is uncertain.")
-        return
+        return True
     found = _search(client, candidate)
     matches = _verified_matches(candidate, found)
     if found is None:
         print(f"Pending {candidate.issue_id}: post-create search failed.")
-        return
-    if matches is None:
+    elif matches is None:
         print(f"Pending {candidate.issue_id}: GitHub matches do not carry the concern key.")
-        return
-    _adopt_if_unique(args, candidate, matches, lane.pending)
+    else:
+        _adopt_if_unique(args, candidate, matches, lane.pending)
+    return True
 
 
 def _write_link(args: argparse.Namespace, candidate: PromotionCandidate, issue: Any, *, expected_key: str | None) -> None:
@@ -426,14 +522,28 @@ def _write_link(args: argparse.Namespace, candidate: PromotionCandidate, issue: 
             print(f"Skipped {candidate.issue_id}: result is stale.")
             return
         lane = lane_for(candidate)
-        detail[lane.link] = {
+        previous = _expected_record(detail, lane.link, candidate)
+        version = reviewed_version(_issues(state)[candidate.issue_id], candidate)
+        record = {
             **_record_base(candidate),
             "number": issue.number,
             "url": issue.url,
             "state": issue.state,
         }
+        if version is not None:
+            record["reviewed_brief_version"] = version
+        detail[lane.link] = record
         detail.pop(lane.pending, None)
-    print(f"Linked {candidate.issue_id} to issue #{issue.number}.")
+    if previous is not None and (
+        previous["evidence_digest"] != candidate.evidence_digest
+        or previous.get("reviewed_brief_version", version) != version
+    ):
+        print(
+            f"Changed {candidate.issue_id}: issue #{issue.number} evidence or reviewed brief"
+            " changed materially; an approval bound to the earlier version no longer applies."
+        )
+    else:
+        print(f"Linked {candidate.issue_id} to issue #{issue.number}.")
 
 
 def _record_base(candidate: PromotionCandidate) -> dict[str, str]:
