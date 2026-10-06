@@ -8,6 +8,7 @@ from desloppify.app.commands.repair_queue import _create_once, cmd_repair_queue
 from desloppify.base.exception_sets import CommandError
 from desloppify.cli import create_parser
 from desloppify.engine._state.merge_issues import upsert_issues
+from desloppify.engine.repair_check import CheckResult, Citation, Claim
 from desloppify.engine.repair_manifest import (
     MANIFEST_SCHEMA,
     AnalysisUnknown,
@@ -38,7 +39,11 @@ def _manifest(blob: str = "d" * 40, coverage: str = "complete"):
 
 
 MANIFEST = _manifest()
-REVALIDATED = {**BASE, "manifest": MANIFEST.as_record(), "manifest_digest": MANIFEST.digest}
+PASS = CheckResult("pass", "evidence anchors hold", ())
+REVALIDATED = {
+    **BASE, "manifest": MANIFEST.as_record(), "manifest_digest": MANIFEST.digest,
+    "check": PASS.as_record(), "check_digest": PASS.digest,
+}
 KEY_BODY = f"<!-- desloppify-concern-key: {KEY} -->"
 BRIEF_TOP = {"summary": "Parser duplicates the loader policy", "confidence": "medium"}
 BRIEF_DETAIL = {
@@ -106,6 +111,7 @@ def _args(action: str, state: dict, **extra) -> argparse.Namespace:
         "runtime": None,
         "client": _Client(),
         "source": _Source(),
+        "check": lambda issue, manifest: PASS,
         "state_data": state,
     }
     values.update(extra)
@@ -152,6 +158,27 @@ def test_revalidate_refuses_unbindable_source(manifest) -> None:
     with pytest.raises(CommandError, match=reason):
         cmd_repair_queue(args)
     assert "github_repair_revalidated" not in state["work_items"]["concerns::item"]["detail"]
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        CheckResult("fail", "cited line is outside the file", ()),
+        CheckResult("unknown", "evidence cites no recorded source line", ()),
+        CheckResult("unknown", "time bound exceeded", (), transient=True),
+    ],
+)
+def test_revalidate_refuses_and_clears_without_passing_check(result) -> None:
+    state = _state()
+    detail = state["work_items"]["concerns::item"]["detail"]
+    detail["github_repair_revalidated"] = dict(REVALIDATED)
+    args = _args(
+        "revalidate", state, apply=True, issue_id="concerns::item",
+        check=lambda issue, manifest: result,
+    )
+    with pytest.raises(CommandError, match=f"did not pass \\({result.outcome}: {result.reason}\\)"):
+        cmd_repair_queue(args)
+    assert "github_repair_revalidated" not in detail
 
 
 def test_sync_dry_run_does_not_create_or_mutate() -> None:
@@ -584,6 +611,42 @@ def test_link_recheck_mismatch_keeps_link() -> None:
     assert client.views == [7]
     assert _detail(state)["github_repair"] == LINK_7
     assert "github_repair_revalidated" not in _detail(state)
+
+
+OTHER_PASS = CheckResult("pass", "evidence anchors hold", (
+    Claim((Citation("src/impl.py", 1, 1),), ()),
+))
+
+
+@pytest.mark.parametrize(
+    "result, reason",
+    [
+        (OTHER_PASS, "check-changed"),
+        (CheckResult("fail", "cited line is outside the file", ()), "check-failed"),
+        (CheckResult("unknown", "evidence cites no recorded source line", ()), "check-unknown"),
+    ],
+)
+def test_changed_check_outcome_with_unchanged_source_clears(result, reason, capsys) -> None:
+    state = _revalidated_state()
+    client = _Recorder()
+    cmd_repair_queue(_args(
+        "sync", state, apply=True, client=client, check=lambda issue, manifest: result
+    ))
+    assert (client.searches, client.create_calls) == ([], 0)
+    assert "github_repair_revalidated" not in _detail(state)
+    assert f"source evidence is not current ({reason})" in capsys.readouterr().out
+
+
+def test_transient_unknown_check_skips_and_keeps(capsys) -> None:
+    state = _revalidated_state()
+    client = _Recorder()
+    transient = CheckResult("unknown", "time bound exceeded", (), transient=True)
+    cmd_repair_queue(_args(
+        "sync", state, apply=True, client=client, check=lambda issue, manifest: transient
+    ))
+    assert (client.searches, client.create_calls) == ([], 0)
+    assert _detail(state)["github_repair_revalidated"] == REVALIDATED
+    assert "revalidation kept" in capsys.readouterr().out
 
 
 def test_unique_hit_without_marker_is_not_linked() -> None:

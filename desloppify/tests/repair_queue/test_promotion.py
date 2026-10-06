@@ -5,6 +5,7 @@ import subprocess
 import pytest
 
 from desloppify.engine._state.merge_issues import upsert_issues
+from desloppify.engine.repair_check import CheckResult
 from desloppify.engine.repair_manifest import MANIFEST_SCHEMA, manifest_from_record
 from desloppify.engine.repair_queue import (
     GitHubIssue,
@@ -30,7 +31,10 @@ MANIFEST = {
     ],
 }
 MANIFEST_DIGEST = manifest_from_record(MANIFEST).digest
-BOUND = {"manifest": MANIFEST, "manifest_digest": MANIFEST_DIGEST}
+PASS = CheckResult("pass", "evidence anchors hold", ())
+CHECKED = {"check": PASS.as_record(), "check_digest": PASS.digest}
+FAIL = CheckResult("fail", "cited line is outside the file", ())
+BOUND = {"manifest": MANIFEST, "manifest_digest": MANIFEST_DIGEST, **CHECKED}
 
 
 def _issue(*, revalidated: bool = True) -> dict:
@@ -85,9 +89,20 @@ _PARTIAL = {**MANIFEST, "coverage": "partial"}
         {"key": KEY, "repository": REPOSITORY, "evidence_digest": EVIDENCE,
          "manifest": _PARTIAL, "manifest_digest": manifest_from_record(_PARTIAL).digest},
         {"key": KEY, "repository": REPOSITORY, "evidence_digest": EVIDENCE,
-         "manifest": MANIFEST, "manifest_digest": "e" * 64},
+         "manifest": MANIFEST, "manifest_digest": "e" * 64, **CHECKED},
+        {"key": KEY, "repository": REPOSITORY, "evidence_digest": EVIDENCE,
+         "manifest": MANIFEST, "manifest_digest": MANIFEST_DIGEST},
+        {"key": KEY, "repository": REPOSITORY, "evidence_digest": EVIDENCE,
+         "manifest": MANIFEST, "manifest_digest": MANIFEST_DIGEST,
+         "check": FAIL.as_record(), "check_digest": FAIL.digest},
+        {"key": KEY, "repository": REPOSITORY, "evidence_digest": EVIDENCE,
+         "manifest": MANIFEST, "manifest_digest": MANIFEST_DIGEST,
+         "check": PASS.as_record(), "check_digest": "e" * 64},
     ],
-    ids=["legacy-attested", "attested", "digest-only", "bad-manifest", "partial", "digest-mismatch"],
+    ids=[
+        "legacy-attested", "attested", "digest-only", "bad-manifest", "partial",
+        "digest-mismatch", "no-check", "failed-check", "check-digest-mismatch",
+    ],
 )
 def test_revalidation_requires_complete_bound_manifest(record: dict) -> None:
     issue = _issue()
