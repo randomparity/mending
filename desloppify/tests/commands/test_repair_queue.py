@@ -15,10 +15,16 @@ from desloppify.engine.repair_manifest import (
     manifest_from_record,
 )
 from desloppify.engine.repair_queue import (
+    FINDING_KEY_LINE,
+    LINK_KINDS,
+    PROPOSAL_LINE,
     GitHubIssue,
     candidate_from_issue,
     concern_key,
+    finding_key,
+    item_hashes,
     legacy_marker,
+    proposal_marker,
 )
 
 IDENTITY = "a" * 64
@@ -45,7 +51,7 @@ REVALIDATED = {
     "check": PASS.as_record(), "check_digest": PASS.digest,
 }
 KEY_BODY = f"<!-- desloppify-concern-key: {KEY} -->"
-BRIEF_TOP = {"summary": "Parser duplicates the loader policy", "confidence": "medium"}
+BRIEF_TOP = {"summary": "Parser duplicates the loader policy", "confidence": "high"}
 BRIEF_DETAIL = {
     "maintenance_consequence": "Two policies drift",
     "evidence": ["impl.py:12 re-derives the root"],
@@ -217,7 +223,7 @@ def test_delayed_writer_cannot_create_after_another_writer_links() -> None:
             super().__init__()
             self.create_calls = 0
 
-        def create(self, repository: str, title: str, body: str) -> None:
+        def create(self, repository: str, title: str, body: str, **_kwargs: object) -> None:
             self.create_calls += 1
 
         def search(self, repository: str, marker: str):
@@ -243,7 +249,7 @@ def test_uncertain_create_requires_recovery_before_retry() -> None:
             super().__init__()
             self.create_calls = 0
 
-        def create(self, repository: str, title: str, body: str) -> None:
+        def create(self, repository: str, title: str, body: str, **_kwargs: object) -> None:
             self.create_calls += 1
             raise RuntimeError("unavailable")
 
@@ -292,7 +298,7 @@ def test_sync_search_failure_never_attempts_create() -> None:
         def search(self, repository: str, marker: str):
             raise RuntimeError("unavailable")
 
-        def create(self, repository: str, title: str, body: str) -> None:
+        def create(self, repository: str, title: str, body: str, **_kwargs: object) -> None:
             self.created = True
 
     state = _state()
@@ -328,7 +334,7 @@ class _Recorder(_Client):
         self.views.append(number)
         return self.viewed
 
-    def create(self, repository: str, title: str, body: str) -> None:
+    def create(self, repository: str, title: str, body: str, **_kwargs: object) -> None:
         self.create_calls += 1
 
 
@@ -413,7 +419,9 @@ def test_evidence_change_round_trip_reuses_link() -> None:
     stored = _item("concerns::item", github_repair=dict(LINK_7), github_repair_revalidated=dict(REVALIDATED))
     stored.update(file=".", tier=2, confidence="high", summary="concern", suppressed=False)
     state = {"work_items": {"concerns::item": stored}}
-    scanned = {**stored, "detail": {"concern_identity": IDENTITY, "concern_evidence_digest": new_evidence}}
+    scanned = {**stored, "detail": {
+        **BRIEF_DETAIL, "concern_identity": IDENTITY, "concern_evidence_digest": new_evidence,
+    }}
     upsert_issues(state["work_items"], [scanned], [], "2026-10-05T00:00:00Z", lang=None)
     upsert_issues(state["work_items"], [scanned], [], "2026-10-06T00:00:00Z", lang=None)
     assert "previous_concern_evidence_digest" not in _detail(state)
@@ -564,7 +572,7 @@ def test_create_refuses_when_key_becomes_ambiguous_under_lock() -> None:
 
 def test_successful_create_links_new_shape_record() -> None:
     class CreateThenFind(_Recorder):
-        def create(self, repository: str, title: str, body: str) -> None:
+        def create(self, repository: str, title: str, body: str, **_kwargs: object) -> None:
             super().create(repository, title, body)
             self.results = {KEY: [GitHubIssue(9, "https://example.test/9", "open", KEY_BODY)]}
 
@@ -717,7 +725,7 @@ def test_dry_run_reports_parked_brief(capsys) -> None:
 
 def test_created_issue_body_is_the_rendered_brief() -> None:
     class BodyClient(_Recorder):
-        def create(self, repository: str, title: str, body: str) -> None:
+        def create(self, repository: str, title: str, body: str, **_kwargs: object) -> None:
             super().create(repository, title, body)
             self.created = (title, body)
 
@@ -730,3 +738,170 @@ def test_created_issue_body_is_the_rendered_brief() -> None:
     assert title == f"Repair: {BRIEF_TOP['summary']}"
     assert KEY_BODY in body.splitlines()
     assert "` Run the loader tests `" in body
+
+
+class _Publishing(_Client):
+    """Records each create and returns every created body from later searches."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.created: list[tuple[str, str, bool]] = []
+
+    def search(self, repository: str, marker: str):
+        self.searches.append((repository, marker))
+        return [
+            GitHubIssue(9 + index, f"https://example.test/{9 + index}", "open", body)
+            for index, (_title, body, _ready) in enumerate(self.created)
+        ]
+
+    def create(self, repository: str, title: str, body: str, *, ready: bool = True) -> None:
+        self.created.append((title, body, ready))
+
+
+def _proposal_state(**records) -> dict:
+    state = _revalidated_state(**records)
+    state["work_items"]["concerns::item"]["confidence"] = "medium"
+    return state
+
+
+def test_proposal_is_published_outside_the_dispatch_queue() -> None:
+    state = _proposal_state()
+    client = _Publishing()
+    _sync(state, client)
+    [(title, body, ready)] = client.created
+    assert title.startswith("Proposal: ") and ready is False
+    assert PROPOSAL_LINE.format(proposal_marker(KEY)) in body.splitlines()
+    assert KEY not in body and IDENTITY not in body
+    detail = _detail(state)
+    assert detail["github_proposal"]["number"] == 9
+    assert not {"github_repair", "github_repair_pending", "github_proposal_pending"} & set(detail)
+
+
+def test_proposal_dry_run_names_the_lane(capsys) -> None:
+    _sync(_proposal_state(), _Recorder(), apply=False)
+    assert "Would publish a non-dispatchable proposal issue" in capsys.readouterr().out
+
+
+def test_repair_lane_never_adopts_a_proposal_issue() -> None:
+    state = _revalidated_state()
+    proposal = GitHubIssue(
+        9, "https://example.test/9", "open", PROPOSAL_LINE.format(proposal_marker(KEY))
+    )
+    client = _Recorder({KEY: [proposal], IDENTITY: [proposal]})
+    _sync(state, client)
+    assert client.create_calls == 0
+    assert not {"github_repair", "github_repair_pending"} & set(_detail(state))
+
+
+@pytest.mark.parametrize("body", [KEY_BODY, LEGACY_BODY])
+def test_proposal_lane_never_adopts_a_repair_issue(body: str) -> None:
+    state = _proposal_state()
+    client = _Recorder({KEY: [GitHubIssue(7, "https://example.test/7", "open", body)]})
+    _sync(state, client)
+    assert client.create_calls == 0
+    assert not {"github_proposal", "github_proposal_pending"} & set(_detail(state))
+
+
+def test_record_from_the_other_lane_parks_the_item(capsys) -> None:
+    state = _proposal_state(github_repair=dict(LINK_7))
+    client = _Recorder()
+    _sync(state, client)
+    assert (client.searches, client.views, client.create_calls) == ([], [], 0)
+    assert "other classification" in capsys.readouterr().out
+
+
+def _dupe_state(**detail) -> dict:
+    function = {"file": "src/impl.py", "line": 3, "loc": 11}
+    item = {
+        "id": "dupes::src/impl.py::save::src/impl.py::save", "detector": "dupes",
+        "status": "open", "file": "src/impl.py", "confidence": "high",
+        "summary": "Exact dupe: save <-> save",
+        "detail": {
+            "fn_a": {**function, "name": "save"}, "fn_b": {**function, "name": "save", "line": 30},
+            "kind": "exact", "similarity": 1.0, "cluster_size": 2, **detail,
+        },
+    }
+    return {"work_items": {item["id"]: item}}
+
+
+class _RootedSource(_Source):
+    root = "/checkout"
+
+
+def test_dupe_pair_revalidates_by_its_anchors_and_publishes_a_finding_repair(monkeypatch) -> None:
+    state = _dupe_state()
+    [issue_id] = state["work_items"]
+    checked: list[str] = []
+
+    def check_finding(root, manifest, issue):
+        checked.append(issue["id"])
+        return PASS
+
+    monkeypatch.setattr("desloppify.app.commands.repair_queue.check_finding", check_finding)
+    cmd_repair_queue(_args(
+        "revalidate", state, apply=True, issue_id=issue_id, check=None, source=_RootedSource(),
+    ))
+    assert checked == [issue_id]
+    hashes = item_hashes(state["work_items"][issue_id])
+    assert hashes is not None
+    key = finding_key(REPOSITORY, hashes[1])
+    client = _Publishing()
+    _sync(state, client)
+    [(title, body, ready)] = client.created
+    assert ready is True and FINDING_KEY_LINE.format(key) in body.splitlines()
+    assert "desloppify-concern-key" not in body
+    assert _detail(state, issue_id)["github_repair"]["key"] == key
+
+
+def test_revalidate_names_why_an_item_is_ineligible() -> None:
+    state = _dupe_state(kind="near")
+    [issue_id] = state["work_items"]
+    args = _args("revalidate", state, apply=True, issue_id=issue_id)
+    with pytest.raises(CommandError, match=r"not eligible .*finding exceeds the small-repair bound"):
+        cmd_repair_queue(args)
+
+
+@pytest.mark.parametrize("marker", [KEY, proposal_marker(KEY)], ids=["key", "public-marker"])
+def test_recover_clears_a_proposal_pending_record(marker: str) -> None:
+    state = _proposal_state(github_proposal_pending=dict(BASE))
+    cmd_repair_queue(_args("recover", state, apply=True, marker=marker))
+    assert "github_proposal_pending" not in _detail(state)
+
+
+@pytest.mark.parametrize(
+    ("make_state", "peer_record"),
+    [
+        (_revalidated_state, {"github_proposal": dict(LINK_7)}),
+        (_proposal_state, {"github_repair": dict(LINK_7)}),
+    ],
+    ids=["repair-candidate-proposal-peer", "proposal-candidate-repair-peer"],
+)
+def test_peer_link_from_the_other_lane_is_never_adopted(make_state, peer_record: dict) -> None:
+    state = make_state()
+    state["work_items"]["concerns::old"] = _item("concerns::old", status="fixed", **peer_record)
+    client = _Recorder(viewed=ISSUE_7)
+    _sync(state, client)
+    assert (client.views, client.searches, client.create_calls) == ([], [], 0)
+    assert not set(LINK_KINDS) & set(_detail(state))
+
+
+def test_finding_never_adopts_an_issue_it_did_not_create(monkeypatch, capsys) -> None:
+    state = _dupe_state()
+    [issue_id] = state["work_items"]
+    monkeypatch.setattr(
+        "desloppify.app.commands.repair_queue.check_finding", lambda root, manifest, issue: PASS
+    )
+    cmd_repair_queue(_args(
+        "revalidate", state, apply=True, issue_id=issue_id, check=None, source=_RootedSource(),
+    ))
+    hashes = item_hashes(state["work_items"][issue_id])
+    assert hashes is not None
+    squat = GitHubIssue(
+        999, "https://example.test/999", "open",
+        FINDING_KEY_LINE.format(finding_key(REPOSITORY, hashes[1])),
+    )
+    client = _Recorder({finding_key(REPOSITORY, hashes[1]): [squat]})
+    _sync(state, client)
+    assert client.create_calls == 0
+    assert not set(LINK_KINDS) & set(_detail(state, issue_id))
+    assert "a human reconciles it" in capsys.readouterr().out

@@ -14,7 +14,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, TypeGuard, TypeVar
 
 from desloppify.engine.repair_manifest import (
     MAX_DEPENDENCIES,
@@ -60,10 +60,11 @@ class Claim:
 
 @dataclass(frozen=True)
 class _CitedBlob:
-    """What the check needs from one cited blob: its line count and its words."""
+    """What the check needs from one cited blob: its line count, words, and text."""
 
     lines: int
     words: frozenset[str]
+    text: str
 
 
 @dataclass(frozen=True)
@@ -102,7 +103,20 @@ class CheckResult:
 
 def check_concern(root: Path, manifest: SourceManifest, issue: Mapping[str, Any]) -> CheckResult:
     """Check ``issue``'s evidence anchors against the blobs ``manifest`` recorded under ``root``."""
-    claims = _claims(issue, manifest)
+    return _run_claims(root, manifest, _claims(issue, manifest))
+
+
+def check_finding(root: Path, manifest: SourceManifest, issue: Mapping[str, Any]) -> CheckResult:
+    """Check a ``dupes`` finding's anchors and that its two spans are still duplicates."""
+    return _run_claims(root, manifest, _finding_claims(issue, manifest), _span_failure)
+
+
+def _run_claims(
+    root: Path,
+    manifest: SourceManifest,
+    claims: tuple[Claim, ...] | str,
+    extra: Callable[[tuple[Claim, ...], Mapping[str, _CitedBlob]], str | None] | None = None,
+) -> CheckResult:
     if isinstance(claims, str):
         return CheckResult("unknown", claims, ())
     sources = _read_cited(root, manifest, claims)
@@ -112,7 +126,23 @@ def check_concern(root: Path, manifest: SourceManifest, issue: Mapping[str, Any]
         failure = _claim_failure(claim, sources)
         if failure:
             return CheckResult("fail", failure, claims)
+    failure = extra(claims, sources) if extra else None
+    if failure:
+        return CheckResult("fail", failure, claims)
     return CheckResult("pass", "evidence anchors hold", claims)
+
+
+def _span_failure(claims: tuple[Claim, ...], sources: Mapping[str, _CitedBlob]) -> str | None:
+    """Each name sits on its span's first line; the spans' remaining lines are equal."""
+    bodies = []
+    for claim in claims:
+        citation = claim.citations[0]
+        lines = sources[citation.path].text.splitlines()[citation.start - 1 : citation.end]
+        words = set(_WORD.findall(lines[0])) if lines else set()
+        if any(name not in words for name in claim.identifiers):
+            return "function name is not on its first line"
+        bodies.append([line.strip() for line in lines[1:]])
+    return None if bodies[0] == bodies[1] else "duplicate spans differ"
 
 
 def passing_check(record: object, digest: object) -> bool:
@@ -164,6 +194,31 @@ def _claims(issue: Mapping[str, Any], manifest: SourceManifest) -> tuple[Claim, 
     return tuple(claims)
 
 
+def _finding_claims(
+    issue: Mapping[str, Any], manifest: SourceManifest
+) -> tuple[Claim, ...] | str:
+    """One claim per duplicate function: its line range in the item file and its bare name."""
+    path, detail = issue.get("file"), issue.get("detail")
+    present = {d.path for d in manifest.dependencies if d.status == "present"}
+    if path not in present or not isinstance(detail, Mapping):
+        return "finding file is not a recorded source file"
+    claims = []
+    for key in ("fn_a", "fn_b"):
+        function = detail.get(key)
+        if not isinstance(function, Mapping):
+            return "finding evidence is malformed"
+        name, line, loc = function.get("name"), function.get("line"), function.get("loc")
+        if not (isinstance(name, str) and _positive(line) and _positive(loc)):
+            return "finding evidence is malformed"
+        identifiers = tuple(_IDENTIFIER.findall(name.rsplit(".", 1)[-1]))[:1]
+        claims.append(Claim((Citation(str(path), line, line + loc - 1),), identifiers))
+    return tuple(claims)
+
+
+def _positive(value: object) -> TypeGuard[int]:
+    return isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 10**7
+
+
 def _claim(item: str, present: set[str]) -> Claim | None:
     citations = []
     for match in _CITATION.finditer(item):
@@ -206,7 +261,7 @@ def _read_cited(
         text = _bounded(root, object_id, deadline, read_blob)
         if isinstance(text, CheckResult):
             return text
-        sources[path] = _CitedBlob(_line_count(text), frozenset(_WORD.findall(text)))
+        sources[path] = _CitedBlob(_line_count(text), frozenset(_WORD.findall(text)), text)
     if time.monotonic() > deadline:
         return CheckResult("unknown", "time bound exceeded", (), transient=True)
     return sources
@@ -250,5 +305,6 @@ __all__ = [
     "MAX_SECONDS",
     "MAX_TOTAL_BYTES",
     "check_concern",
+    "check_finding",
     "passing_check",
 ]

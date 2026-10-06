@@ -1,4 +1,4 @@
-"""One-shot, fail-closed promotion of revalidated concerns."""
+"""One-shot, fail-closed promotion of revalidated repair candidates and proposals."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from desloppify.base.discovery.paths import get_project_root
 from desloppify.base.exception_sets import CommandError
 from desloppify.engine._state.persistence import load_state, state_lock
 from desloppify.engine.repair_brief import ParkedBrief, build_brief, render_brief
-from desloppify.engine.repair_check import CheckResult, check_concern
+from desloppify.engine.repair_check import CheckResult, check_concern, check_finding
 from desloppify.engine.repair_manifest import (
     SourceCheckout,
     SourceManifest,
@@ -23,16 +23,19 @@ from desloppify.engine.repair_manifest import (
     manifest_from_record,
 )
 from desloppify.engine.repair_queue import (
+    LINK_KINDS,
     GitHubIssueClient,
     PromotionCandidate,
     RepairRecordError,
-    candidate_from_issue,
     carries_concern_marker,
-    concern_hashes,
-    concern_key,
+    classify,
+    item_hashes,
+    lane_for,
     legacy_marker,
     matching_record,
     normalize_record,
+    proposal_marker,
+    record_key,
 )
 
 
@@ -56,9 +59,12 @@ def _revalidate(args: argparse.Namespace, client: Any) -> None:
     refused: CheckResult | None = None
     with _locked_state(args) as state:
         issue = _issues(state).get(args.issue_id)
-        candidate = candidate_from_issue(issue or {}, repository, require_revalidation=False)
+        classification = classify(issue or {}, repository, require_revalidation=False)
+        candidate = classification.candidate
         if candidate is None:
-            raise CommandError("concern is not current and eligible for revalidation")
+            raise CommandError(
+                f"work item is not eligible for revalidation ({classification.reason})"
+            )
         manifest = _source(args).manifest_for(issue)
         if not isinstance(manifest, SourceManifest) or manifest.coverage != "complete":
             raise CommandError(
@@ -80,9 +86,9 @@ def _revalidate(args: argparse.Namespace, client: Any) -> None:
             }
     if refused is not None:
         raise CommandError(
-            f"verification check did not pass ({refused.outcome}: {refused.reason}); the "
-            "concern evidence must cite recorded files as PATH:LINE whose lines and quoted "
-            "identifiers still hold"
+            f"verification check did not pass ({refused.outcome}: {refused.reason}); a "
+            "concern's PATH:LINE citations and quoted identifiers, or a duplicate pair's "
+            "line ranges, names, and bodies, must still hold in the recorded files"
         )
     print(f"Revalidated {args.issue_id} for {repository}.")
 
@@ -105,27 +111,36 @@ def _recover(args: argparse.Namespace, client: Any) -> None:
             detail = issue.get("detail") if isinstance(issue, Mapping) else None
             if not isinstance(detail, dict):
                 continue
-            if _pending_matches(detail, repository, args.marker):
-                detail.pop("github_repair_pending", None)
-                cleared += 1
+            for kind in _PENDING_KINDS:
+                if _pending_matches(issue, kind, repository, args.marker):
+                    detail.pop(kind, None)
+                    cleared += 1
     print(f"Cleared {cleared} pending repair attempt(s).")
 
 
-def _pending_matches(detail: Mapping[str, Any], repository: str, marker: str) -> bool:
+_PENDING_KINDS = ("github_repair_pending", "github_proposal_pending")
+
+
+def _pending_matches(issue: Mapping[str, Any], kind: str, repository: str, marker: str) -> bool:
     """Match a pending record by its literal key/legacy marker or by its normalized key."""
-    pending = detail.get("github_repair_pending")
+    pending = issue["detail"].get(kind)
     if not isinstance(pending, Mapping) or pending.get("repository") != repository:
         return False
     if marker in (pending.get("key"), pending.get("marker")):
         return True
-    hashes = concern_hashes(detail)
+    hashes = item_hashes(issue)
     if hashes is None:
         return False
+    route, identity, evidence = hashes
     try:
-        record = normalize_record("github_repair_pending", pending, repository, *hashes)
+        record = normalize_record(kind, pending, repository, identity, evidence, route=route)
     except RepairRecordError:
         return False
-    return record is not None and record["key"] == marker
+    if record is None:
+        return False
+    if kind == "github_proposal_pending":
+        return marker in {record["key"], proposal_marker(record["key"])}
+    return bool(record["key"] == marker)
 
 
 def _sync(args: argparse.Namespace, client: Any) -> None:
@@ -145,16 +160,24 @@ def _sync_one(
     if not _source_current(args, state, candidate):
         return
     detail = _issues(state)[candidate.issue_id]["detail"]
+    lane = lane_for(candidate)
+    other = [kind for kind in LINK_KINDS if kind not in (lane.link, lane.pending)]
+    if any(detail.get(kind) is not None for kind in other):
+        print(
+            f"Skipped {candidate.issue_id}: it holds a record from its other classification;"
+            " a human reconciles it."
+        )
+        return
     try:
-        link = matching_record(detail, "github_repair", candidate)
-        pending = matching_record(detail, "github_repair_pending", candidate)
+        link = matching_record(detail, lane.link, candidate)
+        pending = matching_record(detail, lane.pending, candidate)
     except RepairRecordError:
         print(
             f"Skipped {candidate.issue_id}: repair record is unrecognized; reconcile it manually."
         )
         return
     if link is not None:
-        _read_link(args, client, candidate, link, expected_key="github_repair")
+        _read_link(args, client, candidate, link, expected_key=lane.link)
         return
     if pending is None and _resolved_by_peer(args, client, state, candidate):
         return
@@ -165,7 +188,12 @@ def _sync_one(
     elif matches is None:
         print(f"Skipped {candidate.issue_id}: GitHub matches do not carry the concern key.")
     elif pending is not None:
-        _adopt_if_unique(args, candidate, matches, "github_repair_pending")
+        _adopt_if_unique(args, candidate, matches, lane.pending)
+    elif matches and candidate.route == "finding":
+        print(
+            f"Skipped {candidate.issue_id}: a GitHub issue carries this finding key, which"
+            " anyone can compute from public source; a human reconciles it."
+        )
     elif len(matches) == 1:
         _adopt_if_unique(args, candidate, matches, None)
     elif len(matches) > 1:
@@ -180,6 +208,8 @@ def _preview_create(state: Mapping[str, Any], candidate: PromotionCandidate) -> 
     brief = build_brief(_issues(state)[candidate.issue_id], candidate)
     if isinstance(brief, ParkedBrief):
         print(f"Would park {_parked(candidate, brief)}")
+    elif candidate.kind == "proposal":
+        print(f"Would publish a non-dispatchable proposal issue for {candidate.issue_id}.")
     else:
         print(f"Would create a repair issue for {candidate.issue_id}.")
 
@@ -263,7 +293,8 @@ def _check(
     if supplied is not None:
         result: CheckResult = supplied(issue, manifest)
         return result
-    return check_concern(_source(args).root, manifest, issue)
+    check = check_concern if issue.get("detector") == "concerns" else check_finding
+    return check(_source(args).root, manifest, issue)
 
 
 def _source(args: argparse.Namespace) -> Any:
@@ -280,7 +311,7 @@ def _resolved_by_peer(
 ) -> bool:
     """Park on or adopt another work item's record for this key; False when none exists."""
     peers = _peer_records(state, candidate)
-    if any(kind != "github_repair" or record is None for _, kind, record in peers):
+    if any(kind != lane_for(candidate).link or record is None for _, kind, record in peers):
         print(
             f"Skipped {candidate.issue_id}: another work item holds an unresolved record "
             "for this concern key."
@@ -314,12 +345,12 @@ def _read_link(
 
 
 def _search(client: Any, candidate: PromotionCandidate) -> list[Any] | None:
-    """Search the stable key, the identity digest, and the current legacy marker."""
-    terms = (
-        candidate.key,
-        candidate.identity,
-        legacy_marker(candidate.identity, candidate.evidence_digest),
-    )
+    """Search the key, the identity digest, a proposal's marker, and a concern's legacy marker."""
+    terms = [candidate.key, candidate.identity]
+    if candidate.kind == "proposal":
+        terms.insert(0, proposal_marker(candidate.key))
+    elif candidate.route == "concern":
+        terms.append(legacy_marker(candidate.identity, candidate.evidence_digest))
     try:
         found = [issue for term in terms for issue in client.search(candidate.repository, term)]
     except (RuntimeError, ValueError):
@@ -364,9 +395,10 @@ def _create_once(args: argparse.Namespace, client: Any, candidate: PromotionCand
         if isinstance(brief, ParkedBrief):
             print(f"Parked {_parked(candidate, brief)}")
             return
-        detail["github_repair_pending"] = _record_base(candidate)
+        lane = lane_for(candidate)
+        detail[lane.pending] = _record_base(candidate)
     try:
-        client.create(candidate.repository, *render_brief(brief))
+        client.create(candidate.repository, *render_brief(brief), ready=lane.ready)
     except (RuntimeError, ValueError):
         print(f"Pending {candidate.issue_id}: create outcome is uncertain.")
         return
@@ -378,7 +410,7 @@ def _create_once(args: argparse.Namespace, client: Any, candidate: PromotionCand
     if matches is None:
         print(f"Pending {candidate.issue_id}: GitHub matches do not carry the concern key.")
         return
-    _adopt_if_unique(args, candidate, matches, "github_repair_pending")
+    _adopt_if_unique(args, candidate, matches, lane.pending)
 
 
 def _write_link(args: argparse.Namespace, candidate: PromotionCandidate, issue: Any, *, expected_key: str | None) -> None:
@@ -393,13 +425,14 @@ def _write_link(args: argparse.Namespace, candidate: PromotionCandidate, issue: 
         if expected_key and _expected_record(detail, expected_key, candidate) is None:
             print(f"Skipped {candidate.issue_id}: result is stale.")
             return
-        detail["github_repair"] = {
+        lane = lane_for(candidate)
+        detail[lane.link] = {
             **_record_base(candidate),
             "number": issue.number,
             "url": issue.url,
             "state": issue.state,
         }
-        detail.pop("github_repair_pending", None)
+        detail.pop(lane.pending, None)
     print(f"Linked {candidate.issue_id} to issue #{issue.number}.")
 
 
@@ -413,10 +446,7 @@ def _record_base(candidate: PromotionCandidate) -> dict[str, str]:
 
 def _has_record(detail: Mapping[str, Any], candidate: PromotionCandidate) -> bool:
     try:
-        return any(
-            matching_record(detail, kind, candidate) is not None
-            for kind in ("github_repair", "github_repair_pending")
-        )
+        return any(matching_record(detail, kind, candidate) is not None for kind in LINK_KINDS)
     except RepairRecordError:
         return True
 
@@ -431,7 +461,7 @@ def _expected_record(
 
 
 def _candidates(state: Mapping[str, Any], repository: str) -> list[PromotionCandidate]:
-    found = (candidate_from_issue(issue, repository) for issue in _issues(state).values())
+    found = (classify(issue, repository).candidate for issue in _issues(state).values())
     return [candidate for candidate in found if candidate is not None]
 
 
@@ -443,15 +473,20 @@ def _peer_records(
     for issue_id, issue in _issues(state).items():
         if issue_id == candidate.issue_id or not isinstance(issue, Mapping):
             continue
-        detail = issue.get("detail")
-        hashes = concern_hashes(detail) if isinstance(detail, Mapping) else None
-        if hashes is None or concern_key(candidate.repository, hashes[0]) != candidate.key:
+        hashes = item_hashes(issue)
+        if hashes is None:
             continue
-        for kind in ("github_repair", "github_repair_pending"):
+        route, identity, evidence = hashes
+        if record_key(route, candidate.repository, identity) != candidate.key:
+            continue
+        detail = issue["detail"]
+        for kind in LINK_KINDS:
             if detail.get(kind) is None:
                 continue
             try:
-                record = normalize_record(kind, detail[kind], candidate.repository, *hashes)
+                record = normalize_record(
+                    kind, detail[kind], candidate.repository, identity, evidence, route=route
+                )
             except RepairRecordError:
                 record = None
             peers.append((issue_id, kind, record))
@@ -467,7 +502,7 @@ def _key_claimed_elsewhere(state: Mapping[str, Any], candidate: PromotionCandida
 
 def _candidate_by_id(state: Mapping[str, Any], issue_id: str, repository: str) -> PromotionCandidate | None:
     issue = _issues(state).get(issue_id)
-    return candidate_from_issue(issue or {}, repository)
+    return classify(issue or {}, repository).candidate
 
 
 def _issues(state: Mapping[str, Any]) -> dict[str, Any]:

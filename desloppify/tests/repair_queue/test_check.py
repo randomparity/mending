@@ -9,7 +9,12 @@ from pathlib import Path
 import pytest
 
 import desloppify.engine.repair_check as repair_check
-from desloppify.engine.repair_check import CheckResult, check_concern, passing_check
+from desloppify.engine.repair_check import (
+    CheckResult,
+    check_concern,
+    check_finding,
+    passing_check,
+)
 from desloppify.engine.repair_manifest import SourceCheckout, SourceManifest
 
 GIT_ENV = {
@@ -178,3 +183,86 @@ def test_digest_ignores_reason_and_bounds(repo: Path) -> None:
 def test_passing_check_requires_digest_and_pass(repo: Path, mutate) -> None:
     result = _check(repo, _issue("impl.py:1 re-derives"))
     assert not passing_check(*mutate(result.as_record(), result.digest))
+
+
+def _finding_repo(tmp_path: Path, body: str) -> Path:
+    root = tmp_path / "dupes"
+    (root / "src").mkdir(parents=True)
+    (root / "src" / "impl.py").write_text(body)
+    _git(root, "init", "-q")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "fixture")
+    return root
+
+
+_PAIR = (
+    "class A:\n    def save(self):\n        return 1\n\n\n"
+    "class B:\n    def save(self):\n        return 1\n"
+)
+
+
+def _finding(save: dict | None = None, file: str = "src/impl.py") -> dict:
+    return {
+        "file": file,
+        "detail": {
+            "fn_a": {"file": "/abs/src/impl.py", "name": "save", "line": 2, "loc": 2, **(save or {})},
+            "fn_b": {"file": "/abs/src/impl.py", "name": "B.save", "line": 7, "loc": 2},
+        },
+    }
+
+
+def _check_finding(repo: Path, issue: dict) -> CheckResult:
+    manifest = SourceCheckout(repo, "HEAD").manifest_for({"file": "src/impl.py", "detail": {}})
+    assert isinstance(manifest, SourceManifest)
+    return check_finding(repo, manifest, issue)
+
+
+def test_finding_anchors_pass(tmp_path: Path) -> None:
+    result = _check_finding(_finding_repo(tmp_path, _PAIR), _finding())
+    assert (result.outcome, result.reason) == ("pass", "evidence anchors hold")
+    assert [claim.identifiers for claim in result.claims] == [("save",), ("save",)]
+
+
+@pytest.mark.parametrize(
+    ("save", "reason"),
+    [
+        ({"line": 8}, "cited line is outside the file"),
+        ({"name": "gamma"}, "quoted identifier is absent from the cited files"),
+    ],
+)
+def test_finding_anchor_failures(tmp_path: Path, save: dict, reason: str) -> None:
+    result = _check_finding(_finding_repo(tmp_path, _PAIR), _finding(save))
+    assert (result.outcome, result.reason) == ("fail", reason)
+
+
+@pytest.mark.parametrize(
+    ("issue", "reason"),
+    [
+        (_finding(file="src/other.py"), "finding file is not a recorded source file"),
+        (_finding({"loc": 0}), "finding evidence is malformed"),
+    ],
+)
+def test_finding_without_bound_anchors_is_unknown(tmp_path: Path, issue: dict, reason: str) -> None:
+    result = _check_finding(_finding_repo(tmp_path, _PAIR), issue)
+    assert (result.outcome, result.reason) == ("unknown", reason)
+
+
+@pytest.mark.parametrize(
+    ("body", "reason"),
+    [
+        (
+            "class A:\n    def save(self):\n        return 1\n\n\n"
+            "class B:\n    def save(self):\n        return 2\n",
+            "duplicate spans differ",
+        ),
+        (
+            "class A:\n    def save(self):\n        return 1\n\n\n"
+            "class B:\n    # other\n    def save(self):\n        return 1\n",
+            "function name is not on its first line",
+        ),
+    ],
+    ids=["duplication-removed", "name-moved"],
+)
+def test_finding_spans_must_still_duplicate(tmp_path: Path, body: str, reason: str) -> None:
+    result = _check_finding(_finding_repo(tmp_path, body), _finding())
+    assert (result.outcome, result.reason) == ("fail", reason)
