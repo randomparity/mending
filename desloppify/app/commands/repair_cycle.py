@@ -35,6 +35,7 @@ from desloppify.engine._state.persistence import save_state, state_lock
 from desloppify.engine._state.schema import get_state_file
 from desloppify.engine._state.schema_types import StateModel
 from desloppify.engine.repair_authority import (
+    Approval,
     Authority,
     AuthorityBinding,
     UnsupportedAuthority,
@@ -240,8 +241,9 @@ def _observe_once(
     if record.phase != "returned" or record.outcome == "unknown":
         if _replay_dispatch(state, cycle_state, host, repo_root):
             prs = _read_pull_requests(state, cycle_state, host)
-            if prs is not None and _scope_exceeded(args, config, cycle_state, prs):
-                _fail(state, cycle_state, "authority-scope-exceeded")
+            scope = _scope_failure(args, config, cycle_state, prs) if prs is not None else None
+            if scope is not None:
+                _fail(state, cycle_state, scope)
         return
     if not _add_references(state, cycle_state, host, repo_root):
         _park(state, cycle_state, "pull-request-lookup-unavailable")
@@ -262,14 +264,18 @@ def _check_pull_requests(
     if record is None or prs is None:
         return
     cycle_state.observation_calls = 0  # a verdict was reached; the allowance bounds misses
-    if _scope_exceeded(args, config, cycle_state, prs):
-        _fail(state, cycle_state, "authority-scope-exceeded")
+    scope = _scope_failure(args, config, cycle_state, prs)
+    if scope == "authority-scope-exceeded":
+        _fail(state, cycle_state, scope)
     elif not prs and record.outcome == "completed":
         _fail(state, cycle_state, "no-pull-request")
     elif any(pr.open for pr in prs):
+        # The resume recheck names a missing or changed approval more precisely.
         print("Repair cycle active: pull request open.")
         _store_cycle_state(state, cycle_state)
         _recheck_active(args, state, cycle_state, config)
+    elif scope is not None:
+        _fail(state, cycle_state, scope)
     else:
         cycle_state.dispatch = replace(record, phase="settled")
         _store_cycle_state(state, cycle_state)
@@ -288,26 +294,36 @@ def _read_pull_requests(
         return None
 
 
-def _scope_exceeded(
+def _scope_failure(
     args: argparse.Namespace,
     config: CycleConfig,
     cycle_state: CycleState,
     prs: tuple[PullRequest, ...],
-) -> bool:
-    """Whether a pull request edits a file the bound approval does not allow (#26)."""
-    allowed = _approved_files(args, config, cycle_state.authority)
-    return allowed is not None and any(not pr.files <= allowed for pr in prs)
+) -> str | None:
+    """Why the pull requests' edits are not within the bound approval (#26), if they are not.
 
-
-def _approved_files(
-    args: argparse.Namespace, config: CycleConfig, bound: Mapping[str, str] | None
-) -> frozenset[str] | None:
-    """The bound approval's files from trusted configuration; None when none applies."""
-    authority = _trusted_authority(args, config)
-    if bound is None or not isinstance(authority, Authority):
+    Edits that cannot be compared, because the approval is gone or unreadable,
+    fail closed rather than settle.
+    """
+    if not prs:
         return None
-    approval = next((a for a in authority.approvals if a.key == bound["key"]), None)
-    return approval.files if approval else None
+    approval = _bound_approval(args, config, cycle_state.authority)
+    if isinstance(approval, str):
+        return approval
+    return "authority-scope-exceeded" if any(not pr.files <= approval.files for pr in prs) else None
+
+
+def _bound_approval(
+    args: argparse.Namespace, config: CycleConfig, bound: Mapping[str, str] | None
+) -> Approval | str:
+    """The trusted configuration's approval for the bound key, or why there is none."""
+    authority = _trusted_authority(args, config)
+    if isinstance(authority, str):
+        return authority
+    if bound is None:
+        return "authority-missing"
+    approvals = authority.approvals if authority else ()
+    return next((a for a in approvals if a.key == bound["key"]), None) or "authority-revoked"
 
 
 def _recheck_active(
@@ -586,14 +602,14 @@ def _host_request(
     """The reviewed brief and approved scope for the binding the dispatch check returned."""
     item = _work_item(state, bound["issue_id"], config.repository)
     brief = build_brief(item[0], item[1]) if item else None
-    allowed = _approved_files(args, config, bound)
-    if not isinstance(brief, RepairBrief) or allowed is None:
+    approval = _bound_approval(args, config, bound)
+    if not isinstance(brief, RepairBrief) or isinstance(approval, str):
         return None
     return HostRequest(
         attempt_id=lease.attempt_id,
         brief=render_brief(brief)[1],
         source_revision=brief.revision,
-        authorized_scope=f"{binding.action} {binding.key}; files: {', '.join(sorted(allowed))}",
+        authorized_scope=f"{binding.action} {binding.key}; files: {', '.join(sorted(approval.files))}",
         repo_root=repo_root,
         deadline=lease.deadline,
     )

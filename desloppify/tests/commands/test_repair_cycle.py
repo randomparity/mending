@@ -516,6 +516,26 @@ def test_pull_request_edits_are_checked_against_the_approval(files, approved, fa
 
 
 @pytest.mark.parametrize(
+    ("config", "failure"),
+    [
+        (_config(authority=_authority(key="other")), "authority-revoked"),
+        (_config(authority=None), "authority-revoked"),
+        (_config(authority="yes"), "authority-invalid"),
+    ],
+)
+def test_closed_pull_requests_without_a_readable_approval_fail_closed(config, failure) -> None:
+    state = _state()
+    _dispatched_attempt(state)
+    host = _FakeHost(prs=(_pr(open=False, files=("src/impl.py", "src/unapproved.py")),))
+
+    cmd_repair_cycle(_args(state, host, config_data=config))
+
+    recorded = state["repair_cycle"]
+    assert recorded["attempt_failure"] == failure
+    assert recorded["dispatch"]["phase"] == "returned"
+
+
+@pytest.mark.parametrize(
     ("outcome", "failure"),
     [
         (HostOutcome("failed", "host-error", cost_usd=Decimal("0.5"), calls=3), "host-failed"),

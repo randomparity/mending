@@ -85,7 +85,12 @@ not run either by hand against that file while the unit is active.
 `files` is the whole set of paths the repair may change: the brief's evidence
 manifest files and any test or documentation file the repair will touch. The
 host is told this set, and a repair pull request that changes any other path
-fails the attempt (`authority-scope-exceeded`). The approval also names the
+fails the attempt (`authority-scope-exceeded`). The check compares each pull
+request's changed paths after the change, so a file renamed onto an approved
+path is not caught; review renames before merging. A pull request whose edits
+cannot be compared because its approval was removed or the configuration is
+unreadable fails the attempt with that authority reason instead of settling,
+so remove an approval only after its attempt has settled. The approval also names the
 `repair` action (the only one supported), limits at or above the cycle's own,
 and an expiry; set `expires_at` past the expected review of the pull request,
 because an expired approval fails an attempt whose pull request is still open.
@@ -173,7 +178,9 @@ Edit `OnCalendar` in `mending-repair-cycle.timer` to choose when runs happen,
 and set `window_minutes` to the same cadence: the timer schedules runs, and the
 configured window bounds new repairs to one per window for timer and manual
 runs alike ([ADR 0016](../adr/0016-composed-repair-cycle.md)). Windows start at
-host-local midnight multiples of `window_minutes`. With no timezone suffix,
+consecutive blocks of `window_minutes` counted from 2000-01-01 00:00 host-local
+time; choose a value that divides 1440 so they start at the same times each
+day. With no timezone suffix,
 systemd interprets `OnCalendar` in the host system timezone. `Persistent=false`
 deliberately skips missed windows rather than catching them up. A run in a
 window that already started a repair parks as `window-attempt-complete`.

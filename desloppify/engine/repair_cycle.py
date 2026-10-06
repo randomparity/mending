@@ -374,11 +374,6 @@ class CycleState:
             self.consumed_cost_usd > lease.cost_cap_usd or self.consumed_calls > lease.call_limit
         )
 
-    def record_receipt(self, receipt: Mapping[str, object]) -> None:
-        """Persist an already-validated receipt for restart reconciliation."""
-        self.authoritative_receipt = dict(receipt)
-        self.parked_reason = None
-
     def park(self, reason: str) -> None:
         """Record a fail-closed state without discarding the active attempt."""
         self.parked_reason = reason
