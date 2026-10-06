@@ -273,14 +273,10 @@ def _authorize(
     if isinstance(authority, str):
         return authority
     issue_id = bound["issue_id"] if bound else _selected_issue(state, config.repository, authority)
-    items = state.get("work_items")
-    issue = items.get(issue_id) if isinstance(items, Mapping) and issue_id else None
-    if not isinstance(issue, Mapping):
+    item = _work_item(state, issue_id, config.repository)
+    if issue_id is None or item is None:
         return "selected-repair-unavailable"
-    candidate = candidate_from_issue(issue, config.repository)
-    version = reviewed_version(issue, candidate) if candidate else None
-    if candidate is None or version is None:
-        return "selected-repair-unavailable"
+    issue, candidate, version = item
     if bound and bound["key"] != candidate.key:
         return "authority-mismatch"
     recheck = source_comparison(args, issue)
@@ -294,6 +290,21 @@ def _authorize(
     if reason is not None or authority is None:
         return reason or "authority-missing"
     return binding, {"issue_id": issue_id, "key": candidate.key, "revision": authority.revision}
+
+
+def _work_item(
+    state: Mapping[str, object], issue_id: str | None, repository: str
+) -> tuple[Mapping[str, Any], PromotionCandidate, str] | None:
+    """The work item as a small repair with its current reviewed-brief version."""
+    items = state.get("work_items")
+    issue = items.get(issue_id) if isinstance(items, Mapping) and issue_id else None
+    if not isinstance(issue, Mapping):
+        return None
+    candidate = candidate_from_issue(issue, repository)
+    version = reviewed_version(issue, candidate) if candidate else None
+    if candidate is None or version is None:
+        return None
+    return issue, candidate, version
 
 
 def _trusted_authority(args: argparse.Namespace, config: CycleConfig) -> Authority | None | str:
