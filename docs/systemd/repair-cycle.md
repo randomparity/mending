@@ -93,9 +93,9 @@ host is told this set, and a repair pull request that changes any other path
 fails the attempt (`authority-scope-exceeded`). The check reads every page of
 each pull request's changed files and counts the old path of a renamed file as
 changed, so a rename out of an unapproved path fails too. A pull request whose
-file list does not account for its whole changed-file count, such as one past
-the 3000 files GitHub lists, is not settled: the run parks as
-`pull-request-lookup-unavailable`. A pull request whose edits
+files cannot all be listed is not settled: one past the 3000 files GitHub lists,
+or one too large to page through within the 10-second lookup limit, parks the
+run as `pull-request-lookup-unavailable`. A pull request whose edits
 cannot be compared because its approval was removed or the configuration is
 unreadable fails the attempt with that authority reason instead of settling,
 so remove an approval only after its attempt has settled. The approval also names the
