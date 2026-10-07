@@ -450,6 +450,22 @@ def test_stop_worker_stops_a_marked_tree_it_did_not_launch(host, monkeypatch):
     assert adapter.stop_worker(attempt) is False
 
 
+def test_stop_worker_never_counts_or_signals_its_own_process(host):
+    attempt = uuid.uuid4().hex
+    script = (
+        "import sys\n"
+        "from desloppify.app.commands.repair_cycle_host import ClaudeHostAdapter\n"
+        "adapter = ClaudeHostAdapter(None, grace_seconds=0.5)\n"
+        f"print(adapter.worker_alive({attempt!r}), adapter.stop_worker({attempt!r}))\n"
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", script],
+        env={**os.environ, MARKER_VARIABLE: host_session_id(attempt)},
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert (done.returncode, done.stdout) == (0, "False True\n")
+
+
 def _wait_until(condition) -> None:
     deadline = time.monotonic() + 10
     while not condition():

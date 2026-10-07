@@ -615,10 +615,12 @@ def _marked_pids(marker: bytes) -> set[int] | None:
     """Return PIDs whose environment carries the marker; None when /proc is unavailable."""
     if not _PROC_ROOT.is_dir():
         return None
+    # This process is never its own worker, even when it inherited the marker.
+    own = str(os.getpid())
     return {
         int(entry.name)
         for entry in _PROC_ROOT.iterdir()
-        if entry.name.isdigit() and _carries(int(entry.name), marker)
+        if entry.name.isdigit() and entry.name != own and _carries(int(entry.name), marker)
     }
 
 
