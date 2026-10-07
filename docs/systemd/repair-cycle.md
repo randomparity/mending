@@ -213,7 +213,8 @@ again; close the repair issue or remove the approval to stop that. A completed
 host run without a pull request (`no-pull-request`), a failed run
 (`host-failed`), a stopped run (`runtime-exhausted`, `authority-expired`, or `budget-exhausted`), and
 a run whose worker could not be verified stopped (`dispatch-outcome-unknown`)
-fail the attempt; the last stays reported active. A host still running after
+fail the attempt; the last stays reported active, and a stopped run stays
+reported active until a lookup has read its pull requests. A host still running after
 its cycle died is stopped by the first run past its run deadline and fails
 the attempt the same way.
 

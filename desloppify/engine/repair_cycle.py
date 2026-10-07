@@ -170,7 +170,8 @@ class BudgetAdmission:
 class DispatchRecord:
     """A host dispatch for the current attempt: its intent, then what it left behind.
 
-    ``phase`` is ``intent`` (persisted before launch), ``returned`` (the adapter
+    ``phase`` is ``intent`` (persisted before launch; a ``stopped`` outcome stays
+    here until the attempt's references are read), ``returned`` (the adapter
     returned an outcome), ``unknown`` (a lease persisted before dispatch
     records existed, whose dispatch may or may not have happened), or
     ``settled`` (every pull request it left is merged or closed).

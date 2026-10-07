@@ -1439,6 +1439,33 @@ def test_interrupted_dispatch_keeps_reservation(tmp_path) -> None:
     assert recorded["reserved_calls"] == 10
 
 
+def test_a_stopped_run_stays_active_until_its_references_are_read() -> None:
+    state = _state()
+    host = _FakeHost(HostOutcome("stopped", "timeout", calls=3),
+                     found=HostLookupError("gh exited 1"))
+
+    cmd_repair_cycle(_args(state, host))
+
+    recorded = state["repair_cycle"]
+    assert recorded["attempt_failure"] == "runtime-exhausted"
+    assert (recorded["dispatch"]["phase"], recorded["dispatch"]["outcome"]) == (
+        "intent", "stopped"
+    )
+    attempt = recorded["current_lease"]["attempt_id"]
+    with pytest.raises(ValueError, match="confirm-stopped"):
+        CycleState.from_mapping(recorded).dispose(attempt)
+
+    # A later observation that reads its references returns it; it left none.
+    host.found = HostReferences()
+    cmd_repair_cycle(_args(state, host, now=NOW + timedelta(days=1)))
+
+    recorded = state["repair_cycle"]
+    assert recorded["dispatch"]["phase"] == "returned"
+    assert recorded["attempt_failure"] == "runtime-exhausted"
+    assert len(host.requests) == 1
+    CycleState.from_mapping(recorded).dispose(attempt)
+
+
 def test_returned_dispatch_is_persisted_before_reference_lookup(tmp_path) -> None:
     state_path = tmp_path / "state.json"
     seen: list[dict] = []
