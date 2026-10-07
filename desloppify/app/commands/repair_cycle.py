@@ -736,6 +736,9 @@ def _replay_dispatch(
         return False
     found = _add_references(state, cycle_state, adapter, repo_root)
     if stopped:
+        if found:
+            _record_stop(cycle_state)
+            _store_cycle_state(state, cycle_state)
         return found
     if cycle_state.reserved_calls or cycle_state.reserved_cost_usd:
         _fail(state, cycle_state, "unsettled-reservation")
@@ -764,17 +767,23 @@ def _stop_expired_worker(
     reason = _expired_run(cycle_state, now)
     if record is None or reason is None or not adapter.worker_alive(record.attempt_id):
         return None
-    if not adapter.stop_worker(record.attempt_id):
-        _fail(state, cycle_state, "dispatch-outcome-unknown")
-        return False
-    # Recorded as the live run records a stop. A record without a pre-launch
-    # snapshot stays unknown, so no worktree is attributed to it.
-    if record.phase != "unknown":
+    stopped = adapter.stop_worker(record.attempt_id)
+    _fail(state, cycle_state, reason if stopped else "dispatch-outcome-unknown")
+    return stopped
+
+
+def _record_stop(cycle_state: CycleState) -> None:
+    """Record a verified replay stop as the live run records one.
+
+    Only after the attempt's references were read: a stopped record with none
+    reads as not active. A record without a pre-launch snapshot stays unknown, so
+    no worktree is attributed to it.
+    """
+    record = cycle_state.dispatch
+    if record is not None and record.phase != "unknown":
         cycle_state.dispatch = replace(record, phase="returned", outcome="stopped")
     held = BudgetAdmission(cycle_state.reserved_cost_usd, cycle_state.reserved_calls)
     cycle_state.settle(held, None, held.calls)  # its spend is unknown: charge it all
-    _fail(state, cycle_state, reason)
-    return True
 
 
 def _expired_run(cycle_state: CycleState, now: datetime) -> str | None:

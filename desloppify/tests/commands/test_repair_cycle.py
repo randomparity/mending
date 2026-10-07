@@ -1475,6 +1475,10 @@ def test_an_exhausted_observation_allowance_still_stops_an_expired_worker() -> N
         "observation-exhausted", "authority-expired"
     )
     assert (host.stopped, host.lookups, host.events) == (["a1"], [], [])
+    # No lookup was spent, so its pull requests are unknown: it stays reported active.
+    assert recorded["dispatch"]["phase"] == "intent"
+    with pytest.raises(ValueError, match="confirm-stopped"):
+        CycleState.from_mapping(recorded).dispose("a1")
 
 
 def _binding(**overrides: object) -> AuthorityBinding:
