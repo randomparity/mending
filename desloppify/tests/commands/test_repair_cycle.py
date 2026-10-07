@@ -1466,6 +1466,28 @@ def test_a_stopped_run_stays_active_until_its_references_are_read() -> None:
     CycleState.from_mapping(recorded).dispose(attempt)
 
 
+def test_a_replayed_stop_is_persisted_before_reference_lookup(tmp_path) -> None:
+    state_path = tmp_path / "state.json"
+    seen: list[dict] = []
+    host = _FakeHost(
+        alive=True,
+        on_references=lambda: seen.append(json.loads(state_path.read_text())["repair_cycle"]),
+    )
+    args = _args(None, host, state=str(state_path), now=NOW + timedelta(hours=1))
+
+    with repair_cycle._locked_state(args) as state:
+        cycle_state = _leased(state)
+        cycle_state.dispatch = DispatchRecord("a1", "intent", deadline=NOW + timedelta(minutes=30))
+        cycle_state.admit()
+        _dispatch_host(args, state, cycle_state, CONFIG, host)
+
+    assert host.stopped == ["a1"]
+    assert (seen[0]["attempt_failure"], seen[0]["dispatch"]["outcome"]) == (
+        "authority-expired", "stopped"
+    )
+    assert seen[0]["reserved_calls"] == 0
+
+
 def test_returned_dispatch_is_persisted_before_reference_lookup(tmp_path) -> None:
     state_path = tmp_path / "state.json"
     seen: list[dict] = []

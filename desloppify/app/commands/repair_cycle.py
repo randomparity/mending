@@ -328,7 +328,7 @@ def _observe_once(
         _fail(state, cycle_state, reason)
         return
     if record.phase != "returned" or record.outcome == "unknown":
-        if _replay_dispatch(state, cycle_state, host, repo_root, _now(args)):
+        if _replay_dispatch(args, state, cycle_state, host, repo_root):
             prs = _read_pull_requests(state, cycle_state, host)
             scope = _scope_failure(args, config, cycle_state, prs) if prs is not None else None
             if scope is not None:
@@ -597,7 +597,7 @@ def _dispatch_host(
         raise ValueError("no current lease to dispatch")
     repo_root = _repo_root(args)
     if cycle_state.dispatch is not None:
-        _replay_dispatch(state, cycle_state, adapter, repo_root, _now(args))
+        _replay_dispatch(args, state, cycle_state, adapter, repo_root)
         return None
     request = _authorized_request(
         args, state, cycle_state, config, lease=lease, repo_root=repo_root
@@ -752,20 +752,22 @@ def _host_request(
 
 
 def _replay_dispatch(
+    args: argparse.Namespace,
     state: dict[str, Any],
     cycle_state: CycleState,
     adapter: ClaudeHostAdapter,
     repo_root: Path,
-    now: datetime,
 ) -> bool:
     """Observe what a recorded dispatch left behind; never launch it again.
 
     True when the worker is verified stopped and its references were read.
     """
     record = cycle_state.dispatch
-    stopped = _stop_expired_worker(state, cycle_state, adapter, now)
+    stopped = _stop_expired_worker(state, cycle_state, adapter, _now(args))
     if stopped is False:
         return False
+    if stopped:
+        _persist_before_external_call(args, state)  # the stop outlives a failed lookup
     alive: bool | None = False
     if not stopped:
         alive = adapter.worker_alive(record.attempt_id) if record else None
