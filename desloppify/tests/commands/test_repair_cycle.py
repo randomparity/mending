@@ -4,6 +4,7 @@ import argparse
 import fcntl
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -432,9 +433,12 @@ def test_production_refresh_scans_into_the_cycle_state_file(
     tmp_path, monkeypatch, returncode, error, reason
 ) -> None:
     calls: list[tuple[list[str], object, float]] = []
+    monkeypatch.delenv("DESLOPPIFY_DENY_PLUGINS", raising=False)
 
-    def run(argv, *, cwd, timeout, check):
+    def run(argv, *, cwd, env, timeout, check):
         calls.append((argv, cwd, timeout))
+        assert env["DESLOPPIFY_DENY_PLUGINS"] == "1"
+        assert env["PATH"] == os.environ["PATH"]
         if error is not None:
             raise error
         return subprocess.CompletedProcess(argv, returncode)
@@ -488,6 +492,8 @@ def remote(tmp_path, monkeypatch) -> dict[str, Path]:
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     monkeypatch.setenv("HOME", str(tmp_path))  # the developer's global git config stays out
+    # _bring_current drops GIT_* variables, so its own calls still read the host's system
+    # configuration (/etc/gitconfig); the tests assume it defines no filter or include.
     upstream, publisher = tmp_path / "upstream.git", tmp_path / "publisher"
     _git(tmp_path, "init", "-q", "--bare", "-b", "main", str(upstream))
     _git(tmp_path, "clone", "-q", str(upstream), str(publisher))
@@ -628,6 +634,124 @@ def test_the_refresh_scan_reads_the_fast_forwarded_checkout(remote, tmp_path, mo
 
     assert repair_cycle._refresh(args, CONFIG) is None
     assert scanned == [published]
+
+
+@pytest.mark.parametrize(("setting", "refused"), [
+    (("filter.x.smudge", "{run}"), "local git config sets filter.x.smudge"),
+    (("core.sshCommand", "{run}"), "local git config sets core.sshcommand"),
+    (("credential.helper", "!{run}"), "local git config sets credential.helper"),
+    (("remote.origin.uploadpack", "{run}"), "local git config sets remote.origin.uploadpack"),
+    (("include.path", "{included}"), "local git config sets include.path"),
+    (("--worktree", "filter.x.smudge", "{run}"), "local git config sets extensions.worktreeconfig"),
+])
+def test_checkout_git_config_a_clone_does_not_write_parks_before_any_git_runs(
+    remote, setting, refused
+) -> None:
+    checkout = remote["checkout"]
+    marker = checkout.parent / "config-command-ran"
+    run = f"touch '{marker}'; cat"
+    included = checkout.parent / "included.gitconfig"
+    included.write_text(f"[filter \"x\"]\n\tsmudge = {run}\n")
+    (checkout / ".git" / "info" / "attributes").write_text("* filter=x\n")
+    if setting[0] == "--worktree":
+        _git(checkout, "config", "extensions.worktreeConfig", "true")
+    values = [value.format(run=run, included=included) for value in setting]
+    _git(checkout, "config", *values)
+    before = _git(checkout, "rev-parse", "HEAD")
+    _publish(remote)
+
+    assert repair_cycle._bring_current(checkout, 60).startswith(refused)
+    assert _git(checkout, "rev-parse", "HEAD") == before
+    assert not marker.exists()
+
+
+def test_worktree_git_config_parks_like_local_config(remote, monkeypatch) -> None:
+    checkout = remote["checkout"]
+    _git(checkout, "config", "extensions.worktreeConfig", "true")
+    _git(checkout, "config", "--worktree", "core.sshCommand", "false")
+    clone_keys = repair_cycle._CLONE_CONFIG_KEY.pattern
+    monkeypatch.setattr(
+        repair_cycle, "_CLONE_CONFIG_KEY", re.compile(rf"{clone_keys}|extensions\.worktreeconfig")
+    )
+
+    assert repair_cycle._bring_current(checkout, 60).startswith(
+        "worktree git config sets core.sshcommand"
+    )
+
+
+def test_a_planted_submodule_never_runs_its_own_config(remote) -> None:
+    checkout = remote["checkout"]
+    marker = checkout.parent / "submodule-command-ran"
+    sub = checkout / "sub"
+    _git(checkout, "init", "-q", str(sub))
+    commit = _commit(sub, "f", "f\n")
+    _git(sub, "config", "filter.evil.clean", f"touch '{marker}'; cat")
+    (sub / ".gitattributes").write_text("* filter=evil\n")
+    _git(checkout, "update-index", "--add", "--cacheinfo", f"160000,{commit},sub")
+    (sub / "f").touch()
+
+    _publish(remote)
+
+    repair_cycle._bring_current(checkout, 60)
+    assert not marker.exists()
+
+
+def test_an_origin_url_cannot_select_a_remote_helper(remote, monkeypatch) -> None:
+    checkout, bin_dir = remote["checkout"], remote["checkout"].parent / "bin"
+    marker = checkout.parent / "helper-ran"
+    bin_dir.mkdir()
+    helper = bin_dir / "git-remote-zz"
+    helper.write_text(f"#!/bin/sh\ntouch '{marker}'\n")
+    helper.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    _git(checkout, "remote", "set-url", "origin", "zz::anything")
+
+    assert "transport 'zz' not allowed" in repair_cycle._bring_current(checkout, 60)
+    assert not marker.exists()
+
+
+def test_the_accounts_global_git_config_is_not_read(remote) -> None:
+    checkout = remote["checkout"]
+    marker = checkout.parent / "global-command-ran"
+    (checkout.parent / ".gitconfig").write_text(
+        f"[filter \"x\"]\n\tsmudge = touch '{marker}'; cat\n"
+    )
+    (checkout / ".git" / "info" / "attributes").write_text("* filter=x\n")
+    published = _publish(remote)
+
+    assert repair_cycle._bring_current(checkout, 60) is None
+    assert _git(checkout, "rev-parse", "HEAD") == published
+    assert not marker.exists()
+
+
+def test_a_global_scope_setting_parks_even_a_key_clone_writes(remote, monkeypatch) -> None:
+    checkout = remote["checkout"]
+    redirect = checkout.parent / "redirect.gitconfig"
+    redirect.write_text(f"[remote \"origin\"]\n\turl = {checkout.parent / 'other.git'}\n")
+    monkeypatch.setattr(repair_cycle.os, "devnull", str(redirect))  # as if git ignored it
+
+    assert repair_cycle._bring_current(checkout, 60).startswith(
+        "global git config sets remote.origin.url"
+    )
+
+
+def test_the_refresh_scan_never_imports_a_trusted_checkout_plugin(
+    tmp_path, monkeypatch
+) -> None:
+    checkout = tmp_path / "checkout"
+    marker = tmp_path / "plugin-imported"
+    plugins = checkout / ".desloppify" / "plugins"
+    plugins.mkdir(parents=True)
+    (checkout / ".desloppify" / "config.json").write_text('{"trust_plugins": true}\n')
+    (plugins / "evil.py").write_text(f"open({str(marker)!r}, 'w').close()\n")
+    (checkout / "a.py").write_text("a = 1\n")
+    monkeypatch.setenv("DESLOPPIFY_TRUST_PLUGINS", "1")
+    monkeypatch.setattr(repair_cycle, "_bring_current", lambda root, seconds: None)
+    args = argparse.Namespace(state=str(tmp_path / "state.json"), repo_root=checkout)
+
+    assert repair_cycle._refresh(args, CONFIG) is None
+    assert (tmp_path / "state.json").exists()
+    assert not marker.exists()
 
 
 def test_window_bounds_new_dispatches_and_a_closed_pr_settles() -> None:
