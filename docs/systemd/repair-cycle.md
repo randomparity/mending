@@ -37,7 +37,10 @@ accepts only `core.repositoryformatversion`, `core.filemode`, `core.bare`,
 `core.logallrefupdates`, `core.ignorecase`, `core.precomposeunicode`,
 `core.symlinks`, `extensions.objectformat`, `extensions.refstorage`,
 `remote.origin.url`, `remote.origin.fetch`, and `branch.<name>.remote` and
-`branch.<name>.merge`. The cycle's git calls also ignore the account's global
+`branch.<name>.merge`. Repair worktrees share the checkout's `.git/config`, so
+a key the host or its tools write from one (for example `core.hooksPath` from a
+hook manager) parks later runs too; remove it with `git config --unset`. The
+cycle's git calls also ignore the account's global
 configuration (`GIT_CONFIG_GLOBAL=/dev/null`, git 2.32 or later; an older git
 parks on any global setting instead, and one older than 2.26 parks every run
 because it cannot report where a setting comes from), so only `/etc/gitconfig`
