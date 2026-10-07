@@ -53,8 +53,9 @@ holds only while nothing else running as `mending` writes the checkout's git
 configuration during the refresh.
 The cycle fetches from whichever `origin` URL the checkout names, but only over
 `https`, `ssh`, or a local path: its git calls refuse every other transport,
-including a `name::address` URL that would run a `git-remote-<name>` helper,
-whatever `/etc/gitconfig` allows.
+including a `name::address` URL that would run a `git-remote-<name>` helper.
+A `protocol.<name>.allow` key in `/etc/gitconfig` overrides that refusal for its
+transport, so set none there except for `https`, `ssh`, or `file`.
 The unit needs network access to `origin`. For a private repository, give
 `mending` a read-only credential git uses without asking (the cycle sets
 `GIT_TERMINAL_PROMPT=0`, drops inherited `GIT_*` variables, and reads no
