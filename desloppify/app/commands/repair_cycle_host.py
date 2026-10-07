@@ -231,7 +231,8 @@ class ClaudeHostAdapter:
                 return False
             groups = _marked_groups(marked, marker)
             seen |= groups
-            if _settled(seen, marker, 0):
+            # Decide from the scan just read, so the signals follow it with no rescan between.
+            if not marked and not any(_group_alive(pgid) for pgid in seen):
                 return True
             _signal_tree(groups, marked, sig)
             if _settled(seen, marker, self._grace_seconds):
