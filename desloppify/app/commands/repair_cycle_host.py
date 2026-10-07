@@ -26,6 +26,7 @@ from desloppify.engine.repair_cycle import BudgetAdmission, CycleConfig
 
 MARKER_VARIABLE = "MENDING_HOST_SESSION"
 # The host is asked to put "<tag>: <attempt ID>" in every issue and PR body it creates.
+# The tag never attributes a pull request; it attributes an issue only with its author.
 ATTEMPT_TAG = "Mending-Attempt"
 # Background subagents are not streamed, so their calls could not be counted.
 BACKGROUND_TASKS_VARIABLE = "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"
@@ -48,13 +49,18 @@ def host_session_id(attempt_id: str) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"mending-attempt:{attempt_id}"))
 
 
+def host_branch(attempt_id: str) -> str:
+    """Return the branch the host must open its pull request from, derived from the attempt."""
+    return f"mending/{host_session_id(attempt_id)}"
+
+
 class HostLookupError(RuntimeError):
     """A lookup of what a dispatched attempt left behind could not be completed."""
 
 
 @dataclass(frozen=True)
 class HostReferences:
-    """Issue and PR URLs carrying an attempt's tag, and worktrees created during it."""
+    """What an attempt left: its PRs, its issues, and the worktrees created during it."""
 
     pull_requests: tuple[str, ...] = ()
     issues: tuple[str, ...] = ()
@@ -228,11 +234,15 @@ class ClaudeHostAdapter:
         repo_root: Path,
         prior_worktrees: tuple[str, ...],
     ) -> HostReferences:
-        """Find the attempt's tagged issues and PRs and the worktrees created since launch."""
-        tag = f"{ATTEMPT_TAG}: {attempt_id}"
+        """Find the attempt's PRs and issues and the worktrees created since launch.
+
+        A PR is the attempt's when its head is the attempt's branch in the repository
+        itself; an issue when its body has the tag line and its author is the account
+        this process's ``gh`` uses, which the host inherits.
+        """
         return HostReferences(
-            pull_requests=_tagged("pr", repository, tag),
-            issues=_tagged("issue", repository, tag),
+            pull_requests=_branch_pull_requests(repository, host_branch(attempt_id)),
+            issues=_own_tagged_issues(repository, f"{ATTEMPT_TAG}: {attempt_id}"),
             worktrees=tuple(
                 path for path in self.worktrees(repo_root) if path not in prior_worktrees
             ),
@@ -377,18 +387,57 @@ def _manifest(skills_dir: str) -> dict[str, Any] | None:
     return raw if isinstance(raw, dict) else None
 
 
-def _tagged(kind: str, repository: str, tag: str) -> tuple[str, ...]:
-    """Return URLs of the repository's recent issues or PRs whose body has the tag line."""
-    output = _output(f"gh {kind} list", [
-        "gh", kind, "list", "--repo", repository, "--state", "all",
-        "--limit", _LOOKUP_LIMIT, "--json", "url,body",
+def _branch_pull_requests(repository: str, branch: str) -> tuple[str, ...]:
+    """Return URLs of the repository's PRs, in any state, whose head is its own ``branch``.
+
+    Only an account that can push to the repository can create that head, so a body
+    tag, or the same branch name in a fork, never attributes a pull request.
+    """
+    owner = repository.split("/", 1)[0]
+    pages = _api_json([
+        "gh", "api", "--paginate", "--slurp",
+        f"repos/{repository}/pulls?state=all&head={owner}:{branch}&per_page=100",
+    ])
+    if not isinstance(pages, list) or not all(isinstance(page, list) for page in pages):
+        raise HostLookupError("gh api returned an unexpected pull request list")
+    return tuple(
+        entry["html_url"]
+        for page in pages
+        for entry in page
+        if _head_is(entry, repository, branch)
+    )
+
+
+def _head_is(entry: object, repository: str, branch: str) -> bool:
+    if not isinstance(entry, dict) or not isinstance(entry.get("html_url"), str):
+        raise HostLookupError("gh api returned an unexpected pull request shape")
+    head = entry.get("head")
+    repo = head.get("repo") if isinstance(head, dict) else None
+    name = repo.get("full_name") if isinstance(repo, dict) else None
+    return (
+        isinstance(head, dict)
+        and head.get("ref") == branch
+        and isinstance(name, str)
+        and name.lower() == repository.lower()
+    )
+
+
+def _own_tagged_issues(repository: str, tag: str) -> tuple[str, ...]:
+    """Return URLs of recent issues with the tag line opened by this process's ``gh`` account."""
+    user = _api_json(["gh", "api", "user"])
+    login = user.get("login") if isinstance(user, dict) else None
+    if not isinstance(login, str) or not login:
+        raise HostLookupError("gh api user returned no login")
+    output = _output("gh issue list", [
+        "gh", "issue", "list", "--repo", repository, "--state", "all",
+        "--limit", _LOOKUP_LIMIT, "--json", "url,body,author",
     ])
     try:
         entries = json.loads(output)
     except ValueError as exc:
-        raise HostLookupError(f"gh {kind} list returned invalid JSON") from exc
+        raise HostLookupError("gh issue list returned invalid JSON") from exc
     if not isinstance(entries, list):
-        raise HostLookupError(f"gh {kind} list did not return a list")
+        raise HostLookupError("gh issue list did not return a list")
     return tuple(
         entry["url"]
         for entry in entries
@@ -396,7 +445,14 @@ def _tagged(kind: str, repository: str, tag: str) -> tuple[str, ...]:
         and isinstance(entry.get("url"), str)
         and isinstance(entry.get("body"), str)
         and tag in entry["body"].splitlines()
+        and _author(entry).lower() == login.lower()
     )
+
+
+def _author(entry: dict[str, Any]) -> str:
+    author = entry.get("author")
+    login = author.get("login") if isinstance(author, dict) else None
+    return login if isinstance(login, str) else ""
 
 
 def _pull_request(repository: str, url: str) -> PullRequest:
@@ -469,6 +525,9 @@ def _prompt(request: HostRequest) -> str:
         f"Attempt ID: {request.attempt_id}\n"
         f"Source revision: {request.source_revision}\n"
         f"Authorized scope: {request.authorized_scope}\n"
+        f"Branch: {host_branch(request.attempt_id)}\n"
+        "Push your work to this branch name in this repository, not a fork, and open your "
+        "pull request from it; a pull request from any other branch is not this repair's.\n"
         f"Put the line '{ATTEMPT_TAG}: {request.attempt_id}' in the body of every issue "
         "and pull request you create.\n\n"
         f"Brief:\n{request.brief}\n"
@@ -616,5 +675,6 @@ __all__ = [
     "HostReferences",
     "HostRequest",
     "PullRequest",
+    "host_branch",
     "host_session_id",
 ]

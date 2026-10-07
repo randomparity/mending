@@ -28,6 +28,7 @@ from pathlib import Path
 WORLD = Path(os.environ.get("STAND_IN_WORLD", "."))
 ATTEMPT_TAG = "Mending-Attempt"
 WAIT_SECONDS = 30.0
+LOGIN = "mending-host"
 _HELP = (
     "--output-format <format>  text, json, or stream-json\n"
     "--forward-subagent-text\n"
@@ -79,8 +80,11 @@ def _gh(argv: list[str]) -> int:
             path = "issues" if kind == "issue" else "pull"
             url = f"https://github.com/{options['--repo']}/{path}/{number}"
             files = json.loads(os.environ.get("STAND_IN_PR_FILES", "[]"))
+            head_repo = os.environ.get("STAND_IN_HEAD_REPO") or options["--repo"]
             items.append({"number": number, "url": url, "state": "OPEN",
-                          "title": options["--title"], "body": options["--body"], "files": files})
+                          "title": options["--title"], "body": options["--body"], "files": files,
+                          "author": {"login": LOGIN},
+                          "head": {"ref": options.get("--head"), "repo": head_repo}})
             output = url
         else:
             print(f"stand-in gh: unsupported {argv}", file=sys.stderr)
@@ -90,8 +94,18 @@ def _gh(argv: list[str]) -> int:
 
 
 def _api(world: dict, endpoint: str) -> object:
-    """Answer the REST reads of one pull request: the pull itself, or its paged files."""
-    path, _, _query = endpoint.partition("?")
+    """Answer the REST reads: the signed-in user, pull requests by head, or one pull request."""
+    path, _, query = endpoint.partition("?")
+    if path == "user":
+        return {"login": LOGIN}
+    if path == f"repos/{world['repository']}/pulls":
+        owner, _, ref = dict(pair.split("=", 1) for pair in query.split("&"))["head"].partition(":")
+        return [[
+            {"html_url": item["url"], "head": {"ref": item["head"]["ref"],
+                                               "repo": {"full_name": item["head"]["repo"]}}}
+            for item in world["prs"]
+            if item["head"]["ref"] == ref and item["head"]["repo"].split("/")[0] == owner
+        ]]
     match = re.fullmatch(rf"repos/{re.escape(world['repository'])}/pulls/(\d+)(/files)?", path)
     if match is None:
         raise SystemExit(f"stand-in gh: unsupported api endpoint {endpoint}")
@@ -118,18 +132,20 @@ def _spawn(code: str, *, new_session: bool = False) -> None:
     _append("pids.jsonl", {"pid": child.pid})
 
 
-def _create(kind: str, attempt: str, step: dict) -> None:
+def _create(kind: str, attempt: str, branch: str, step: dict) -> None:
     repository = json.loads((WORLD / "world.json").read_text())["repository"]
-    tag = f"{ATTEMPT_TAG}: {step.get('attempt', attempt)}"
-    env = {**os.environ, "STAND_IN_PR_FILES": json.dumps(step.get("files", []))}
+    tag = f"\n{ATTEMPT_TAG}: {step.get('attempt', attempt)}\n" if step.get("tag", True) else ""
+    env = {**os.environ, "STAND_IN_PR_FILES": json.dumps(step.get("files", [])),
+           "STAND_IN_HEAD_REPO": step.get("head_repo", "")}
+    head = ["--head", step.get("branch", branch)] if kind == "pr" else []
     subprocess.run(
-        ["gh", kind, "create", "--repo", repository, "--title", f"Repair {kind}",
-         "--body", f"Scripted {kind}.\n\n{tag}\n"],
+        ["gh", kind, "create", "--repo", repository, *head, "--title", f"Repair {kind}",
+         "--body", f"Scripted {kind}.\n{tag}"],
         env=env, check=True, stdout=subprocess.DEVNULL,
     )
 
 
-def _step(step: dict, attempt: str) -> int | None:
+def _step(step: dict, attempt: str, branch: str) -> int | None:
     action = step["do"]
     if action == "assistant":
         parent = "toolu_1" if step.get("nested") else None
@@ -147,7 +163,7 @@ def _step(step: dict, attempt: str) -> int | None:
         _spawn((ignore if step.get("ignore_term") else "") + sleep,
                new_session=bool(step.get("setsid")))
     elif action in ("pr", "issue"):
-        _create(action, attempt, step)
+        _create(action, attempt, branch, step)
     elif action == "wait":
         _wait_for_go()
     elif action == "hang":
@@ -177,6 +193,8 @@ def _claude(argv: list[str]) -> int:
     prompt = sys.stdin.read()
     found = re.search(r"^Attempt ID: (\S+)$", prompt, re.MULTILINE)
     attempt = found.group(1) if found else ""
+    found = re.search(r"^Branch: (\S+)$", prompt, re.MULTILINE)
+    branch = found.group(1) if found else ""
     _append("launches.jsonl", {
         "pid": os.getpid(), "argv": argv, "attempt": attempt,
         "marker": os.environ.get("MENDING_HOST_SESSION"),
@@ -184,7 +202,7 @@ def _claude(argv: list[str]) -> int:
         "background": os.environ.get("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"),
     })
     for step in json.loads((WORLD / "host.json").read_text()):
-        code = _step(step, attempt)
+        code = _step(step, attempt, branch)
         if code is not None:
             return code
     return 0
