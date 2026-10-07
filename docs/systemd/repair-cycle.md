@@ -70,9 +70,11 @@ The scan also writes its working files under `.desloppify/` in the checkout,
 which the target repository should ignore. The refresh scan never loads the
 checkout's plugins (`.desloppify/plugins/`): it sets
 `DESLOPPIFY_DENY_PLUGINS=1`, which overrides both `trust_plugins` in a
-committed `.desloppify/config.json` and `DESLOPPIFY_TRUST_PLUGINS`. The scan's
-external language tools (for example `cargo check` or `npx eslint`) still run
-in the checkout and can execute code it contains (#75).
+committed `.desloppify/config.json` and `DESLOPPIFY_TRUST_PLUGINS`. The refresh
+scan also starts no external program (`--no-external-tools`): phases that need
+one (for example `cargo check`, `npx eslint`, `ruff`, `bandit`, or `jscpd`) are
+skipped and named in the journal, so the cycle state does not track their
+findings; none of them feeds repair selection. Interactive scans still run them.
 Create `/var/lib/mending/repository-worktrees` (where the Adept skills put the
 repair worktree) and `/var/lib/mending/claude` (the Claude Code configuration
 directory, holding the account's credentials and session files), both owned
