@@ -1,7 +1,7 @@
 # Start no external tools in the repair-cycle refresh scan
 
 Issue: #75 (split out of #63). Builds on ADR 0006 and ADR 0016.
-Decision record: ADR 0017 (number pending orchestrator reservation).
+Decision record: [ADR 0017](../../adr/0017-refresh-starts-no-external-tools.md).
 
 ## Problem
 
