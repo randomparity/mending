@@ -170,10 +170,13 @@ class BudgetAdmission:
 class DispatchRecord:
     """A host dispatch for the current attempt: its intent, then what it left behind.
 
-    ``phase`` is ``intent`` (persisted before launch), ``returned`` (the adapter
+    ``phase`` is ``intent`` (persisted before launch; a ``stopped`` outcome stays
+    here until the attempt's references are read), ``returned`` (the adapter
     returned an outcome), ``unknown`` (a lease persisted before dispatch
     records existed, whose dispatch may or may not have happened), or
     ``settled`` (every pull request it left is merged or closed).
+    ``deadline`` is the run deadline the launch enforced; a record persisted
+    before it existed has none, and replay then holds the run to its lease.
     """
 
     attempt_id: str
@@ -186,12 +189,15 @@ class DispatchRecord:
     pull_requests: tuple[str, ...] = ()
     issues: tuple[str, ...] = ()
     worktrees: tuple[str, ...] = ()
+    deadline: datetime | None = None
 
     def __post_init__(self) -> None:
         if not self.attempt_id:
             raise ValueError("dispatch attempt ID is required")
         if self.phase not in _DISPATCH_PHASES:
             raise ValueError(f"dispatch phase {self.phase!r} is invalid")
+        if self.deadline is not None and self.deadline.tzinfo is None:
+            raise ValueError("dispatch deadline must include a timezone")
 
     @classmethod
     def from_mapping(cls, mapping: Mapping[str, object]) -> DispatchRecord:
@@ -207,6 +213,7 @@ class DispatchRecord:
             pull_requests=_texts(mapping, "pull_requests"),
             issues=_texts(mapping, "issues"),
             worktrees=_texts(mapping, "worktrees"),
+            deadline=_optional_time(mapping, "deadline"),
         )
 
     def to_mapping(self) -> dict[str, object]:
@@ -222,6 +229,7 @@ class DispatchRecord:
             "pull_requests": list(self.pull_requests),
             "issues": list(self.issues),
             "worktrees": list(self.worktrees),
+            "deadline": self.deadline.isoformat() if self.deadline else None,
         }
 
     def with_references(
@@ -485,6 +493,14 @@ def _optional_text(mapping: Mapping[str, object], key: str) -> str | None:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{key} must be a non-empty string")
     return value.strip()
+
+
+def _optional_time(mapping: Mapping[str, object], key: str) -> datetime | None:
+    value = _optional_text(mapping, key)
+    try:
+        return None if value is None else datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(f"{key} is invalid") from exc
 
 
 def _texts(mapping: Mapping[str, object], key: str) -> tuple[str, ...]:

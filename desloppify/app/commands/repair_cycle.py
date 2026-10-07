@@ -51,6 +51,7 @@ from desloppify.engine.repair_brief import (
     reviewed_version,
 )
 from desloppify.engine.repair_cycle import (
+    BudgetAdmission,
     CycleConfig,
     CycleLease,
     CycleState,
@@ -296,6 +297,8 @@ def _observe(
     """Spend one bounded observation on an unsettled attempt; never start work (#28)."""
     if cycle_state.observation_calls >= config.observation_call_limit:
         _fail(state, cycle_state, "observation-exhausted")
+        # The allowance bounds lookups; stopping a worker past its deadline needs none.
+        _stop_expired_worker(state, cycle_state, host, _now(args))
         return
     cycle_state.observation_calls += 1
     _store_cycle_state(state, cycle_state)
@@ -325,7 +328,7 @@ def _observe_once(
         _fail(state, cycle_state, reason)
         return
     if record.phase != "returned" or record.outcome == "unknown":
-        if _replay_dispatch(state, cycle_state, host, repo_root):
+        if _replay_dispatch(args, state, cycle_state, host, repo_root):
             prs = _read_pull_requests(state, cycle_state, host)
             scope = _scope_failure(args, config, cycle_state, prs) if prs is not None else None
             if scope is not None:
@@ -594,7 +597,7 @@ def _dispatch_host(
         raise ValueError("no current lease to dispatch")
     repo_root = _repo_root(args)
     if cycle_state.dispatch is not None:
-        _replay_dispatch(state, cycle_state, adapter, repo_root)
+        _replay_dispatch(args, state, cycle_state, adapter, repo_root)
         return None
     request = _authorized_request(
         args, state, cycle_state, config, lease=lease, repo_root=repo_root
@@ -618,6 +621,7 @@ def _dispatch_host(
         adapter.repository,
         str(repo_root.resolve()),
         prior_worktrees,
+        deadline=request.deadline,
     )
     cycle_state.dispatch = record
     _store_cycle_state(state, cycle_state)
@@ -630,7 +634,9 @@ def _dispatch_host(
         cycle_state.settle(admission, Decimal(0), outcome.calls)
         _park(state, cycle_state, outcome.reason or "host-parked")
         return outcome
-    cycle_state.dispatch = replace(record, phase="returned", outcome=outcome.state)
+    # A stopped run is returned only once its references are read (_settle_run).
+    phase = "intent" if outcome.state == "stopped" else "returned"
+    cycle_state.dispatch = replace(record, phase=phase, outcome=outcome.state)
     if outcome.state in {"stopped", "unknown"}:
         # Work in flight or still running when Mending stopped it may have spent anything.
         cycle_state.settle(admission, None, max(outcome.calls, admission.calls))
@@ -695,6 +701,8 @@ def _settle_run(
         _store_cycle_state(state, cycle_state)
     _persist_before_external_call(args, state)
     found = _add_references(state, cycle_state, adapter, _repo_root(args))
+    if found:
+        _return_stop(state, cycle_state)
     if outcome.state != "completed" or failure is not None:
         return
     if found:
@@ -744,6 +752,7 @@ def _host_request(
 
 
 def _replay_dispatch(
+    args: argparse.Namespace,
     state: dict[str, Any],
     cycle_state: CycleState,
     adapter: ClaudeHostAdapter,
@@ -754,11 +763,22 @@ def _replay_dispatch(
     True when the worker is verified stopped and its references were read.
     """
     record = cycle_state.dispatch
-    alive = adapter.worker_alive(record.attempt_id) if record else None
+    stopped = _stop_expired_worker(state, cycle_state, adapter, _now(args))
+    if stopped is False:
+        return False
+    if stopped:
+        _persist_before_external_call(args, state)  # the stop outlives a failed lookup
+    alive: bool | None = False
+    if not stopped:
+        alive = adapter.worker_alive(record.attempt_id) if record else None
     if alive is not False:
         _park(state, cycle_state, "dispatch-in-flight" if alive else "dispatch-unverified")
         return False
     found = _add_references(state, cycle_state, adapter, repo_root)
+    if cycle_state.dispatch is not None and cycle_state.dispatch.outcome == "stopped":
+        if found:
+            _return_stop(state, cycle_state)
+        return found
     if cycle_state.reserved_calls or cycle_state.reserved_cost_usd:
         _fail(state, cycle_state, "unsettled-reservation")
     elif record is not None and (record.phase == "unknown" or record.outcome == "unknown"):
@@ -768,6 +788,61 @@ def _replay_dispatch(
     else:
         _park(state, cycle_state, "already-dispatched")
     return found
+
+
+def _stop_expired_worker(
+    state: dict[str, Any],
+    cycle_state: CycleState,
+    adapter: ClaudeHostAdapter,
+    now: datetime,
+) -> bool | None:
+    """Stop a recorded worker still alive past its run deadline, as its run would have.
+
+    The attempt fails with the reason that run would report, or ``dispatch-outcome-unknown``
+    when the tree cannot be verified empty. None when no worker is alive past the deadline;
+    otherwise whether the tree was verified empty.
+    """
+    record = cycle_state.dispatch
+    reason = _expired_run(cycle_state, now)
+    if record is None or reason is None or not adapter.worker_alive(record.attempt_id):
+        return None
+    if not adapter.stop_worker(record.attempt_id):
+        _fail(state, cycle_state, "dispatch-outcome-unknown")
+        return False
+    # Recorded as the live run records a stop: its spend is unknown, so charge it all.
+    cycle_state.dispatch = replace(record, outcome="stopped")
+    held = BudgetAdmission(cycle_state.reserved_cost_usd, cycle_state.reserved_calls)
+    cycle_state.settle(held, None, held.calls)
+    _fail(state, cycle_state, reason)
+    return True
+
+
+def _return_stop(state: dict[str, Any], cycle_state: CycleState) -> None:
+    """Mark a stopped dispatch returned once its references were read.
+
+    Until then it stays ``intent`` and reported active: a stopped record with no
+    references would read as having left no pull request. A record without a
+    pre-launch snapshot stays ``unknown``, so no worktree is attributed to it.
+    """
+    record = cycle_state.dispatch
+    if record is not None and record.outcome == "stopped" and record.phase == "intent":
+        cycle_state.dispatch = replace(record, phase="returned")
+        _store_cycle_state(state, cycle_state)
+
+
+def _expired_run(cycle_state: CycleState, now: datetime) -> str | None:
+    """The stop reason a live run would report at this time, or None inside its deadline.
+
+    A record from before run deadlines were recorded is held to its lease deadline,
+    the bound every attempt had; the record never extends the lease.
+    """
+    lease, record = cycle_state.current_lease, cycle_state.dispatch
+    if lease is None or record is None:
+        return None
+    deadline = min(record.deadline or lease.deadline, lease.deadline)
+    if now < deadline:
+        return None
+    return "authority-expired" if deadline < lease.deadline else "runtime-exhausted"
 
 
 def _add_references(
