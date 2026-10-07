@@ -49,6 +49,7 @@ from desloppify.engine.repair_brief import (
     reviewed_version,
 )
 from desloppify.engine.repair_cycle import (
+    BudgetAdmission,
     CycleConfig,
     CycleLease,
     CycleState,
@@ -713,9 +714,17 @@ def _stop_expired_worker(
     reason = _expired_run(cycle_state, now)
     if record is None or reason is None or not adapter.worker_alive(record.attempt_id):
         return None
-    stopped = adapter.stop_worker(record.attempt_id)
-    _fail(state, cycle_state, reason if stopped else "dispatch-outcome-unknown")
-    return stopped
+    if not adapter.stop_worker(record.attempt_id):
+        _fail(state, cycle_state, "dispatch-outcome-unknown")
+        return False
+    # Recorded as the live run records a stop. A record without a pre-launch
+    # snapshot stays unknown, so no worktree is attributed to it.
+    if record.phase != "unknown":
+        cycle_state.dispatch = replace(record, phase="returned", outcome="stopped")
+    held = BudgetAdmission(cycle_state.reserved_cost_usd, cycle_state.reserved_calls)
+    cycle_state.settle(held, None, held.calls)  # its spend is unknown: charge it all
+    _fail(state, cycle_state, reason)
+    return True
 
 
 def _expired_run(cycle_state: CycleState, now: datetime) -> str | None:

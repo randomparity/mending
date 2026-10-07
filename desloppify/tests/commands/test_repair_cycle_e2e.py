@@ -622,6 +622,9 @@ def test_a_host_outliving_a_killed_cycle_is_stopped_at_its_deadline(
 
     assert world.processes() == []
     assert world.cycle()["attempt_failure"] == reason
+    assert world.cycle()["dispatch"]["outcome"] == "stopped"
+    # Verified stopped and without a pull request, so no --confirm-stopped is needed.
+    world.run(dispose_attempt=world.cycle()["current_lease"]["attempt_id"])
     assert len(world.launches()) == 1
 
 

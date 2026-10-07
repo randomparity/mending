@@ -1271,8 +1271,14 @@ def test_replay_stops_a_worker_alive_past_its_run_deadline(
     assert (recorded["attempt_failure"], recorded["parked_reason"]) == (failure, parked)
     assert host.stopped == ([] if parked == "dispatch-in-flight" else ["a1"])
     assert host.admissions == []
+    stopped = failure in {"authority-expired", "runtime-exhausted"}
     # References are read only once the worker is verified stopped.
-    assert len(host.lookups) == int(failure in {"authority-expired", "runtime-exhausted"})
+    assert len(host.lookups) == int(stopped)
+    # A verified stop is recorded and charged as the live run's stop would be.
+    expected = ("returned", "stopped", 0, 10) if stopped else ("intent", None, 10, 0)
+    dispatch = recorded["dispatch"]
+    assert (dispatch["phase"], dispatch["outcome"], recorded["reserved_calls"],
+            recorded["consumed_calls"]) == expected
 
 
 def test_an_exhausted_observation_allowance_still_stops_an_expired_worker() -> None:
