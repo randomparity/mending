@@ -84,6 +84,11 @@ examples:
         "--skip-slow", action="store_true", help="Skip slow detectors (dupes)"
     )
     p_scan.add_argument(
+        "--no-external-tools",
+        action="store_true",
+        help="Start no external program (linters, compilers, npx); skip phases that need one",
+    )
+    p_scan.add_argument(
         "--profile",
         choices=["objective", "full", "ci"],
         default=None,
