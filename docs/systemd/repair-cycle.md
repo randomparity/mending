@@ -142,15 +142,18 @@ Rewording the problem
 (the issue title) moves neither value. Before approving, confirm that the pair
 still matches the repair's `github_repair` link record after a
 `repair-queue sync --apply`, which rewrites the record and prints `Changed ...`
-when the pair moves; the cycle recomputes both and refuses a stale pair. The
-record is computed from work items in the state file, which the coding host
-can write, so it alone does not show what you reviewed. Compare the record
-with the issue itself rather than relying on the absence of `Changed ...`: the
-first link write after an uncertain create can store a different pair without
-printing it. If they differ, the brief changed after the issue was published:
-do not approve that pair against the published text. An issue published before
-the Provenance block carried `reviewed-brief-version` shows no reviewed version,
-so for it the pair can be read only from the host-writable record. The cycle runs
+when the pair moves. That includes the first link write after an uncertain
+create, which compares the stored pair with the issue's Provenance block; if
+that block is missing or edited out of its published form, sync prints
+`Linked ...` without comparing, so check the pair by hand. The
+cycle recomputes both values and refuses a stale pair. The record is computed
+from work items in the state file, which the coding host can write, so it alone
+does not show what you reviewed. If the record and the issue differ, the brief
+changed after the issue was published: do not approve that pair against the
+published text. An issue published before the Provenance block carried
+`reviewed-brief-version` shows no reviewed version, so sync compares only its
+evidence digest and the reviewed version can be read only from the host-writable
+record. The cycle runs
 `scan` and `repair-queue sync --apply` itself with its own `--state` file; do
 not run either by hand against that file while the unit is active.
 `files` is the whole set of paths the repair may change: the brief's evidence

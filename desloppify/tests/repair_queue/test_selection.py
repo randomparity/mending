@@ -353,6 +353,64 @@ def test_material_change_reports_changed_and_wording_change_does_not(capsys) -> 
     assert len(client.creates) == 1
 
 
+class _LostFirstSearch(_GitHub):
+    """Create lands, then the first post-create search fails (an uncertain create)."""
+
+    def __init__(self, body_edit=lambda body: body) -> None:
+        super().__init__()
+        self.lose_next, self.body_edit = False, body_edit
+
+    def search(self, repository: str, term: str) -> list[GitHubIssue]:
+        if self.lose_next:
+            self.lose_next = False
+            raise RuntimeError("unavailable")
+        return super().search(repository, term)
+
+    def create(self, repository: str, title: str, body: str, *, ready: bool) -> None:
+        super().create(repository, title, self.body_edit(body), ready=ready)
+        self.lose_next = True
+
+
+def _without_reviewed_line(body: str) -> str:
+    return "\n".join(
+        line for line in body.splitlines() if not line.startswith("reviewed-brief-version: ")
+    )
+
+
+@pytest.mark.parametrize(
+    ("body_edit", "change_brief", "expected"),
+    [
+        (lambda body: body, True, "Changed"),
+        (lambda body: body, False, "Linked"),
+        (_without_reviewed_line, True, "Linked"),
+        (lambda body: body.replace(f"evidence-digest: {'b' * 64}", f"evidence-digest: {'e' * 64}"),
+         False, "Changed"),
+    ],
+    ids=["brief-changed", "brief-unchanged", "pre-62-body", "evidence-digest-differs"],
+)
+def test_adopting_a_pending_create_compares_the_published_pair(
+    capsys, body_edit, change_brief: bool, expected: str
+) -> None:
+    narrow = _concern("narrow", "2")
+    state, client = _state(narrow), _LostFirstSearch(body_edit)
+    _sync(state, client)
+    assert "github_repair_pending" in narrow["detail"]
+    capsys.readouterr()
+
+    if change_brief:
+        narrow["detail"]["protected_contracts"] = ["CLI exit codes", "Config schema"]
+    _sync(state, client)
+
+    out = capsys.readouterr().out
+    assert out.startswith(f"{expected} {narrow['id']}")
+    assert ("Changed" in out) == (expected == "Changed")
+    link = narrow["detail"]["github_repair"]
+    assert link["number"] == 101
+    assert link["reviewed_brief_version"] == reviewed_version(narrow, _candidate(narrow))
+    assert "github_repair_pending" not in narrow["detail"]
+    assert len(client.creates) == 1
+
+
 @pytest.mark.parametrize(
     "content",
     [{"version": 2, "work_items": {}}, {"version": 2, "work_items": {"a": {"id": "b"}}}],

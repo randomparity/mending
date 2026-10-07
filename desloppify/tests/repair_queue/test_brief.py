@@ -11,6 +11,7 @@ from desloppify.engine.repair_brief import (
     ProposalBrief,
     RepairBrief,
     build_brief,
+    published_pair,
     render_brief,
     reviewed_version,
 )
@@ -275,11 +276,6 @@ def test_version_is_stable_and_content_bound() -> None:
     assert changed.key == first.key
 
 
-def _published_pair(body: str) -> list[str]:
-    prefixes = ("evidence-digest: ", "reviewed-brief-version: ")
-    return [line for line in body.splitlines() if line.startswith(prefixes)]
-
-
 def test_body_publishes_the_stored_approval_pair() -> None:
     issue = _issue()
     candidate = candidate_from_issue(issue, REPOSITORY)
@@ -287,10 +283,33 @@ def test_body_publishes_the_stored_approval_pair() -> None:
     version = reviewed_version(issue, candidate)
     assert version == "d3986fadfd0c76297332c63737344478a9616fc4df78024fd4f738e2bc48c940"
     body = render_brief(_valid())[1]
-    assert _published_pair(body) == [
-        f"evidence-digest: {EVIDENCE}",
-        f"reviewed-brief-version: {version}",
-    ]
+    assert published_pair(body) == {"evidence_digest": EVIDENCE, "reviewed_brief_version": version}
+
+
+_BLOCK = ["## Provenance", "", "```text", f"evidence-digest: {EVIDENCE}", "```"]
+
+
+@pytest.mark.parametrize(
+    ("lines", "expected"),
+    [
+        (_BLOCK, {"evidence_digest": EVIDENCE}),
+        ([f"evidence-digest: {EVIDENCE}"], {}),
+        (["## Provenance", f"evidence-digest: {EVIDENCE}"], {}),
+        ([*_BLOCK[:4], "rest of the body"], {}),
+        ([*_BLOCK, f"reviewed-brief-version: {'c' * 64}"], {"evidence_digest": EVIDENCE}),
+        ([*_BLOCK, *_BLOCK], {}),
+        ([*_BLOCK[:4], f"evidence-digest: {'c' * 64}", "```"], {}),
+        ([*_BLOCK[:3], f"evidence-digest: {EVIDENCE.upper()}", "```"], {}),
+        ([*_BLOCK[:3], f" evidence-digest: {EVIDENCE}", "```"], {}),
+        ([*_BLOCK[:3], f"evidence-digest: {EVIDENCE}0", "```"], {}),
+    ],
+    ids=[
+        "block", "outside-block", "unfenced", "unclosed", "after-fence", "two-headings",
+        "repeated", "uppercase", "indented", "too-long",
+    ],
+)
+def test_published_pair_reads_only_exact_provenance_lines(lines, expected) -> None:
+    assert published_pair("\n".join(lines)) == expected
 
 
 def test_wording_change_keeps_the_published_pair() -> None:
@@ -301,7 +320,7 @@ def test_wording_change_keeps_the_published_pair() -> None:
     title, body = render_brief(reworded)
     original_title, original_body = render_brief(_valid())
     assert title != original_title
-    assert _published_pair(body) == _published_pair(original_body)
+    assert published_pair(body) == published_pair(original_body)
 
 
 def test_long_title_is_cut() -> None:
