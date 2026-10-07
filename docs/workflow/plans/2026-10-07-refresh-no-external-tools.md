@@ -11,8 +11,8 @@ count and skips the prefetch while the guard is open.
 
 Tech stack: Python ≥ 3.11 (`requires-python`), pytest, uv-managed venv.
 
-Expected implementation size: 180–240 changed lines (M) — guard module ~45,
-runner ~25, flag/cmd ~15, refresh/doc ~10, tests ~120.
+Expected implementation size: 220–290 changed lines (M) — guard module ~45,
+runner ~35, flag/cmd ~15, refresh/doc ~10, tests ~150.
 
 ## Global Constraints
 
@@ -45,8 +45,9 @@ Interfaces (later tasks rely on): `deny_process_creation() -> ContextManager[Non
 `class ExternalToolRefused(PermissionError)`.
 
 Verification:
-- Contract: inside the guard `subprocess.run` and `os.system` raise
-  `ExternalToolRefused` and the count rises; outside, `subprocess.run` works.
+- Contract: inside the guard `subprocess.run`, `os.system`, and `os.spawnv`
+  raise `ExternalToolRefused` and the count rises; outside, `subprocess.run`
+  works.
   Mode: focused-test — `desloppify/tests/base/test_process_guard.py`; red:
   `ModuleNotFoundError: desloppify.base.process_guard`; green:
   `uv run --locked pytest -q desloppify/tests/base/test_process_guard.py`.
@@ -75,7 +76,9 @@ def test_guard_refuses_process_creation_only_while_open(tmp_path) -> None:
             subprocess.run([sys.executable, "-c", f"open({str(marker)!r}, 'w')"], check=False)
         with pytest.raises(ExternalToolRefused):
             os.system(f"touch {marker}")
-    assert refusal_count() == start + 2
+        with pytest.raises(ExternalToolRefused):
+            os.spawnv(os.P_WAIT, sys.executable, [sys.executable, "-c", "pass"])
+    assert refusal_count() >= start + 3
     assert not marker.exists()
     assert not process_creation_denied()
     assert subprocess.run([sys.executable, "-c", "pass"], check=False).returncode == 0
@@ -97,9 +100,10 @@ import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 
+# os.fork: os.spawn* forks first and execs in the child, out of the parent's count.
 _REFUSED_EVENTS = frozenset({
-    "os.exec", "os.posix_spawn", "os.spawn", "os.startfile", "os.system",
-    "pty.spawn", "subprocess.Popen",
+    "os.exec", "os.fork", "os.forkpty", "os.posix_spawn", "os.spawn", "os.startfile",
+    "os.system", "pty.spawn", "subprocess.Popen",
 })
 _installed = False
 _depth = 0
@@ -162,8 +166,20 @@ Verification:
 - Contract: a real scan subprocess with the flag starts no tool. Mode:
   focused-test — `test_flagged_scan_starts_no_tool` (shim arm, parametrized
   rust/javascript) and `test_flagged_scan_runs_no_real_tool` (skipped without
-  `cargo`/`npx`); red: shim log non-empty (flag unknown → scan exits 2, and
-  the assertion on returncode 0 fails); green: same file.
+  `cargo`/`npx`); red: argparse exits 2 (unrecognized `--no-external-tools`)
+  and the returncode-0 assertion fails; green: same file.
+- Contract: a dropped phase's writes to `lang.review_cache` and
+  `lang.detector_coverage` are undone, so a dropped detector's open finding
+  stays open after two flagged runs over unchanged input. Mode: focused-test —
+  `test_dropped_phase_keeps_findings_across_runs`: a fake `lang`
+  (`SimpleNamespace(review_cache={}, detector_coverage={})`) and a phase that
+  returns its cached result when `review_cache["detectors"]["fake"]` holds
+  one, else writes an empty cache entry and calls `subprocess.run`; run
+  `_run_phases` twice under the guard; assert both runs drop it (no `"fake"`
+  potentials), `review_cache == {}` afterwards, and that `merge_scan` on a state
+  holding an open `"fake"` finding, with the second run's potentials, leaves it
+  `open`. Red: the second run keeps the phase (cache hit, no refusal);
+  green: `uv run --locked pytest -q desloppify/tests/scan/test_no_external_tools.py -k across_runs`.
 - Contract: without the flag the same fixture calls the shim (bite).
   Mode: focused-test — `test_unflagged_scan_calls_the_tools`.
 
@@ -181,7 +197,7 @@ Steps:
    `timeout=300`. Assert returncode 0, no `MARKER`, empty log (flagged); log
    non-empty (unflagged). Runner tests build
    `DetectorPhase("spawn", run)` / `DetectorPhase("local", run)` and call
-   `_run_phases(tmp_path, None, phases)` inside `deny_process_creation()`.
+   `_run_phases(tmp_path, lang, phases)` with `lang = SimpleNamespace(review_cache={}, detector_coverage={})` inside `deny_process_creation()`.
 2. Run them; expect the reds above.
 3. Add to `_add_scan_parser` after `--skip-slow`:
 
@@ -210,18 +226,35 @@ def cmd_scan(args: argparse.Namespace) -> None:
 def _run_phase(
     path: Path, lang: LangRun, phase: DetectorPhase
 ) -> tuple[list[Issue], dict[str, int]] | None:
-    """The phase's results, or None when it tried to start a program under the guard."""
+    """The phase's results, or None when it tried to start a program under the guard.
+
+    A dropped phase's writes to the caches the scan persists are undone, so a later
+    run cannot read a refusal-degraded result as a clean one (#75).
+    """
+    saved = (
+        copy.deepcopy((lang.review_cache, lang.detector_coverage))
+        if process_creation_denied()
+        else None
+    )
     before = refusal_count()
     try:
         result = phase.run(path, lang)
     except Exception:
         if refusal_count() == before:
             raise
-        return None
-    return None if refusal_count() != before else result
+        result = None
+    if refusal_count() == before:
+        return result
+    if saved is not None:
+        for live, kept in zip((lang.review_cache, lang.detector_coverage), saved):
+            live.clear()
+            live.update(kept)
+    return None
 ```
 
-   printing `_stderr(f"  [{idx}/{total}] {phase.label}... skipped: needs an external tool")`
+   (add `import copy`; `refusal_count`, `process_creation_denied` from
+   `desloppify.base.process_guard`), printing
+   `_stderr(f"  [{idx}/{total}] {phase.label}... skipped: needs an external tool")`
    on `None`. In `_generate_issues_from_lang`, call
    `prewarm_review_phase_detectors` only when `not process_creation_denied()`.
 6. Run the green commands; then `make lint typecheck arch`. Commit

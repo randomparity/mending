@@ -20,12 +20,17 @@ cycle state must not mistake a skipped detector for one that found nothing.
   guard: a `sys.addaudithook` hook that, while the guard is open, raises
   `ExternalToolRefused` (a `PermissionError`) on the audit events CPython
   emits before starting a program (`subprocess.Popen`, `os.system`,
-  `os.exec`, `os.posix_spawn`, `os.spawn`, `pty.spawn`, `os.startfile`), and
-  counts each refusal.
+  `os.exec`, `os.posix_spawn`, `os.spawn`, `os.fork`, `os.forkpty`,
+  `pty.spawn`, `os.startfile`), and counts each refusal. `os.fork` is in the
+  list because `os.spawn*` forks first and would exec, and be refused, only in
+  the child, out of the parent's count.
 - Under the guard the phase runner skips the background prefetch and drops
   any phase during which a refusal occurred: its issues and potentials are
-  discarded and the skip is printed. A detector absent from potentials is
-  treated by merge as not run, so its open findings are kept, not resolved.
+  discarded, its writes to the persisted detector caches (`review_cache`) and
+  coverage records are undone, and the skip is printed. A detector absent from
+  potentials is treated by merge as not run, so its open findings are kept, not
+  resolved; undoing the cache writes keeps a later run over unchanged files
+  from reporting the refusal-degraded result as a clean one.
 - A refusal outside a phase is left to its caller: handled as a missing tool,
   or it fails the scan, which the refresh parks as `refresh-failed`.
 - `_refresh` passes the flag. Without it nothing changes.
@@ -46,13 +51,19 @@ but acts only while a guard is open.
 
 - **Allow-list in-process phases.** verified: `rg -c "DetectorPhase\("
   desloppify/languages` at `e36caa07` counts 44 constructions in 15 files
-  across 34 language packages, plus shared builders; every one would need a
+  across 30 language packages (`find desloppify/languages -mindepth 1 -maxdepth 1 -type d ! -name "_*"`), plus shared builders; every one would need a
   mark, and the jscpd prefetch that starts `npx` runs outside any phase.
   judgment: a mark is a claim nobody re-checks when a phase gains a tool.
 - **Deny-list tool phases.** verified: tracing a Python fixture at `e36caa07`
   showed `python -m bandit` started during the phase labelled `Unused (ruff)`
   and `npx --yes jscpd` before the first phase; a label- or factory-based list
   misses both, and a missed entry runs the tool.
+- **Empty `PATH` or restrict exec in the systemd unit.** verified: the trace
+  above shows `python -m bandit` through `sys.executable`, which must stay
+  executable, `cargo rustdoc` through `/bin/sh -lc`, and `npx` resolving the
+  checkout's `node_modules`; an exec allow-list that keeps the interpreter and
+  shell still runs them. judgment: it protects only the unit, not a manual
+  `repair-cycle` run.
 - **Park any checkout whose languages have tool phases.** judgment: fit;
   Python, the main target, has tool phases, so every refresh would park.
 - **Do nothing; document the risk.** judgment: the guide already did (#63);

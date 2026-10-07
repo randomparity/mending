@@ -30,11 +30,12 @@ Other languages add `zig build`, `mix credo`, `go`, `dotnet`, `clang-tidy`,
 `sys.addaudithook` hook; the hook acts only while a deny context is open, and
 then raises `ExternalToolRefused` (a `PermissionError`) for the audit events
 `subprocess.Popen`, `os.system`, `os.exec`, `os.posix_spawn`, `os.spawn`,
-`pty.spawn`, and `os.startfile`, and counts the refusal. CPython raises these
-events before the program is started, so a refused call runs nothing.
-`refusal_count()` returns the counter and `process_creation_denied()` whether a
-context is open. `os.fork` is not refused: a fork runs only desloppify's own
-code, and its exec calls are refused in the child by the same hook.
+`os.fork`, `os.forkpty`, `pty.spawn`, and `os.startfile`, and counts the
+refusal. CPython raises these events before the program is started, so a
+refused call runs nothing. `os.fork` is refused too because `os.spawn*` forks
+first and execs in the child, where a refusal would not reach the parent's
+count; desloppify forks nowhere. `refusal_count()` returns the counter and
+`process_creation_denied()` whether a context is open.
 
 **`scan --no-external-tools`** (`parser_groups.py`, `scan/cmd.py`). The whole
 scan command runs inside `deny_process_creation()`. The flag is off by default;
@@ -45,15 +46,22 @@ an interactive scan without it behaves exactly as today.
 - `prewarm_review_phase_detectors` is not called, so every tool attempt happens
   inside the phase that makes it (prefetch threads would otherwise overlap other
   phases). The phases already fall back to running synchronously.
-- `_run_phases` reads `refusal_count()` before and after each phase. A phase
-  whose count rose, or that raised after a refusal, is dropped: its issues and
-  potentials are discarded and stderr prints
+- `_run_phases` reads `refusal_count()` before and after each phase, and
+  deep-copies `lang.review_cache` and `lang.detector_coverage` before it. A
+  phase whose count rose, or that raised after a refusal, is dropped: its
+  issues and potentials are discarded, both copies are restored in place
+  (the scan persists them to state as `review_cache` and `scan_coverage`), and
+  stderr prints
   `  [i/n] <label>... skipped: needs an external tool`. An exception with no
   refusal propagates as today.
 
 Dropping potentials is what keeps state honest: `merge_scan_results` treats a
 detector absent from potentials as not run, so its open findings are neither
-added nor auto-resolved (`find_suspect_detectors`). There is no phase
+added nor auto-resolved (`find_suspect_detectors`). Restoring the caches is
+what keeps it honest on the next run: otherwise `phase_security` would cache
+the refusal-degraded bandit result under the file fingerprint, the next
+refresh over unchanged files would hit that cache without starting a process,
+and `security` would report as run and auto-resolve its findings. There is no phase
 classification list: a phase is dropped because it tried, so a new or
 unclassified phase cannot start a tool in this mode.
 
@@ -99,8 +107,7 @@ checkout's git configuration (#63).
    - A checkout whose scan cannot complete without a tool parks every run as
      `refresh-failed`: visible, starts nothing.
    - Process creation the audit hook does not see (`ctypes` calls into libc,
-     `_posixsubprocess` used directly by `multiprocessing` to re-exec the same
-     interpreter): desloppify makes no such call to start a tool.
+     `_posixsubprocess` used directly): desloppify makes no such call.
    - In-process parsing of checkout files (tree-sitter, `ast`) executes no
      checkout code.
 4. Covered elsewhere
@@ -129,9 +136,10 @@ checkout's git configuration (#63).
    no call.
 2. The same fixtures scanned without the flag call the shim (the test bites);
    a real-binary arm runs only when `cargo` / `npx` are installed.
-3. In the mode, a phase that attempts a process is reported as skipped and its
-   detector keeps its previous open findings; an in-process phase (Duplicates)
-   still reports.
+3. In the mode, a phase that attempts a process is reported as skipped, its
+   detector keeps its previous open findings across two consecutive flagged
+   scans of unchanged files, and its cache writes are undone; an in-process
+   phase still reports.
 4. `_refresh` passes `--no-external-tools`.
 5. Without the flag, the scan installs no hook and process creation is allowed.
 
@@ -140,6 +148,7 @@ checkout's git configuration (#63).
 - `process_guard`: unit tests refuse `subprocess.run` and `os.system` inside
   the context, allow them outside, count refusals.
 - Phase runner: unit test with a spawning phase and an in-process phase.
-- Merge: a state with an open finding of a dropped detector keeps it open.
+- Two runs: a state with an open finding of a cache-writing dropped detector
+  keeps it open after two flagged runs over unchanged input.
 - Marker fixtures in `tmp_path` run the scan as a subprocess, as `_refresh` does.
 - Existing `_refresh` argv test updated.
