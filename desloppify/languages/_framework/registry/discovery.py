@@ -150,12 +150,16 @@ def load_all(*, force_reload: bool = False) -> None:
     try:
         user_plugin_dir = get_project_root() / ".desloppify" / "plugins"
         if user_plugin_dir.is_dir():
-            if not _user_plugins_trusted():
+            if os.environ.get("DESLOPPIFY_DENY_PLUGINS") == "1":
+                logger.warning(
+                    "Skipping user plugins in %s: DESLOPPIFY_DENY_PLUGINS=1 is set.",
+                    user_plugin_dir,
+                )
+            elif not _user_plugins_trusted():
                 logger.warning(
                     "Skipping user plugins in %s — not trusted. "
                     "Set trust_plugins=true in .desloppify/config.json "
-                    "or DESLOPPIFY_TRUST_PLUGINS=1 to allow, "
-                    "unless DESLOPPIFY_DENY_PLUGINS=1 is set.",
+                    "or DESLOPPIFY_TRUST_PLUGINS=1 to allow.",
                     user_plugin_dir,
                 )
             else:

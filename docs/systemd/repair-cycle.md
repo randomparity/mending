@@ -39,9 +39,10 @@ accepts only `core.repositoryformatversion`, `core.filemode`, `core.bare`,
 `remote.origin.url`, `remote.origin.fetch`, and `branch.<name>.remote` and
 `branch.<name>.merge`. The cycle's git calls also ignore the account's global
 configuration (`GIT_CONFIG_GLOBAL=/dev/null`, git 2.32 or later; an older git
-parks on any global setting instead), so only `/etc/gitconfig` and the cycle's
-own overrides apply: put every git setting the cycle needs there, owned by root
-and not writable by `mending`. The checkout's attribute files can still bind
+parks on any global setting instead, and one older than 2.26 parks every run
+because it cannot report where a setting comes from), so only `/etc/gitconfig`
+and the cycle's own overrides apply: put every git setting the cycle needs
+there, owned by root and not writable by `mending`. The checkout's attribute files can still bind
 paths to a filter driver, but only a driver `/etc/gitconfig` defines can run.
 The cycle fetches from whichever `origin` URL the checkout names.
 The unit needs network access to `origin`. For a private repository, give

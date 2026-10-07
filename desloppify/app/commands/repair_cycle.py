@@ -82,6 +82,7 @@ _CLONE_CONFIG_KEY = re.compile(
 )
 # Root-owned system configuration and the cycle's own -c overrides; never the checkout's.
 _TRUSTED_CONFIG_SCOPES = frozenset({"system", "command"})
+_CHECKOUT_CONFIG_SCOPES = frozenset({"local", "worktree"})
 
 
 def cmd_repair_cycle(args: argparse.Namespace) -> None:
@@ -226,7 +227,8 @@ def _bring_current(root: Path, seconds: float) -> str | None:
     try:
         listed = git("config", "--list", "--show-scope", "--name-only", "-z").split("\0")
         for scope, key in zip(listed[0::2], listed[1::2], strict=False):
-            if scope not in _TRUSTED_CONFIG_SCOPES and not _CLONE_CONFIG_KEY.fullmatch(key):
+            cloned = scope in _CHECKOUT_CONFIG_SCOPES and _CLONE_CONFIG_KEY.fullmatch(key)
+            if scope not in _TRUSTED_CONFIG_SCOPES and not cloned:
                 return f"{scope} git config sets {key}, which git clone does not write"
         if git("status", "--porcelain", "--untracked-files=no"):
             return "uncommitted changes"

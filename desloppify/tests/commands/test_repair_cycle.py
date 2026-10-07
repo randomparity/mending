@@ -485,6 +485,8 @@ def remote(tmp_path, monkeypatch) -> dict[str, Path]:
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     monkeypatch.setenv("HOME", str(tmp_path))  # the developer's global git config stays out
+    # _bring_current drops GIT_* variables, so its own calls still read the host's system
+    # configuration (/etc/gitconfig); the tests assume it defines no filter or include.
     upstream, publisher = tmp_path / "upstream.git", tmp_path / "publisher"
     _git(tmp_path, "init", "-q", "--bare", "-b", "main", str(upstream))
     _git(tmp_path, "clone", "-q", str(upstream), str(publisher))
@@ -682,6 +684,17 @@ def test_the_accounts_global_git_config_is_not_read(remote) -> None:
     assert repair_cycle._bring_current(checkout, 60) is None
     assert _git(checkout, "rev-parse", "HEAD") == published
     assert not marker.exists()
+
+
+def test_a_global_scope_setting_parks_even_a_key_clone_writes(remote, monkeypatch) -> None:
+    checkout = remote["checkout"]
+    redirect = checkout.parent / "redirect.gitconfig"
+    redirect.write_text(f"[remote \"origin\"]\n\turl = {checkout.parent / 'other.git'}\n")
+    monkeypatch.setattr(repair_cycle.os, "devnull", str(redirect))  # as if git ignored it
+
+    assert repair_cycle._bring_current(checkout, 60).startswith(
+        "global git config sets remote.origin.url"
+    )
 
 
 def test_the_refresh_scan_never_imports_a_trusted_checkout_plugin(
