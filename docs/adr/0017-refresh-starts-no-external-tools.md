@@ -41,7 +41,9 @@ The refresh state no longer tracks tool-backed detectors (lints, security,
 unused imports, smells, boilerplate duplication). None has a repair route;
 selection routes only `concerns` and `dupes`, which the refresh still
 produces. A phase that mixes in-process and tool checks is dropped whole, so
-its in-process findings are lost in this mode too. A future phase needs no
+its in-process findings are lost in this mode too. The state's `scan_coverage` does not
+record a dropped phase, since its coverage writes are undone with the caches;
+only the scan output (the refresh journal) names it. A future phase needs no
 registration to be covered. The guard sees only process creation that goes
 through audited calls; a direct `ctypes` call into libc would bypass it, and
 desloppify makes none. The hook stays installed for the life of the process
