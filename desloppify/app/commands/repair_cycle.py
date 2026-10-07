@@ -257,7 +257,8 @@ def _bring_current(root: Path, seconds: float) -> str | None:
     except subprocess.CalledProcessError as exc:
         lines = [line for line in (exc.stderr or "").splitlines() if line and not
                  line.startswith("hint:")]
-        return f"git {exc.cmd[len(_GIT_OVERRIDES) + 3]} failed: {' '.join(lines) or f'exit {exc.returncode}'}"
+        subcommand = exc.cmd[len(_GIT_OVERRIDES) + 3]
+        return f"git {subcommand} failed: {' '.join(lines) or f'exit {exc.returncode}'}"
     except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
         return f"git failed: {exc}"
     return None if head == fetched else "ahead of origin"
