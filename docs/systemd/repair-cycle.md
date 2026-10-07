@@ -26,27 +26,40 @@ cannot fetch or fast-forward; each of those parks the run as
 parks rather than start the fast-forward with under 30 seconds of the runtime
 left. A git call stopped at the runtime can still leave a lock file or a
 partly updated tree; later runs then park as `checkout-not-current` until you
-inspect and repair the checkout. Disabling hooks and `core.fsmonitor` is not an isolation boundary: the
-other settings in the checkout's git configuration still apply, and the host
-can write that configuration like the rest of the checkout. The cycle fetches
-from whichever `origin` URL it names, and its filter drivers, `core.sshCommand`,
-and credential helpers run as `mending` during the fetch and fast-forward.
+inspect and repair the checkout. The host can write the checkout's git
+configuration like the rest of the checkout, and git configuration can run
+commands (filter drivers, `core.sshCommand`, credential helpers,
+`remote.*.uploadpack`, included files). So before any other git call the cycle
+reads that configuration and parks as `checkout-not-current`, naming the key,
+when the checkout's own configuration (`.git/config`, a file it includes, or
+the worktree configuration) sets anything `git clone` does not write. It
+accepts only `core.repositoryformatversion`, `core.filemode`, `core.bare`,
+`core.logallrefupdates`, `core.ignorecase`, `core.precomposeunicode`,
+`core.symlinks`, `extensions.objectformat`, `extensions.refstorage`,
+`remote.origin.url`, `remote.origin.fetch`, and `branch.<name>.remote` and
+`branch.<name>.merge`. The cycle's git calls also ignore the account's global
+configuration (`GIT_CONFIG_GLOBAL=/dev/null`, git 2.32 or later; an older git
+parks on any global setting instead), so only `/etc/gitconfig` and the cycle's
+own overrides apply: put every git setting the cycle needs there, owned by root
+and not writable by `mending`. The checkout's attribute files can still bind
+paths to a filter driver, but only a driver `/etc/gitconfig` defines can run.
+The cycle fetches from whichever `origin` URL the checkout names.
 The unit needs network access to `origin`. For a private repository, give
 `mending` a read-only credential git uses without asking (the cycle sets
-`GIT_TERMINAL_PROMPT=0` and drops inherited `GIT_*` variables, so configure it
-in git configuration, not the environment file), stored outside `/home`,
-which the unit hides; a read-only deploy key is enough. Over SSH, also record
-the remote's host key in a `known_hosts` file the account reads, because the
-unit cannot accept an unknown key, and name the key and that file in
-`core.sshCommand` in `/etc/gitconfig` (the unit hides a home under `/home`, and
-the checkout's own configuration takes precedence over `/etc/gitconfig`).
+`GIT_TERMINAL_PROMPT=0`, drops inherited `GIT_*` variables, and reads no
+global git configuration, so configure it in `/etc/gitconfig`, not the
+environment file), stored outside `/home`, which the unit hides; a read-only
+deploy key is enough. Over SSH, also record the remote's host key in a
+`known_hosts` file the account reads, because the unit cannot accept an
+unknown key, and name the key and that file in `core.sshCommand` in
+`/etc/gitconfig`.
 The scan also writes its working files under `.desloppify/` in the checkout,
-which the target repository should ignore; confirm it commits no
-`.desloppify/` files, because a committed `.desloppify/config.json` with
-`trust_plugins` makes every refresh run the checkout's plugins. Because each
-run fast-forwards to the default branch, that confirmation holds only until
-the next commit there: anyone who can push to it can add such a file, and the
-next run executes it as `mending`.
+which the target repository should ignore. The refresh scan never loads the
+checkout's plugins (`.desloppify/plugins/`): it sets
+`DESLOPPIFY_DENY_PLUGINS=1`, which overrides both `trust_plugins` in a
+committed `.desloppify/config.json` and `DESLOPPIFY_TRUST_PLUGINS`. The scan's
+external language tools (for example `cargo check` or `npx eslint`) still run
+in the checkout and can execute code it contains (#75).
 Create `/var/lib/mending/repository-worktrees` (where the Adept skills put the
 repair worktree) and `/var/lib/mending/claude` (the Claude Code configuration
 directory, holding the account's credentials and session files), both owned

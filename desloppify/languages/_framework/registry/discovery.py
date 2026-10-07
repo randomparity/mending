@@ -68,10 +68,13 @@ def _report_load_errors_for_load_all() -> None:
 def _user_plugins_trusted(*, load_config_fn=None) -> bool:
     """Check whether the user has opted in to loading project-local plugins.
 
-    Returns *True* when either:
+    Returns *False* when ``DESLOPPIFY_DENY_PLUGINS`` is set to ``1`` (the repair cycle's
+    refresh sets it). Otherwise returns *True* when either:
     * the environment variable ``DESLOPPIFY_TRUST_PLUGINS`` is set to ``1``, or
     * the project config key ``trust_plugins`` is truthy.
     """
+    if os.environ.get("DESLOPPIFY_DENY_PLUGINS") == "1":
+        return False
     if os.environ.get("DESLOPPIFY_TRUST_PLUGINS") == "1":
         return True
     resolved_load_config = load_config_fn
@@ -142,7 +145,8 @@ def load_all(*, force_reload: bool = False) -> None:
 
     # Discover user plugins from <active-project-root>/.desloppify/plugins/*.py
     # These are arbitrary code from the scan target — require explicit opt-in
-    # via config key "trust_plugins": true or env DESLOPPIFY_TRUST_PLUGINS=1.
+    # via config key "trust_plugins": true or env DESLOPPIFY_TRUST_PLUGINS=1, and
+    # env DESLOPPIFY_DENY_PLUGINS=1 overrides both.
     try:
         user_plugin_dir = get_project_root() / ".desloppify" / "plugins"
         if user_plugin_dir.is_dir():
@@ -150,7 +154,8 @@ def load_all(*, force_reload: bool = False) -> None:
                 logger.warning(
                     "Skipping user plugins in %s — not trusted. "
                     "Set trust_plugins=true in .desloppify/config.json "
-                    "or DESLOPPIFY_TRUST_PLUGINS=1 to allow.",
+                    "or DESLOPPIFY_TRUST_PLUGINS=1 to allow, "
+                    "unless DESLOPPIFY_DENY_PLUGINS=1 is set.",
                     user_plugin_dir,
                 )
             else:
