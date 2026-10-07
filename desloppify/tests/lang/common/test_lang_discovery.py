@@ -170,6 +170,7 @@ def test_discovery_module_exports_expected_callables():
 
 def test_user_plugins_trusted_only_swallows_config_load_failures(monkeypatch):
     monkeypatch.delenv("DESLOPPIFY_TRUST_PLUGINS", raising=False)
+    monkeypatch.delenv("DESLOPPIFY_DENY_PLUGINS", raising=False)
 
     assert (
         discovery_mod._user_plugins_trusted(
@@ -182,6 +183,23 @@ def test_user_plugins_trusted_only_swallows_config_load_failures(monkeypatch):
         discovery_mod._user_plugins_trusted(
             load_config_fn=lambda: (_ for _ in ()).throw(RuntimeError("boom"))
         )
+
+
+@pytest.mark.parametrize(("trust_env", "trust_config"), [("1", False), (None, True)])
+def test_deny_plugins_overrides_every_trust_opt_in(monkeypatch, trust_env, trust_config):
+    if trust_env is None:
+        monkeypatch.delenv("DESLOPPIFY_TRUST_PLUGINS", raising=False)
+    else:
+        monkeypatch.setenv("DESLOPPIFY_TRUST_PLUGINS", trust_env)
+
+    def load_config() -> dict[str, bool]:
+        return {"trust_plugins": trust_config}
+
+    monkeypatch.delenv("DESLOPPIFY_DENY_PLUGINS", raising=False)
+    assert discovery_mod._user_plugins_trusted(load_config_fn=load_config) is True
+
+    monkeypatch.setenv("DESLOPPIFY_DENY_PLUGINS", "1")
+    assert discovery_mod._user_plugins_trusted(load_config_fn=load_config) is False
 
 
 def test_load_all_propagates_unexpected_user_plugin_errors(monkeypatch, tmp_path):

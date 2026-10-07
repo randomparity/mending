@@ -7,6 +7,7 @@ import fcntl
 import json
 import math
 import os
+import re
 import signal
 import subprocess  # nosec B404
 import sys
@@ -71,6 +72,30 @@ _NO_OP_REASONS = frozenset({"selected-repair-unavailable", "authority-missing"})
 # A fast-forward killed mid-checkout can leave a half-updated tree; never start one closer
 # to the deadline than this.
 _FAST_FORWARD_FLOOR_SECONDS = 30
+# All that `git clone` writes to a checkout's own git configuration. Any other key the host
+# writes there (filter drivers, core.sshCommand, credential helpers, remote.*.uploadpack,
+# include.path, ...) could run a command as the cycle's account, so the cycle refuses it.
+_CLONE_CONFIG_KEY = re.compile(
+    r"core\.(repositoryformatversion|filemode|bare|logallrefupdates|ignorecase"
+    r"|precomposeunicode|symlinks)|extensions\.(objectformat|refstorage)"
+    r"|remote\.origin\.(url|fetch)|branch\..+\.(remote|merge)"
+)
+# Root-owned system configuration and the cycle's own -c overrides; never the checkout's.
+_TRUSTED_CONFIG_SCOPES = frozenset({"system", "command"})
+_CHECKOUT_CONFIG_SCOPES = frozenset({"local", "worktree"})
+# Command-scope settings on every cycle git call, outranking every configuration file: no
+# hooks or fsmonitor, no recursion into a submodule (whose own configuration the check below
+# never sees), and only the https, ssh, and local transports, so an origin URL such as
+# `name::address` cannot run a git-remote-<name> helper.
+_GIT_OVERRIDES = tuple(
+    argument
+    for setting in (
+        "core.hooksPath=/dev/null", "core.fsmonitor=false", "submodule.recurse=false",
+        "diff.ignoreSubmodules=all", "protocol.allow=never", "protocol.https.allow=always",
+        "protocol.ssh.allow=always", "protocol.file.allow=always",
+    )
+    for argument in ("-c", setting)
+)
 
 
 def cmd_repair_cycle(args: argparse.Namespace) -> None:
@@ -173,14 +198,16 @@ def _refresh(args: argparse.Namespace, config: CycleConfig) -> str | None:
     if stale is not None:
         print(f"Repair cycle checkout not current: {stale}")
         return "checkout-not-current"
-    # -P keeps a checkout package from shadowing the installed desloppify.
+    # -P keeps a checkout package from shadowing the installed desloppify, and the checkout's
+    # own plugins never load, whatever its trust_plugins says (#63).
+    env = {**os.environ, "DESLOPPIFY_DENY_PLUGINS": "1"}
     argv = [
         sys.executable, "-P", "-m", "desloppify", "scan", "--no-badge",
         "--state", str(_state_file(args).resolve()),
     ]
     try:
         done = subprocess.run(  # nosec B603
-            argv, cwd=_repo_root(args), timeout=config.runtime_seconds, check=False
+            argv, cwd=_repo_root(args), env=env, timeout=config.runtime_seconds, check=False
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         print(f"Repair cycle refresh failed: {exc}")
@@ -192,23 +219,29 @@ def _bring_current(root: Path, seconds: float) -> str | None:
     """Fast-forward a clean checkout to its ``origin`` default branch; else why it is stale.
 
     The remote's own HEAD names the default branch, not the checkout's tracking
-    configuration. A dirty, detached, diverged, or ahead checkout is left as it is.
+    configuration. A dirty, detached, diverged, or ahead checkout is left as it is, and so is
+    one whose own git configuration holds anything ``git clone`` does not write.
     """
     deadline = time.monotonic() + seconds
-    # Hooks and fsmonitor never run, but the checkout's other git configuration, which the
-    # host can write, still applies and can run commands (filters, ssh, credentials; guide).
+    # The account's global configuration, which the host can write, is not read; the
+    # checkout's configuration is checked before any other call.
     env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
 
     def git(*command: str) -> str:
         return subprocess.run(  # nosec B603 B607 - fixed argv, no shell.
-            ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
-             "-C", str(root), *command],
+            ["git", *_GIT_OVERRIDES, "-C", str(root), *command],
             capture_output=True, text=True, env=env, check=True,
             timeout=deadline - time.monotonic(),
         ).stdout
 
     try:
+        listed = git("config", "--list", "--show-scope", "--name-only", "-z").split("\0")
+        for scope, key in zip(listed[0::2], listed[1::2], strict=False):
+            cloned = scope in _CHECKOUT_CONFIG_SCOPES and _CLONE_CONFIG_KEY.fullmatch(key)
+            if scope not in _TRUSTED_CONFIG_SCOPES and not cloned:
+                return f"{scope} git config sets {key}, which git clone does not write"
         if git("status", "--porcelain", "--untracked-files=no"):
             return "uncommitted changes"
         advertised = git("ls-remote", "--symref", "origin", "HEAD").partition("\t")[0]
@@ -224,7 +257,8 @@ def _bring_current(root: Path, seconds: float) -> str | None:
     except subprocess.CalledProcessError as exc:
         lines = [line for line in (exc.stderr or "").splitlines() if line and not
                  line.startswith("hint:")]
-        return f"git {exc.cmd[7]} failed: {' '.join(lines) or f'exit {exc.returncode}'}"
+        subcommand = exc.cmd[len(_GIT_OVERRIDES) + 3]
+        return f"git {subcommand} failed: {' '.join(lines) or f'exit {exc.returncode}'}"
     except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
         return f"git failed: {exc}"
     return None if head == fetched else "ahead of origin"
