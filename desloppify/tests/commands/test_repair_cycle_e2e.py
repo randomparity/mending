@@ -606,8 +606,9 @@ def test_a_host_outliving_a_killed_cycle_is_stopped_at_its_deadline(
         world.config["authority"] = world.authority(
             expires_at=(world.now() + expires_in).isoformat()
         )
-    # A child in the host's group and one in its own session, both ignoring SIGTERM.
-    world.host({"do": "child", "ignore_term": True},
+    # Children ignoring SIGTERM: one in the host's group without the marker, which
+    # only the group signal reaches, and one in its own session.
+    world.host({"do": "child", "ignore_term": True, "unmarked": True},
                {"do": "child", "setsid": True, "ignore_term": True}, {"do": "hang"})
     cycle = world.drive()
     _wait_for(lambda: len(world.spawned()) == 2, "the host's children")
