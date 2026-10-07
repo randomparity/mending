@@ -84,13 +84,15 @@ _CLONE_CONFIG_KEY = re.compile(
 _TRUSTED_CONFIG_SCOPES = frozenset({"system", "command"})
 _CHECKOUT_CONFIG_SCOPES = frozenset({"local", "worktree"})
 # Command-scope settings on every cycle git call, outranking every configuration file: no
-# hooks or fsmonitor, and only the https, ssh, and local transports, so an origin URL such as
+# hooks or fsmonitor, no recursion into a submodule (whose own configuration the check below
+# never sees), and only the https, ssh, and local transports, so an origin URL such as
 # `name::address` cannot run a git-remote-<name> helper.
 _GIT_OVERRIDES = tuple(
     argument
     for setting in (
-        "core.hooksPath=/dev/null", "core.fsmonitor=false", "protocol.allow=never",
-        "protocol.https.allow=always", "protocol.ssh.allow=always", "protocol.file.allow=always",
+        "core.hooksPath=/dev/null", "core.fsmonitor=false", "submodule.recurse=false",
+        "diff.ignoreSubmodules=all", "protocol.allow=never", "protocol.https.allow=always",
+        "protocol.ssh.allow=always", "protocol.file.allow=always",
     )
     for argument in ("-c", setting)
 )

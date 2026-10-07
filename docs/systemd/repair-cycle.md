@@ -46,7 +46,11 @@ parks on any global setting instead, and one older than 2.26 parks every run
 because it cannot report where a setting comes from), so only `/etc/gitconfig`
 and the cycle's own overrides apply: put every git setting the cycle needs
 there, owned by root and not writable by `mending`. The checkout's attribute files can still bind
-paths to a filter driver, but only a driver `/etc/gitconfig` defines can run.
+paths to a filter driver, but only a driver `/etc/gitconfig` defines can run,
+and the cycle's git calls never enter a submodule, whose own configuration the
+check does not read. The check runs once, before the other git calls, so it
+holds only while nothing else running as `mending` writes the checkout's git
+configuration during the refresh.
 The cycle fetches from whichever `origin` URL the checkout names, but only over
 `https`, `ssh`, or a local path: its git calls refuse every other transport,
 including a `name::address` URL that would run a `git-remote-<name>` helper,
@@ -56,7 +60,8 @@ The unit needs network access to `origin`. For a private repository, give
 `GIT_TERMINAL_PROMPT=0`, drops inherited `GIT_*` variables, and reads no
 global git configuration, so configure it in `/etc/gitconfig`, not the
 environment file), stored outside `/home`, which the unit hides; a read-only
-deploy key is enough. Over SSH, also record the remote's host key in a
+deploy key is enough. Scope an HTTPS credential helper to the origin's URL
+(`credential.<url>.helper`), because the checkout names the URL git offers it to. Over SSH, also record the remote's host key in a
 `known_hosts` file the account reads, because the unit cannot accept an
 unknown key, and name the key and that file in `core.sshCommand` in
 `/etc/gitconfig`.
