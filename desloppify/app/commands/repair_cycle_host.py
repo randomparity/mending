@@ -13,7 +13,7 @@ import tempfile
 import threading
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -213,8 +213,30 @@ class ClaudeHostAdapter:
 
     def worker_alive(self, attempt_id: str) -> bool | None:
         """Return whether any process carries the attempt's marker; None without /proc."""
-        marked = _marked_pids(f"{MARKER_VARIABLE}={host_session_id(attempt_id)}".encode())
+        marked = _marked_pids(_marker(attempt_id))
         return None if marked is None else bool(marked)
+
+    def stop_worker(self, attempt_id: str) -> bool:
+        """Stop a recorded worker tree this process did not launch; True once it is empty.
+
+        With no launched process to name the group, the groups signalled are those of
+        processes carrying the attempt's marker when read, never a remembered PID that
+        may since have been reused. Any process left in a group seen is still the tree.
+        """
+        marker = _marker(attempt_id)
+        seen: set[int] = set()
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            marked = _marked_pids(marker)
+            if marked is None:
+                return False
+            groups = _marked_groups(marked, marker)
+            seen |= groups
+            if _settled(seen, marker, 0):
+                return True
+            _signal_tree(groups, marked, sig)
+            if _settled(seen, marker, self._grace_seconds):
+                return True
+        return False
 
     def worktrees(self, repo_root: Path) -> tuple[str, ...]:
         """Return the repository's worktree paths."""
@@ -585,28 +607,52 @@ def _cancellation_handlers() -> Iterator[_Cancellation]:
             signal.signal(sig, handler)
 
 
+def _marker(attempt_id: str) -> bytes:
+    return f"{MARKER_VARIABLE}={host_session_id(attempt_id)}".encode()
+
+
 def _marked_pids(marker: bytes) -> set[int] | None:
     """Return PIDs whose environment carries the marker; None when /proc is unavailable."""
     if not _PROC_ROOT.is_dir():
         return None
-    found: set[int] = set()
-    for entry in _PROC_ROOT.iterdir():
-        if not entry.name.isdigit():
-            continue
+    return {
+        int(entry.name)
+        for entry in _PROC_ROOT.iterdir()
+        if entry.name.isdigit() and _carries(int(entry.name), marker)
+    }
+
+
+def _carries(pid: int, marker: bytes) -> bool:
+    try:
+        environ = (_PROC_ROOT / str(pid) / "environ").read_bytes()
+    except OSError:
+        return False
+    return marker in environ.split(b"\0")
+
+
+def _marked_groups(marked: set[int], marker: bytes) -> set[int]:
+    """The process groups of marked processes, other than this process's own.
+
+    The marker is read again after the group, so a PID reused in between is not followed.
+    """
+    own = os.getpgrp()
+    groups = set()
+    for pid in marked:
         try:
-            environ = (entry / "environ").read_bytes()
+            pgid = os.getpgid(pid)
         except OSError:
             continue
-        if marker in environ.split(b"\0"):
-            found.add(int(entry.name))
-    return found
+        if pgid != own and _carries(pid, marker):
+            groups.add(pgid)
+    return groups
 
 
-def _signal_tree(pgid: int, marked: set[int], sig: signal.Signals) -> None:
-    try:
-        os.killpg(pgid, sig)
-    except (ProcessLookupError, PermissionError):
-        pass
+def _signal_tree(pgids: set[int], marked: set[int], sig: signal.Signals) -> None:
+    for pgid in pgids:
+        try:
+            os.killpg(pgid, sig)
+        except (ProcessLookupError, PermissionError):
+            continue
     for pid in marked:
         try:
             os.kill(pid, sig)
@@ -614,10 +660,12 @@ def _signal_tree(pgid: int, marked: set[int], sig: signal.Signals) -> None:
             continue
 
 
-def _tree_alive(pgid: int, marker: bytes) -> bool:
+def _tree_alive(pgids: set[int], marker: bytes) -> bool:
     marked = _marked_pids(marker)
-    if marked is None or marked:
-        return True
+    return marked is None or bool(marked) or any(_group_alive(pgid) for pgid in pgids)
+
+
+def _group_alive(pgid: int) -> bool:
     try:
         os.killpg(pgid, 0)
     except ProcessLookupError:
@@ -630,19 +678,21 @@ def _tree_alive(pgid: int, marker: bytes) -> bool:
 def _stop_tree(proc: subprocess.Popen[bytes], marker: bytes, grace_seconds: float) -> bool:
     """Signal the host's group and marked processes; True once the tree is verified empty."""
     for sig in (signal.SIGTERM, signal.SIGKILL):
-        if _settled(proc, marker, 0):
+        if _settled({proc.pid}, marker, 0, proc.poll):
             return True
-        _signal_tree(proc.pid, _marked_pids(marker) or set(), sig)
-        if _settled(proc, marker, grace_seconds):
+        _signal_tree({proc.pid}, _marked_pids(marker) or set(), sig)
+        if _settled({proc.pid}, marker, grace_seconds, proc.poll):
             return True
     return False
 
 
-def _settled(proc: subprocess.Popen[bytes], marker: bytes, seconds: float) -> bool:
+def _settled(
+    pgids: set[int], marker: bytes, seconds: float, reap: Callable[[], object] = lambda: None
+) -> bool:
     end = time.monotonic() + seconds
     while True:
-        proc.poll()
-        if not _tree_alive(proc.pid, marker):
+        reap()
+        if not _tree_alive(pgids, marker):
             return True
         if time.monotonic() >= end:
             return False
