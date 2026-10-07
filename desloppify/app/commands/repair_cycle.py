@@ -83,6 +83,17 @@ _CLONE_CONFIG_KEY = re.compile(
 # Root-owned system configuration and the cycle's own -c overrides; never the checkout's.
 _TRUSTED_CONFIG_SCOPES = frozenset({"system", "command"})
 _CHECKOUT_CONFIG_SCOPES = frozenset({"local", "worktree"})
+# Command-scope settings on every cycle git call, outranking every configuration file: no
+# hooks or fsmonitor, and only the https, ssh, and local transports, so an origin URL such as
+# `name::address` cannot run a git-remote-<name> helper.
+_GIT_OVERRIDES = tuple(
+    argument
+    for setting in (
+        "core.hooksPath=/dev/null", "core.fsmonitor=false", "protocol.allow=never",
+        "protocol.https.allow=always", "protocol.ssh.allow=always", "protocol.file.allow=always",
+    )
+    for argument in ("-c", setting)
+)
 
 
 def cmd_repair_cycle(args: argparse.Namespace) -> None:
@@ -210,16 +221,15 @@ def _bring_current(root: Path, seconds: float) -> str | None:
     one whose own git configuration holds anything ``git clone`` does not write.
     """
     deadline = time.monotonic() + seconds
-    # Hooks and fsmonitor never run, and the account's global configuration, which the host
-    # can write, is not read; the checkout's configuration is checked before any other call.
+    # The account's global configuration, which the host can write, is not read; the
+    # checkout's configuration is checked before any other call.
     env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     env["GIT_TERMINAL_PROMPT"] = "0"
     env["GIT_CONFIG_GLOBAL"] = os.devnull
 
     def git(*command: str) -> str:
         return subprocess.run(  # nosec B603 B607 - fixed argv, no shell.
-            ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
-             "-C", str(root), *command],
+            ["git", *_GIT_OVERRIDES, "-C", str(root), *command],
             capture_output=True, text=True, env=env, check=True,
             timeout=deadline - time.monotonic(),
         ).stdout
@@ -245,7 +255,7 @@ def _bring_current(root: Path, seconds: float) -> str | None:
     except subprocess.CalledProcessError as exc:
         lines = [line for line in (exc.stderr or "").splitlines() if line and not
                  line.startswith("hint:")]
-        return f"git {exc.cmd[7]} failed: {' '.join(lines) or f'exit {exc.returncode}'}"
+        return f"git {exc.cmd[len(_GIT_OVERRIDES) + 3]} failed: {' '.join(lines) or f'exit {exc.returncode}'}"
     except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
         return f"git failed: {exc}"
     return None if head == fetched else "ahead of origin"

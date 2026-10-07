@@ -47,7 +47,10 @@ because it cannot report where a setting comes from), so only `/etc/gitconfig`
 and the cycle's own overrides apply: put every git setting the cycle needs
 there, owned by root and not writable by `mending`. The checkout's attribute files can still bind
 paths to a filter driver, but only a driver `/etc/gitconfig` defines can run.
-The cycle fetches from whichever `origin` URL the checkout names.
+The cycle fetches from whichever `origin` URL the checkout names, but only over
+`https`, `ssh`, or a local path: its git calls refuse every other transport,
+including a `name::address` URL that would run a `git-remote-<name>` helper,
+whatever `/etc/gitconfig` allows.
 The unit needs network access to `origin`. For a private repository, give
 `mending` a read-only credential git uses without asking (the cycle sets
 `GIT_TERMINAL_PROMPT=0`, drops inherited `GIT_*` variables, and reads no

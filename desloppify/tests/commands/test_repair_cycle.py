@@ -672,6 +672,20 @@ def test_worktree_git_config_parks_like_local_config(remote, monkeypatch) -> Non
     )
 
 
+def test_an_origin_url_cannot_select_a_remote_helper(remote, monkeypatch) -> None:
+    checkout, bin_dir = remote["checkout"], remote["checkout"].parent / "bin"
+    marker = checkout.parent / "helper-ran"
+    bin_dir.mkdir()
+    helper = bin_dir / "git-remote-zz"
+    helper.write_text(f"#!/bin/sh\ntouch '{marker}'\n")
+    helper.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    _git(checkout, "remote", "set-url", "origin", "zz::anything")
+
+    assert "transport 'zz' not allowed" in repair_cycle._bring_current(checkout, 60)
+    assert not marker.exists()
+
+
 def test_the_accounts_global_git_config_is_not_read(remote) -> None:
     checkout = remote["checkout"]
     marker = checkout.parent / "global-command-ran"
