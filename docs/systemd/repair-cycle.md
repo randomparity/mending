@@ -263,6 +263,21 @@ Claude Code CLI that runs the installed Adept skills
 Target opt-in, the manual pilot, and timer activation remain #7
 responsibilities, and merge is outside the pilot.
 
+The host is told to open its pull request from the branch
+`mending/<session ID>`, derived from the attempt ID, pushed to the configured
+repository. An attempt's pull requests are those whose head is that branch in
+the repository itself, in any state; a fork's branch of the same name does not
+count. The `Mending-Attempt: <attempt ID>` line the host puts in each body is a
+display aid and never attributes a pull request, so a pull request the host
+opens from any other branch is not the attempt's, and a host run that leaves
+only such a pull request fails `no-pull-request`. Issues have no head branch:
+an issue is recorded as the attempt's when its body has that line and its
+author is the account the cycle's own `gh` is signed in as, which the host
+inherits. Recorded issues are for the operator; nothing acts on them. The
+configuration names no separate host account, so the lookup asks `gh` for the
+signed-in account on each observation, and a token that cannot read its own
+user parks the run as a lookup failure.
+
 ## Limit enforcement
 
 What stops each limit on a repair attempt. The proof column names tests in
@@ -278,5 +293,5 @@ the live pilot).
 | Runtime | none | at the lease deadline, `SIGTERM` then `SIGKILL` to the host's process group and every process carrying its `MENDING_HOST_SESSION` marker (`runtime-exhausted`); a tree it cannot verify empty fails `dispatch-outcome-unknown` and stays reported active | `test_timeout_stops_a_surviving_child_and_never_relaunches`, `test_an_unverifiable_worker_stays_reported_active` | A descendant that leaves the group and clears its environment, or changes user, is not seen ([ADR 0010](../adr/0010-claude-code-host-adapter.md)). |
 | Approval expiry and revocation | none | checked at selection, before dispatch, and on each observation of an active attempt; the host run ends at the earlier of the lease deadline and `expires_at` (`authority-expired`) | `test_expired_approval_never_launches`, `test_approval_expiry_stops_a_running_host`, `test_revoked_or_expired_attempt_fails_on_resume_and_never_relaunches` | A revocation does not stop a host that is already running; the next observation fails the attempt. |
 | Permissions | the account's Claude Code settings and the managed settings file | passes no permission option (`--permission-mode`, `--settings`, `--dangerously-skip-permissions`) and passes `CLAUDE_CONFIG_DIR` through unchanged; a run that ends without a pull request fails `no-pull-request` | `test_approved_repair_runs_once_through_the_adapter_and_settles`, `test_permission_denied_host_fails_without_a_pull_request` | Unverified: that `/etc/claude-code/managed-settings.json` overrides the writable configuration directory, and that `ProtectHome=true` with `CLAUDE_CONFIG_DIR=/var/lib/mending/claude` leaves the host its credentials (#7). |
-| Edit scope | told the approved files | after the run, compares each tagged pull request's changed paths from `gh pr view URL --json state,files` with the approval (`authority-scope-exceeded`) | `test_mismatched_results_fail_the_attempt` (`outside-approval`) | Edits are not blocked while the host runs. The `gh pr view` output shape was checked by hand against gh 2.97.0 only; renames and paths past the first 100 are not caught (above). |
+| Edit scope | told the approved files | after the run, compares the changed paths of each pull request opened from the attempt's branch from `gh pr view URL --json state,files` with the approval (`authority-scope-exceeded`) | `test_mismatched_results_fail_the_attempt` (`outside-approval`, `foreign-branch`, `fork-head`), `test_the_hosts_own_pull_request_needs_no_tag` | Edits are not blocked while the host runs. The `gh pr view` output shape was checked by hand against gh 2.97.0 only; renames and paths past the first 100 are not caught (above). |
 | One worker, one pull request | none | the cycle lock, one lease per window, a dispatch intent persisted before launch, and a replay that observes a recorded dispatch and never relaunches it | `test_overlapping_invocation_leaves_the_running_cycle_alone`, the `test_a_cycle_killed_*` tests, `test_an_open_pull_request_holds_the_attempt_past_its_lease` | If Mending dies while its host runs outside systemd, the host keeps running past the lease deadline and the approval's expiry; later runs park `dispatch-in-flight` until it exits; the manual pilot (#7) owns that risk. Under the unit, systemd's default `KillMode=control-group` should stop the host with the service; that is unverified. A cycle killed after its lease is written but before dispatch spends its window without launching. |

@@ -24,6 +24,7 @@ from desloppify.app.commands.repair_cycle_host import (
     HostReferences,
     HostRequest,
     PullRequest,
+    host_branch,
     host_session_id,
 )
 from desloppify.engine.repair_cycle import BudgetAdmission, CycleConfig
@@ -218,6 +219,7 @@ def test_completed_run_reports_identity(host, tmp_path, monkeypatch):
     assert "Fix the flaky parser." in seen["stdin"]
     assert f"Attempt ID: {request.attempt_id}" in seen["stdin"]
     assert f"'{ATTEMPT_TAG}: {request.attempt_id}'" in seen["stdin"]
+    assert f"Branch: mending/{session}\n" in seen["stdin"]
 
 
 @pytest.mark.parametrize(("cost", "flag"), [("1E-7", "0.0000001"), ("1E+1", "10")])
@@ -428,7 +430,9 @@ with open(os.environ["FAKE_GH_RECORD"], "a") as fh:
     fh.write(" ".join(sys.argv[1:]) + "\\n")
 key = kind.upper()
 if kind == "api":
-    key += "_FILES" if sys.argv[-1].split("?")[0].endswith("/files") else "_PULL"
+    path = sys.argv[-1].split("?")[0]
+    key += ("_USER" if path == "user" else "_FILES" if path.endswith("/files")
+            else "_PULLS" if path.endswith("/pulls") else "_PULL")
 print(os.environ["FAKE_GH_" + key])
 """
 
@@ -454,52 +458,92 @@ def lookup(host, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     return {"adapter": ClaudeHostAdapter(_config(host)), "repo": repo, "log": tmp_path / "gh.log"}
 
 
-def test_references_keep_tagged_bodies_and_new_worktrees(lookup, tmp_path, monkeypatch):
+def _pull(number: int, ref: str, repository: str | None = "owner/repository") -> dict:
+    repo = {"full_name": repository} if repository else None
+    return {"html_url": f"https://github.com/owner/repository/pull/{number}",
+            "body": "", "head": {"ref": ref, "repo": repo}}
+
+
+def test_references_attribute_by_branch_author_and_new_worktrees(lookup, tmp_path, monkeypatch):
     adapter, repo = lookup["adapter"], lookup["repo"]
     attempt = uuid.uuid4().hex
-    tag = f"{ATTEMPT_TAG}: {attempt}"
+    branch, tag = host_branch(attempt), f"{ATTEMPT_TAG}: {attempt}"
+    assert branch == f"mending/{host_session_id(attempt)}"
     prior = adapter.worktrees(repo)
     assert prior == (str(repo.resolve()),)
     _git("worktree", "add", "-q", "-b", "feat/x", str(tmp_path / "wt"), cwd=repo)
-    monkeypatch.setenv("FAKE_GH_PR", json.dumps([
-        {"url": "https://example.invalid/pull/1", "body": f"Fix.\n\n{tag}\n"},
-        {"url": "https://example.invalid/pull/2", "body": f"{tag}-other"},
-        {"url": "https://example.invalid/pull/3", "body": None},
-        "noise",
+    tagged_foreign = {**_pull(2, "feat/elsewhere"), "body": f"Fix.\n\n{tag}\n"}
+    monkeypatch.setenv("FAKE_GH_API_PULLS", json.dumps([
+        [_pull(1, branch), tagged_foreign, _pull(3, branch, "fork/repository")],
+        [_pull(4, branch, None), {**_pull(5, branch, "Owner/Repository")}],
     ]))
+    monkeypatch.setenv("FAKE_GH_API_USER", json.dumps({"login": "Mending-Bot"}))
     monkeypatch.setenv("FAKE_GH_ISSUE", json.dumps([
-        {"url": "https://example.invalid/issues/4", "body": tag},
-        {"url": 5, "body": tag},
+        {"url": "https://example.invalid/issues/6", "body": tag,
+         "author": {"login": "mending-bot"}},
+        {"url": "https://example.invalid/issues/7", "body": tag, "author": {"login": "spoofer"}},
+        {"url": "https://example.invalid/issues/8", "body": tag, "author": None},
+        {"url": "https://example.invalid/issues/9", "body": f"{tag}-other",
+         "author": {"login": "mending-bot"}},
+        {"url": 10, "body": tag, "author": {"login": "mending-bot"}},
+        "noise",
     ]))
 
     found = adapter.references(attempt, "owner/repository", repo, prior)
 
     assert found == HostReferences(
-        ("https://example.invalid/pull/1",),
-        ("https://example.invalid/issues/4",),
+        ("https://github.com/owner/repository/pull/1", "https://github.com/owner/repository/pull/5"),
+        ("https://example.invalid/issues/6",),
         (str((tmp_path / "wt").resolve()),),
     )
-    calls = lookup["log"].read_text().splitlines()
-    assert [call.split()[:2] for call in calls] == [["pr", "list"], ["issue", "list"]]
-    assert all("--repo owner/repository --state all --limit 100" in call for call in calls)
+    assert lookup["log"].read_text().splitlines() == [
+        "api --paginate --slurp repos/owner/repository/pulls"
+        f"?state=all&head=owner:{branch}&per_page=100",
+        "api user",
+        "issue list --repo owner/repository --state all --limit 100 --json url,body,author",
+    ]
 
 
-@pytest.mark.parametrize(("mode", "message"), [("fail", "gh pr list exited 1: denied"),
-                                                 ("garbage", "gh pr list returned invalid JSON")])
+@pytest.mark.parametrize("pages", [
+    {}, [{}], [["noise"]], [[{"html_url": 1, "head": {}}]], [[{"head": {}}]],
+])
+def test_references_reject_a_malformed_pull_request_list(lookup, monkeypatch, pages):
+    monkeypatch.setenv("FAKE_GH_API_PULLS", json.dumps(pages))
+    with pytest.raises(HostLookupError, match="gh api returned an unexpected pull request"):
+        lookup["adapter"].references("a1", "owner/repository", lookup["repo"], ())
+
+
+@pytest.mark.parametrize("user", [{}, {"login": ""}, {"login": 3}, []])
+def test_references_need_the_gh_account(lookup, monkeypatch, user):
+    monkeypatch.setenv("FAKE_GH_API_PULLS", "[[]]")
+    monkeypatch.setenv("FAKE_GH_API_USER", json.dumps(user))
+    with pytest.raises(HostLookupError, match="gh api user returned no login"):
+        lookup["adapter"].references("a1", "owner/repository", lookup["repo"], ())
+    assert "issue list" not in lookup["log"].read_text()
+
+
+@pytest.mark.parametrize(("mode", "message"), [("fail", "gh api exited 1: denied"),
+                                                 ("garbage", "gh api returned invalid JSON")])
 def test_references_fail_closed(lookup, monkeypatch, mode, message):
     monkeypatch.setenv("FAKE_GH_MODE", mode)
     with pytest.raises(HostLookupError, match=message):
         lookup["adapter"].references("a1", "owner/repository", lookup["repo"], ())
 
 
+@pytest.mark.parametrize("listing", ["not json", "{}"])
+def test_references_fail_closed_on_a_bad_issue_list(lookup, monkeypatch, listing):
+    monkeypatch.setenv("FAKE_GH_API_PULLS", "[[]]")
+    monkeypatch.setenv("FAKE_GH_API_USER", json.dumps({"login": "mending-bot"}))
+    monkeypatch.setenv("FAKE_GH_ISSUE", listing)
+    with pytest.raises(HostLookupError, match="gh issue list"):
+        lookup["adapter"].references("a1", "owner/repository", lookup["repo"], ())
+
+
 def test_lookup_without_gh_or_git_repository_fails_closed(lookup, tmp_path, monkeypatch):
     with pytest.raises(HostLookupError, match="git worktree list exited"):
         lookup["adapter"].worktrees(tmp_path / "bin")
-    monkeypatch.setenv("FAKE_GH_PR", "{}")
-    with pytest.raises(HostLookupError):
-        lookup["adapter"].references("a1", "owner/repository", lookup["repo"], ())
     monkeypatch.setenv("PATH", str(tmp_path / "empty"))
-    with pytest.raises(HostLookupError):
+    with pytest.raises(HostLookupError, match="gh is not installed"):
         lookup["adapter"].references("a1", "owner/repository", lookup["repo"], ())
 
 
