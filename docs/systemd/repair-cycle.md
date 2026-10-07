@@ -143,7 +143,9 @@ Rewording the problem
 still matches the repair's `github_repair` link record after a
 `repair-queue sync --apply`, which rewrites the record and prints `Changed ...`
 when the pair moves. That includes the first link write after an uncertain
-create, which compares the stored pair with the issue's Provenance block. The
+create, which compares the stored pair with the issue's Provenance block; if
+that block is missing or edited out of its published form, sync prints
+`Linked ...` without comparing, so check the pair by hand. The
 cycle recomputes both values and refuses a stale pair. The record is computed
 from work items in the state file, which the coding host can write, so it alone
 does not show what you reviewed. If the record and the issue differ, the brief

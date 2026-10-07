@@ -545,7 +545,8 @@ def _write_link(args: argparse.Namespace, candidate: PromotionCandidate, issue: 
             record["reviewed_brief_version"] = version
         detail[lane.link] = record
         detail.pop(lane.pending, None)
-    # With no earlier link (an adoption), compare the pair the issue was published with.
+    # With no earlier link, compare the pair the issue body was published with. Only a
+    # searched issue carries its body; a peer link read through view() compares nothing.
     earlier = previous if previous is not None else published_pair(issue.body)
     if (
         earlier.get("evidence_digest", candidate.evidence_digest) != candidate.evidence_digest
