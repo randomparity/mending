@@ -18,6 +18,7 @@ from desloppify.engine._state.persistence import load_state, state_lock
 from desloppify.engine.repair_brief import (
     ParkedBrief,
     build_brief,
+    published_pair,
     render_brief,
     reviewed_version,
 )
@@ -544,9 +545,11 @@ def _write_link(args: argparse.Namespace, candidate: PromotionCandidate, issue: 
             record["reviewed_brief_version"] = version
         detail[lane.link] = record
         detail.pop(lane.pending, None)
-    if previous is not None and (
-        previous["evidence_digest"] != candidate.evidence_digest
-        or previous.get("reviewed_brief_version", version) != version
+    # With no earlier link (an adoption), compare the pair the issue was published with.
+    earlier = previous if previous is not None else published_pair(issue.body)
+    if (
+        earlier.get("evidence_digest", candidate.evidence_digest) != candidate.evidence_digest
+        or earlier.get("reviewed_brief_version", version) != version
     ):
         print(
             f"Changed {candidate.issue_id}: issue #{issue.number} evidence or reviewed brief"

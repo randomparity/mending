@@ -11,6 +11,7 @@ import ipaddress
 import json
 import re
 import unicodedata
+from collections import Counter
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from hashlib import sha256
@@ -377,6 +378,30 @@ def _provenance(brief: RepairBrief) -> list[str]:
     ]
 
 
+_PUBLISHED_LINE = re.compile(r"(evidence-digest|reviewed-brief-version): ([0-9a-f]{64})")
+
+
+def published_pair(body: str) -> dict[str, str]:
+    """Read the approval pair from a published body's fenced Provenance block.
+
+    The body is untrusted. Only exact ``evidence-digest`` and ``reviewed-brief-version``
+    lines inside the block after the single ``## Provenance`` heading count, keyed
+    ``evidence_digest`` and ``reviewed_brief_version``; a field that is missing,
+    malformed, or repeated is omitted.
+    """
+    lines = body.splitlines()
+    if lines.count("## Provenance") != 1:
+        return {}
+    block = lines[lines.index("## Provenance") :]
+    if "```text" not in block:
+        return {}
+    block = block[block.index("```text") + 1 :]
+    block = block[: block.index("```")] if "```" in block else []
+    found = [match.groups() for match in map(_PUBLISHED_LINE.fullmatch, block) if match]
+    names = Counter(name for name, _ in found)
+    return {name.replace("-", "_"): value for name, value in found if names[name] == 1}
+
+
 def _manifest(detail: Mapping[str, Any]) -> SourceManifest:
     record = detail.get("github_repair_revalidated")
     manifest = manifest_from_record(record.get("manifest") if isinstance(record, Mapping) else None)
@@ -457,6 +482,7 @@ __all__ = [
     "REVIEWED_SCHEMA",
     "RepairBrief",
     "build_brief",
+    "published_pair",
     "render_brief",
     "reviewed_version",
 ]
