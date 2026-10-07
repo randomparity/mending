@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,6 +10,7 @@ from pathlib import Path
 from desloppify.base.discovery.file_paths import rel
 from desloppify.base.discovery.paths import get_project_root
 from desloppify.base.output.terminal import colorize
+from desloppify.base.process_guard import process_creation_denied, refusal_count
 from desloppify.engine.planning.helpers import is_subjective_phase
 from desloppify.engine.policy.zones import (
     ZONE_POLICIES,
@@ -95,6 +97,35 @@ def _select_phases(
     return phases
 
 
+def _run_phase(
+    path: Path, lang: LangRun, phase: DetectorPhase
+) -> tuple[list[Issue], dict[str, int]] | None:
+    """The phase's results, or None when it tried to start a program under the guard.
+
+    A dropped phase's writes to the caches the scan persists are undone, so a later
+    run cannot read a refusal-degraded result as a clean one (#75).
+    """
+    saved = (
+        copy.deepcopy((lang.review_cache, lang.detector_coverage))
+        if process_creation_denied()
+        else None
+    )
+    before = refusal_count()
+    try:
+        result = phase.run(path, lang)
+    except Exception:
+        if refusal_count() == before:
+            raise
+        result = None
+    if refusal_count() == before:
+        return result
+    if saved is not None:
+        for live, kept in zip((lang.review_cache, lang.detector_coverage), saved):
+            live.clear()
+            live.update(kept)
+    return None
+
+
 def _run_phases(
     path: Path, lang: LangRun, phases: list[DetectorPhase]
 ) -> tuple[list[Issue], dict[str, int]]:
@@ -104,7 +135,11 @@ def _run_phases(
     total = len(phases)
     for idx, phase in enumerate(phases, start=1):
         _stderr(f"  [{idx}/{total}] {phase.label}...")
-        phase_issues, phase_potentials = phase.run(path, lang)
+        result = _run_phase(path, lang, phase)
+        if result is None:
+            _stderr(f"  [{idx}/{total}] {phase.label}... skipped: needs an external tool")
+            continue
+        phase_issues, phase_potentials = result
         all_potentials.update(phase_potentials)
         issues.extend(phase_issues)
 
@@ -171,7 +206,8 @@ def _generate_issues_from_lang(
     """Run detector phases from a LangRun."""
     _build_zone_map(path, lang, zone_overrides)
     phases = _select_phases(lang, include_slow=include_slow, profile=profile)
-    prewarm_review_phase_detectors(path, lang, phases)
+    if not process_creation_denied():
+        prewarm_review_phase_detectors(path, lang, phases)
     try:
         issues, all_potentials = _run_phases(path, lang, phases)
     finally:

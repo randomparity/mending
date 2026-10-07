@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+from contextlib import nullcontext
 from pathlib import Path
 
 from desloppify.app.commands.helpers.by_language import detect_present_languages
@@ -47,6 +48,7 @@ from desloppify.app.commands.scan.workflow import (
     run_scan_generation,
 )
 from desloppify.base.exception_sets import CommandError
+from desloppify.base.process_guard import deny_process_creation
 from desloppify.base.discovery.paths import get_project_root
 from desloppify.base.output.terminal import colorize
 from desloppify.base.search.query import write_query
@@ -117,6 +119,12 @@ def _print_plan_workflow_nudge(state: dict) -> None:
 
 def cmd_scan(args: argparse.Namespace) -> None:
     """Run all detectors, update persistent state, show diff."""
+    guard = deny_process_creation() if getattr(args, "no_external_tools", False) else nullcontext()
+    with guard:
+        _cmd_scan(args)
+
+
+def _cmd_scan(args: argparse.Namespace) -> None:
     if getattr(args, "by_language", False):
         _cmd_scan_by_language(args)
         return

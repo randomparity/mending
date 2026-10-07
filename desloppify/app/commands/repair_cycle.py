@@ -199,10 +199,11 @@ def _refresh(args: argparse.Namespace, config: CycleConfig) -> str | None:
         print(f"Repair cycle checkout not current: {stale}")
         return "checkout-not-current"
     # -P keeps a checkout package from shadowing the installed desloppify, and the checkout's
-    # own plugins never load, whatever its trust_plugins says (#63).
+    # own plugins never load, whatever its trust_plugins says (#63). The scan starts no
+    # external program, so no checkout build script, linter config, or binary runs (#75).
     env = {**os.environ, "DESLOPPIFY_DENY_PLUGINS": "1"}
     argv = [
-        sys.executable, "-P", "-m", "desloppify", "scan", "--no-badge",
+        sys.executable, "-P", "-m", "desloppify", "scan", "--no-badge", "--no-external-tools",
         "--state", str(_state_file(args).resolve()),
     ]
     try:

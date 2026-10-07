@@ -442,8 +442,8 @@ def test_production_refresh_scans_into_the_cycle_state_file(
 
     assert repair_cycle._refresh(args, CONFIG) == reason
     assert calls == [(
-        [sys.executable, "-P", "-m", "desloppify", "scan", "--no-badge", "--state",
-         str((tmp_path / "state.json").resolve())],
+        [sys.executable, "-P", "-m", "desloppify", "scan", "--no-badge",
+         "--no-external-tools", "--state", str((tmp_path / "state.json").resolve())],
         tmp_path,
         90 * 60,
     )]
