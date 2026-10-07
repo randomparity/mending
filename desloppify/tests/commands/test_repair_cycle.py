@@ -433,6 +433,7 @@ def test_production_refresh_scans_into_the_cycle_state_file(
         return subprocess.CompletedProcess(argv, returncode)
 
     monkeypatch.setattr(repair_cycle.subprocess, "run", run)
+    monkeypatch.setattr(repair_cycle, "_bring_current", lambda root, seconds: None)
     args = argparse.Namespace(state=str(tmp_path / "state.json"), repo_root=tmp_path)
 
     assert repair_cycle._refresh(args, CONFIG) == reason
@@ -442,6 +443,184 @@ def test_production_refresh_scans_into_the_cycle_state_file(
         tmp_path,
         90 * 60,
     )]
+
+
+def test_refresh_parks_a_checkout_that_is_not_current_without_scanning(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    scans: list[object] = []
+    monkeypatch.setattr(repair_cycle, "_bring_current", lambda root, seconds: "diverged")
+    monkeypatch.setattr(repair_cycle.subprocess, "run", lambda *a, **k: scans.append(a))
+    args = argparse.Namespace(state=str(tmp_path / "state.json"), repo_root=tmp_path)
+
+    assert repair_cycle._refresh(args, CONFIG) == "checkout-not-current"
+    assert scans == []
+    assert "Repair cycle checkout not current: diverged" in capsys.readouterr().out
+
+
+def _git(cwd: Path, *args: str) -> str:
+    identity = ("-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                "-c", "commit.gpgsign=false")
+    return subprocess.run(
+        ["git", *identity, *args], cwd=cwd, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def _commit(cwd: Path, name: str, text: str) -> str:
+    (cwd / name).write_text(text)
+    _git(cwd, "add", name)
+    _git(cwd, "commit", "-q", "-m", name)
+    return _git(cwd, "rev-parse", "HEAD")
+
+
+@pytest.fixture
+def remote(tmp_path, monkeypatch) -> dict[str, Path]:
+    """A bare remote on main, a publisher clone, and the cycle's checkout behind neither."""
+    for name in [name for name in os.environ if name.startswith("GIT_")]:
+        monkeypatch.delenv(name)
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("HOME", str(tmp_path))  # the developer's global git config stays out
+    upstream, publisher = tmp_path / "upstream.git", tmp_path / "publisher"
+    _git(tmp_path, "init", "-q", "--bare", "-b", "main", str(upstream))
+    _git(tmp_path, "clone", "-q", str(upstream), str(publisher))
+    _commit(publisher, "a.py", "a = 1\n")
+    _git(publisher, "push", "-q", "origin", "main")
+    _git(tmp_path, "clone", "-q", str(upstream), str(tmp_path / "checkout"))
+    return {"upstream": upstream, "publisher": publisher, "checkout": tmp_path / "checkout"}
+
+
+def _publish(remote: dict[str, Path], name: str = "b.py") -> str:
+    head = _commit(remote["publisher"], name, "b = 2\n")
+    _git(remote["publisher"], "push", "-q", "origin", "main")
+    return head
+
+
+def test_a_clean_checkout_behind_its_remote_is_fast_forwarded(remote) -> None:
+    checkout = remote["checkout"]
+    hook = checkout / ".git" / "hooks" / "post-merge"
+    hook.write_text(f"#!/bin/sh\ntouch {checkout.parent / 'hook-ran'}\n")
+    hook.chmod(0o755)
+    published = _publish(remote)
+
+    assert repair_cycle._bring_current(checkout, 60) is None
+    assert _git(checkout, "rev-parse", "HEAD") == published
+    assert (checkout / "b.py").read_text() == "b = 2\n"
+    assert not (checkout.parent / "hook-ran").exists()
+    assert repair_cycle._bring_current(checkout, 60) is None  # already current
+
+
+@pytest.mark.parametrize(("setup", "problem"), [
+    ("dirty", "uncommitted changes"),
+    ("diverged", "git merge failed: fatal: Not possible to fast-forward"),
+    ("ahead", "ahead of origin"),
+    ("other-branch", "on refs/heads/other, not refs/heads/main"),
+    ("detached", "on HEAD, not refs/heads/main"),
+])
+def test_a_checkout_that_cannot_be_fast_forwarded_is_left_as_it_is(
+    remote, setup, problem
+) -> None:
+    checkout = remote["checkout"]
+    _publish(remote)
+    if setup == "dirty":
+        (checkout / "a.py").write_text("a = 'local work'\n")
+    elif setup in {"diverged", "ahead"}:
+        _commit(checkout, "local.py", "local = 1\n")
+        if setup == "ahead":
+            _git(checkout, "fetch", "-q")
+            _git(checkout, "rebase", "-q", "origin/main")
+    elif setup == "other-branch":
+        _git(checkout, "checkout", "-q", "-b", "other")
+    else:
+        _git(checkout, "checkout", "-q", "--detach")
+    before = (_git(checkout, "rev-parse", "HEAD"), _git(checkout, "status", "--porcelain"))
+
+    assert repair_cycle._bring_current(checkout, 60).startswith(problem)
+    assert (_git(checkout, "rev-parse", "HEAD"), _git(checkout, "status", "--porcelain")) == before
+    if setup == "dirty":
+        assert (checkout / "a.py").read_text() == "a = 'local work'\n"
+
+
+def test_an_ignored_local_file_upstream_starts_tracking_is_kept(remote) -> None:
+    publisher, checkout = remote["publisher"], remote["checkout"]
+    _commit(publisher, ".gitignore", ".env\n")
+    _git(publisher, "push", "-q", "origin", "main")
+    assert repair_cycle._bring_current(checkout, 60) is None
+    (checkout / ".env").write_text("operator secret\n")
+    (publisher / ".env").write_text("upstream\n")
+    _git(publisher, "add", "--force", ".env")
+    _git(publisher, "commit", "-q", "-m", "track .env")
+    _git(publisher, "push", "-q", "origin", "main")
+    before = _git(checkout, "rev-parse", "HEAD")
+
+    assert repair_cycle._bring_current(checkout, 60).startswith("git merge failed")
+    assert _git(checkout, "rev-parse", "HEAD") == before
+    assert (checkout / ".env").read_text() == "operator secret\n"
+
+
+def test_a_fast_forward_never_starts_near_the_deadline(remote, monkeypatch) -> None:
+    checkout = remote["checkout"]
+    before = _git(checkout, "rev-parse", "HEAD")
+    _publish(remote)
+    monkeypatch.setattr(repair_cycle, "_FAST_FORWARD_FLOOR_SECONDS", 61)
+
+    assert repair_cycle._bring_current(checkout, 60) == "too little runtime left to fast-forward"
+    assert _git(checkout, "rev-parse", "HEAD") == before
+
+
+def test_the_remote_names_the_default_branch(remote) -> None:
+    upstream, checkout = remote["upstream"], remote["checkout"]
+    _git(remote["publisher"], "push", "-q", "origin", "main:trunk")
+    _git(upstream, "symbolic-ref", "HEAD", "refs/heads/trunk")
+    _publish(remote)  # main moves, but it is no longer the remote's default branch
+
+    assert repair_cycle._bring_current(checkout, 60) == "on refs/heads/main, not refs/heads/trunk"
+
+
+def test_an_unreachable_or_missing_remote_is_not_current(remote) -> None:
+    checkout = remote["checkout"]
+    _git(checkout, "remote", "set-url", "origin", str(checkout.parent / "missing.git"))
+    assert repair_cycle._bring_current(checkout, 60) is not None
+    _git(checkout, "remote", "remove", "origin")
+    assert repair_cycle._bring_current(checkout, 60) is not None
+
+
+def test_every_git_call_is_bounded_by_the_runtime(remote, monkeypatch) -> None:
+    real_run = subprocess.run
+    timeouts: list[float] = []
+
+    def run(argv, **kwargs):
+        timeouts.append(kwargs["timeout"])
+        return real_run(argv, **kwargs)
+
+    _publish(remote)
+    monkeypatch.setattr(repair_cycle.subprocess, "run", run)
+    assert repair_cycle._bring_current(remote["checkout"], 60) is None
+    assert timeouts and all(0 < timeout <= 60 for timeout in timeouts)
+
+    def expire(argv, **kwargs):
+        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+    monkeypatch.setattr(repair_cycle.subprocess, "run", expire)
+    assert repair_cycle._bring_current(remote["checkout"], 60) is not None
+
+
+def test_the_refresh_scan_reads_the_fast_forwarded_checkout(remote, tmp_path, monkeypatch) -> None:
+    checkout, real_run = remote["checkout"], subprocess.run
+    published = _publish(remote)
+    scanned: list[str] = []
+
+    def run(argv, **kwargs):
+        if argv[:3] == [sys.executable, "-P", "-m"]:
+            scanned.append(_git(checkout, "rev-parse", "HEAD"))
+            return subprocess.CompletedProcess(argv, 0)
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(repair_cycle.subprocess, "run", run)
+    args = argparse.Namespace(state=str(tmp_path / "state.json"), repo_root=checkout)
+
+    assert repair_cycle._refresh(args, CONFIG) is None
+    assert scanned == [published]
 
 
 def test_window_bounds_new_dispatches_and_a_closed_pr_settles() -> None:
