@@ -108,6 +108,18 @@ ignore_missing_imports = true
 follow_imports = "skip"
 pretty = true
 files = [
+  "desloppify/engine/repair_authority.py",
+  "desloppify/engine/repair_brief.py",
+  "desloppify/engine/repair_check.py",
+  "desloppify/engine/repair_cycle.py",
+  "desloppify/engine/repair_manifest.py",
+  "desloppify/engine/repair_queue.py",
+  "desloppify/engine/repair_selection.py",
+  "desloppify/app/commands/repair_queue.py",
+  "desloppify/app/commands/repair_cycle.py",
+  "desloppify/app/commands/repair_cycle_host.py",
+  "desloppify/app/cli_support/parser_groups_repair_cycle.py",
+  "desloppify/app/cli_support/parser_groups_repair_queue.py",
   "desloppify/app/commands/review/cmd.py",
   "desloppify/app/commands/review/prepare.py",
   "desloppify/app/commands/review/batch/core_models.py",

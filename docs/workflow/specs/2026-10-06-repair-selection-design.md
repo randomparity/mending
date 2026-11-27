@@ -43,9 +43,9 @@ repair is returned to `_sync` as selectable instead. After the loop,
 With `--apply` only, `_record_selection` writes under the state lock
 `state["repair_queue_selection"][repository] = {"outcome", "reason",
 "issue_id", "at"}` (`issue_id` is `None` for a no-op; `at` is UTC ISO-8601).
-It writes nothing when the read state has no work items: `load_state` falls
-back to an empty state for a file that fails its invariants, and a locked
-write would replace that file and its backup.
+It writes nothing when the read state has no work items, avoiding an unnecessary
+state lock and preserving the no-op. `load_state` can fall back to an empty state
+for a file that fails its invariants; `state_lock` refuses writes from that fallback.
 
 **Ranking** (`desloppify/engine/repair_selection.py`; `_select` sorts
 candidates ascending by `rank_key(issue, candidate)`):
