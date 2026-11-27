@@ -143,6 +143,21 @@ make setup
 checksummed repository-local copy. Run project checks through their Makefile
 targets, for example `make tests`, `make lint`, or `make ci`.
 
+### Dependency updates
+
+Dependabot checks Python dependencies (`pyproject.toml` and `uv.lock`) and
+GitHub Actions weekly. It groups routine updates by ecosystem once releases
+are at least seven days old. Security updates can open sooner.
+
+Before merging an update PR, review the release notes and the lockfile or
+workflow diff, then confirm PR CI passes. For major updates, check the
+upstream migration notes for changes that affect this repo.
+
+On forks, enable **Dependabot version updates** under **Settings → Advanced
+Security**. After the configuration lands on the default branch, verify both
+ecosystems under **Insights → Dependency graph → Dependabot** and check their
+latest job logs.
+
 ## CI
 
 Desloppify works best in CI as a full-codebase health gate, not as a diff-only linter. Run the CI profile against the same coherent project path you scan locally:
