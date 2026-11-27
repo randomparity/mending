@@ -5,7 +5,7 @@ This document defines the repository CI/CD operating model and required checks.
 ## Goals
 
 1. Block merges unless quality gates pass.
-2. Decouple package publishing from ordinary pushes.
+2. Validate package builds without publishing to PyPI.
 3. Keep expensive integration checks visible and reproducible.
 
 ## Workflows
@@ -51,18 +51,6 @@ Job:
 Notes:
 - Integration workflow is intentionally separate from required PR checks.
 - Failures should be triaged, but do not block normal merges by policy.
-
-### 3) Publish (`.github/workflows/python-publish.yml`)
-
-Triggers:
-- `release.published`
-- `push` tag `v*`
-- `workflow_dispatch`
-
-Safety gates before publish:
-- Validate tag version matches `pyproject.toml` version (for tag pushes)
-- Skip publish if version already exists on PyPI
-- Run `make package-smoke`
 
 ## Branch Protection Policy (`main`)
 

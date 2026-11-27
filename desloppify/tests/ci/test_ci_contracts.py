@@ -12,7 +12,6 @@ yaml = pytest.importorskip("yaml")
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 INTEGRATION_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "integration.yml"
-PUBLISH_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "python-publish.yml"
 CI_PLAN = REPO_ROOT / "dev" / "ci_plan.md"
 MAKEFILE = REPO_ROOT / "Makefile"
 README = REPO_ROOT / "README.md"
@@ -30,10 +29,6 @@ def _on_block(data: dict) -> dict:
 
 def _run_commands(job: dict) -> list[str]:
     return [step["run"] for step in job.get("steps", []) if "run" in step]
-
-
-def _step_names(job: dict) -> list[str]:
-    return [step.get("name", "") for step in job.get("steps", [])]
 
 
 def _optional_dependencies() -> dict[str, list[str]]:
@@ -88,20 +83,6 @@ def test_integration_workflow_uses_deterministic_roslyn_path() -> None:
     )
     assert any(step.get("uses") == "actions/setup-dotnet@v4" for step in job["steps"])
     assert any("make integration-roslyn" in run for run in _run_commands(job))
-
-
-def test_publish_workflow_keeps_release_safety_gates() -> None:
-    wf = _load_yaml(PUBLISH_WORKFLOW)
-    on_block = _on_block(wf)
-    assert on_block.get("push", {}).get("branches") == ["main"]
-    assert "workflow_dispatch" in on_block
-
-    publish_job = wf["jobs"]["publish"]
-    names = _step_names(publish_job)
-    assert "Check if version exists on PyPI" in names
-    assert "Run packaging smoke gate" in names
-    assert "Publish to PyPI" in names
-    assert any("make package-smoke" in run for run in _run_commands(publish_job))
 
 
 def test_makefile_contains_ci_gate_targets() -> None:
