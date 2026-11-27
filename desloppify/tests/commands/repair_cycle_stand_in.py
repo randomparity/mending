@@ -127,8 +127,12 @@ def _emit(event: dict) -> None:
     print(json.dumps(event), flush=True)
 
 
-def _spawn(code: str, *, new_session: bool = False) -> None:
-    child = subprocess.Popen([sys.executable, "-c", code], start_new_session=new_session)
+def _spawn(code: str, *, new_session: bool = False, unmarked: bool = False) -> None:
+    # An unmarked child drops the host's marker but stays in its group.
+    env = dict(os.environ)
+    if unmarked:
+        env.pop("MENDING_HOST_SESSION", None)
+    child = subprocess.Popen([sys.executable, "-c", code], start_new_session=new_session, env=env)
     _append("pids.jsonl", {"pid": child.pid})
 
 
@@ -161,7 +165,7 @@ def _step(step: dict, attempt: str, branch: str) -> int | None:
         ignore = "import signal; signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
         sleep = f"import time; time.sleep({WAIT_SECONDS})\n"
         _spawn((ignore if step.get("ignore_term") else "") + sleep,
-               new_session=bool(step.get("setsid")))
+               new_session=bool(step.get("setsid")), unmarked=bool(step.get("unmarked")))
     elif action in ("pr", "issue"):
         _create(action, attempt, branch, step)
     elif action == "wait":

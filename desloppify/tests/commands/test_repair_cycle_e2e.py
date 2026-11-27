@@ -595,6 +595,40 @@ def test_a_cycle_killed_during_its_host_never_relaunches_it(world, pr_first) -> 
     assert sorted(tagged) == [0, 1]  # one PR per attempt
 
 
+@pytest.mark.parametrize(("expires_in", "reason"), [
+    (timedelta(minutes=30), "authority-expired"),
+    (None, "runtime-exhausted"),
+], ids=["approval-expiry", "lease-deadline"])
+def test_a_host_outliving_a_killed_cycle_is_stopped_at_its_deadline(
+    world, short_grace, expires_in, reason
+) -> None:
+    if expires_in is not None:
+        world.config["authority"] = world.authority(
+            expires_at=(world.now() + expires_in).isoformat()
+        )
+    # Children ignoring SIGTERM: one in the host's group without the marker, which
+    # only the group signal reaches, and one in its own session.
+    world.host({"do": "child", "ignore_term": True, "unmarked": True},
+               {"do": "child", "setsid": True, "ignore_term": True}, {"do": "hang"})
+    cycle = world.drive()
+    _wait_for(lambda: len(world.spawned()) == 2, "the host's children")
+    world.kill_drive(cycle)
+    assert world.cycle()["dispatch"]["deadline"] is not None
+
+    assert "Repair cycle parked: dispatch-in-flight." in world.run()
+    assert len(world.processes()) == 3
+
+    world.offset += timedelta(hours=2)  # past the approval's expiry and the lease deadline
+    assert f"Repair cycle parked: {reason}." in world.run()
+
+    assert world.processes() == []
+    assert world.cycle()["attempt_failure"] == reason
+    assert world.cycle()["dispatch"]["outcome"] == "stopped"
+    # Verified stopped and without a pull request, so no --confirm-stopped is needed.
+    world.run(dispose_attempt=world.cycle()["current_lease"]["attempt_id"])
+    assert len(world.launches()) == 1
+
+
 @pytest.mark.parametrize("pr_first", [False, True], ids=["before-pr", "after-pr"])
 def test_a_crashed_host_fails_the_attempt(world, pr_first) -> None:
     crash = ({"do": "result", "is_error": True, "subtype": "error_during_execution", "cost": 0},

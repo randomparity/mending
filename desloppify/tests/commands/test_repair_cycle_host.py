@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import select
 import signal
 import subprocess
 import sys
@@ -414,6 +415,69 @@ def test_worker_alive_follows_the_attempt_marker(host, monkeypatch):
     assert adapter.worker_alive(attempt) is False
     monkeypatch.setattr(repair_cycle_host, "_marked_pids", lambda _marker: None)
     assert adapter.worker_alive(attempt) is None
+
+
+def test_stop_worker_stops_a_marked_tree_it_did_not_launch(host, monkeypatch):
+    adapter = ClaudeHostAdapter(_config(host), grace_seconds=0.5)
+    attempt = uuid.uuid4().hex
+    marker = f"{MARKER_VARIABLE}={host_session_id(attempt)}".encode()
+    env = {**os.environ, MARKER_VARIABLE: host_session_id(attempt)}
+    ignores_term = (
+        "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "print('ready', flush=True); time.sleep(60)"
+    )
+    survivor = subprocess.Popen(
+        [sys.executable, "-c", ignores_term], env=env, start_new_session=True,
+        stdout=subprocess.PIPE,
+    )
+    # A marked process in this process's own group: its group is never signalled.
+    sibling = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], env=env)
+    # Reap as they exit, as init reaps an orphaned host; a zombie would hold its group.
+    reapers = [threading.Thread(target=child.wait) for child in (survivor, sibling)]
+    for reaper in reapers:
+        reaper.start()
+    try:
+        assert survivor.stdout is not None
+        assert select.select([survivor.stdout], [], [], 10)[0], "survivor readiness timed out"
+        assert survivor.stdout.readline() == b"ready\n"
+        _wait_until(lambda: len(repair_cycle_host._marked_pids(marker) or ()) == 2)
+        marked = repair_cycle_host._marked_pids(marker) or set()
+        assert repair_cycle_host._marked_groups(marked, marker) == {survivor.pid}
+        assert adapter.stop_worker(attempt) is True
+        for reaper in reapers:
+            reaper.join(timeout=5)
+        assert (survivor.returncode, sibling.returncode) == (-signal.SIGKILL, -signal.SIGTERM)
+    finally:
+        for child in (survivor, sibling):
+            child.kill()
+            child.wait()
+        survivor.stdout.close()
+    assert adapter.stop_worker(attempt) is True  # nothing left to stop
+    monkeypatch.setattr(repair_cycle_host, "_marked_pids", lambda _marker: None)
+    assert adapter.stop_worker(attempt) is False
+
+
+def test_stop_worker_never_counts_or_signals_its_own_process(host):
+    attempt = uuid.uuid4().hex
+    script = (
+        "import sys\n"
+        "from desloppify.app.commands.repair_cycle_host import ClaudeHostAdapter\n"
+        "adapter = ClaudeHostAdapter(None, grace_seconds=0.5)\n"
+        f"print(adapter.worker_alive({attempt!r}), adapter.stop_worker({attempt!r}))\n"
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", script],
+        env={**os.environ, MARKER_VARIABLE: host_session_id(attempt)},
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert (done.returncode, done.stdout) == (0, "False True\n")
+
+
+def _wait_until(condition) -> None:
+    deadline = time.monotonic() + 10
+    while not condition():
+        assert time.monotonic() < deadline, "condition not reached"
+        time.sleep(0.02)
 
 
 _FAKE_GH = """#!{python}

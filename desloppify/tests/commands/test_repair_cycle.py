@@ -77,7 +77,7 @@ class _FakeHost:
     repository = REPOSITORY
 
     def __init__(self, outcome: HostOutcome | None = None, *, error: BaseException | None = None,
-                 on_run=None, alive: bool | None = False,
+                 on_run=None, alive: bool | None = False, stops: bool = True,
                  found: HostReferences | HostLookupError | None = None,
                  snapshot: tuple[str, ...] | HostLookupError = ("/repo",),
                  on_references=None,
@@ -87,6 +87,8 @@ class _FakeHost:
         self.error = error
         self.on_run = on_run
         self.alive = alive
+        self.stops = stops
+        self.stopped: list[str] = []
         self.found = found or HostReferences((PR_URL,))
         self.snapshot = snapshot
         self.on_references = on_references
@@ -99,6 +101,11 @@ class _FakeHost:
 
     def worker_alive(self, attempt_id: str) -> bool | None:
         return self.alive
+
+    def stop_worker(self, attempt_id: str) -> bool:
+        self.stopped.append(attempt_id)
+        self.alive = not self.stops
+        return self.stops
 
     def worktrees(self, repo_root: Path) -> tuple[str, ...]:
         if isinstance(self.snapshot, HostLookupError):
@@ -1196,9 +1203,12 @@ def test_dispatch_record_round_trips_and_legacy_lease_is_unknown() -> None:
     assert lease is not None
     cycle_state.dispatch = DispatchRecord(
         "a1", "returned", "s", "o/r", "/repo", ("/repo",), "completed",
-        ("https://x/pull/1",), (), ("/w",),
+        ("https://x/pull/1",), (), ("/w",), NOW + timedelta(minutes=30),
     )
     assert CycleState.from_mapping(json.loads(json.dumps(cycle_state.to_mapping()))) == cycle_state
+    no_deadline = {key: value for key, value in cycle_state.to_mapping()["dispatch"].items()
+                   if key != "deadline"}
+    assert DispatchRecord.from_mapping(no_deadline).deadline is None
     record = DispatchRecord("a1", "returned", pull_requests=("p2", "p0"))
     assert record.with_references(("p1", "p2"), ("i1",), ()).pull_requests == ("p2", "p0", "p1")
     assert record.with_references(("p1", "p2"), ("i1",), ()).issues == ("i1",)
@@ -1220,6 +1230,8 @@ def test_dispatch_record_round_trips_and_legacy_lease_is_unknown() -> None:
         {**valid, "dispatch": {**dispatch, "phase": "other"}},
         {**valid, "dispatch": {**dispatch, "pull_requests": "p1"}},
         {**valid, "dispatch": {**dispatch, "worktrees": [""]}},
+        {**valid, "dispatch": {**dispatch, "deadline": "soon"}},
+        {**valid, "dispatch": {**dispatch, "deadline": "2026-09-13T09:30:00"}},
         {**valid, "dispatch": "a1"},
         {**valid, "attempt_history": {}},
         {**valid, "attempt_history": [{"lease": None}]},
@@ -1395,7 +1407,8 @@ def test_dispatch_persists_reservation_before_launch(tmp_path) -> None:
 
     assert (seen[0]["reserved_cost_usd"], seen[0]["reserved_calls"]) == ("2.00", 10)
     assert seen[0]["dispatch"] == DispatchRecord(
-        "a1", "intent", host_session_id("a1"), REPOSITORY, str(Path(".").resolve()), ("/repo",)
+        "a1", "intent", host_session_id("a1"), REPOSITORY, str(Path(".").resolve()), ("/repo",),
+        deadline=host.requests[0].deadline,
     ).to_mapping()
     settled = json.loads(state_path.read_text())["repair_cycle"]
     assert (settled["reserved_calls"], settled["consumed_calls"]) == (0, 3)
@@ -1424,6 +1437,55 @@ def test_interrupted_dispatch_keeps_reservation(tmp_path) -> None:
     recorded = json.loads(state_path.read_text())["repair_cycle"]
     assert recorded["attempt_failure"] == "unsettled-reservation"
     assert recorded["reserved_calls"] == 10
+
+
+def test_a_stopped_run_stays_active_until_its_references_are_read() -> None:
+    state = _state()
+    host = _FakeHost(HostOutcome("stopped", "timeout", calls=3),
+                     found=HostLookupError("gh exited 1"))
+
+    cmd_repair_cycle(_args(state, host))
+
+    recorded = state["repair_cycle"]
+    assert recorded["attempt_failure"] == "runtime-exhausted"
+    assert (recorded["dispatch"]["phase"], recorded["dispatch"]["outcome"]) == (
+        "intent", "stopped"
+    )
+    attempt = recorded["current_lease"]["attempt_id"]
+    with pytest.raises(ValueError, match="confirm-stopped"):
+        CycleState.from_mapping(recorded).dispose(attempt)
+
+    # A later observation that reads its references returns it; it left none.
+    host.found = HostReferences()
+    cmd_repair_cycle(_args(state, host, now=NOW + timedelta(days=1)))
+
+    recorded = state["repair_cycle"]
+    assert recorded["dispatch"]["phase"] == "returned"
+    assert recorded["attempt_failure"] == "runtime-exhausted"
+    assert len(host.requests) == 1
+    CycleState.from_mapping(recorded).dispose(attempt)
+
+
+def test_a_replayed_stop_is_persisted_before_reference_lookup(tmp_path) -> None:
+    state_path = tmp_path / "state.json"
+    seen: list[dict] = []
+    host = _FakeHost(
+        alive=True,
+        on_references=lambda: seen.append(json.loads(state_path.read_text())["repair_cycle"]),
+    )
+    args = _args(None, host, state=str(state_path), now=NOW + timedelta(hours=1))
+
+    with repair_cycle._locked_state(args) as state:
+        cycle_state = _leased(state)
+        cycle_state.dispatch = DispatchRecord("a1", "intent", deadline=NOW + timedelta(minutes=30))
+        cycle_state.admit()
+        _dispatch_host(args, state, cycle_state, CONFIG, host)
+
+    assert host.stopped == ["a1"]
+    assert (seen[0]["attempt_failure"], seen[0]["dispatch"]["outcome"]) == (
+        "authority-expired", "stopped"
+    )
+    assert seen[0]["reserved_calls"] == 0
 
 
 def test_returned_dispatch_is_persisted_before_reference_lookup(tmp_path) -> None:
@@ -1502,11 +1564,13 @@ def test_replay_never_relaunches(phase, reserved, alive, found, failure, parked)
         ("https://example.invalid/pull/1",), ("https://example.invalid/issues/2",), ("/wt",)
     )
     host = _FakeHost(alive=alive, found=lookup)
-    late = _args(state, host, now=NOW + timedelta(days=1))
+    # A dead or unverifiable worker is observed the same way after the lease deadline.
+    later = timedelta(minutes=1) if alive else timedelta(days=1)
 
-    assert _dispatch_host(late, state, cycle_state, CONFIG, host) is None
+    assert _dispatch_host(_args(state, host, now=NOW + later), state, cycle_state, CONFIG,
+                          host) is None
 
-    assert host.admissions == []
+    assert (host.admissions, host.stopped) == ([], [])
     assert (state["repair_cycle"]["attempt_failure"], state["repair_cycle"]["parked_reason"]) == (
         failure,
         parked,
@@ -1522,6 +1586,72 @@ def test_replay_never_relaunches(phase, reserved, alive, found, failure, parked)
     assert record["pull_requests"][0] == "https://example.invalid/pull/0"
     assert len(record["pull_requests"]) == (1 if found == "error" else 2)
     assert record["worktrees"] == ([] if phase == "unknown" or found == "error" else ["/wt"])
+
+
+@pytest.mark.parametrize(
+    ("recorded_deadline", "after", "stops", "failure", "parked"),
+    [
+        # The approval expired before the lease: the reason a live run would give.
+        (NOW + timedelta(minutes=30), timedelta(minutes=30), True,
+         "authority-expired", "authority-expired"),
+        (NOW + timedelta(minutes=30), timedelta(minutes=29), True, None, "dispatch-in-flight"),
+        # A record from before run deadlines were recorded is held to its lease.
+        (None, timedelta(minutes=89), True, None, "dispatch-in-flight"),
+        (None, timedelta(minutes=90), True, "runtime-exhausted", "runtime-exhausted"),
+        # A recorded deadline never extends the lease.
+        (NOW + timedelta(days=1), timedelta(minutes=90), True,
+         "runtime-exhausted", "runtime-exhausted"),
+        # A tree that cannot be verified empty is not reported stopped.
+        (None, timedelta(days=1), False, "dispatch-outcome-unknown", "dispatch-outcome-unknown"),
+    ],
+    ids=["approval-expiry", "before-expiry", "legacy-before-lease", "legacy-at-lease",
+         "never-extends-lease", "unverified-stop"],
+)
+def test_replay_stops_a_worker_alive_past_its_run_deadline(
+    recorded_deadline, after, stops, failure, parked
+) -> None:
+    state = _state()
+    cycle_state = _leased(state)
+    cycle_state.dispatch = DispatchRecord("a1", "intent", deadline=recorded_deadline)
+    cycle_state.admit()
+    host = _FakeHost(alive=True, stops=stops, found=HostReferences((PR_URL,)))
+
+    assert _dispatch_host(_args(state, host, now=NOW + after), state, cycle_state, CONFIG,
+                          host) is None
+
+    recorded = state["repair_cycle"]
+    assert (recorded["attempt_failure"], recorded["parked_reason"]) == (failure, parked)
+    assert host.stopped == ([] if parked == "dispatch-in-flight" else ["a1"])
+    assert host.admissions == []
+    stopped = failure in {"authority-expired", "runtime-exhausted"}
+    # References are read only once the worker is verified stopped.
+    assert len(host.lookups) == int(stopped)
+    # A verified stop is recorded and charged as the live run's stop would be.
+    expected = ("returned", "stopped", 0, 10) if stopped else ("intent", None, 10, 0)
+    dispatch = recorded["dispatch"]
+    assert (dispatch["phase"], dispatch["outcome"], recorded["reserved_calls"],
+            recorded["consumed_calls"]) == expected
+
+
+def test_an_exhausted_observation_allowance_still_stops_an_expired_worker() -> None:
+    state = _state()
+    cycle_state = _leased(state)
+    cycle_state.dispatch = DispatchRecord("a1", "intent", deadline=NOW + timedelta(minutes=30))
+    cycle_state.observation_calls = 3
+    state["repair_cycle"] = cycle_state.to_mapping()
+    host = _FakeHost(alive=True)
+
+    cmd_repair_cycle(_args(state, host, now=NOW + timedelta(hours=1)))
+
+    recorded = state["repair_cycle"]
+    assert (recorded["attempt_failure"], recorded["parked_reason"]) == (
+        "observation-exhausted", "authority-expired"
+    )
+    assert (host.stopped, host.lookups, host.events) == (["a1"], [], [])
+    # No lookup was spent, so its pull requests are unknown: it stays reported active.
+    assert recorded["dispatch"]["phase"] == "intent"
+    with pytest.raises(ValueError, match="confirm-stopped"):
+        CycleState.from_mapping(recorded).dispose("a1")
 
 
 def _binding(**overrides: object) -> AuthorityBinding:
