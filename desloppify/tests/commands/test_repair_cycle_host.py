@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import select
 import signal
 import subprocess
 import sys
@@ -422,10 +423,12 @@ def test_stop_worker_stops_a_marked_tree_it_did_not_launch(host, monkeypatch):
     marker = f"{MARKER_VARIABLE}={host_session_id(attempt)}".encode()
     env = {**os.environ, MARKER_VARIABLE: host_session_id(attempt)}
     ignores_term = (
-        "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)"
+        "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "print('ready', flush=True); time.sleep(60)"
     )
     survivor = subprocess.Popen(
-        [sys.executable, "-c", ignores_term], env=env, start_new_session=True
+        [sys.executable, "-c", ignores_term], env=env, start_new_session=True,
+        stdout=subprocess.PIPE,
     )
     # A marked process in this process's own group: its group is never signalled.
     sibling = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], env=env)
@@ -434,6 +437,9 @@ def test_stop_worker_stops_a_marked_tree_it_did_not_launch(host, monkeypatch):
     for reaper in reapers:
         reaper.start()
     try:
+        assert survivor.stdout is not None
+        assert select.select([survivor.stdout], [], [], 10)[0], "survivor readiness timed out"
+        assert survivor.stdout.readline() == b"ready\n"
         _wait_until(lambda: len(repair_cycle_host._marked_pids(marker) or ()) == 2)
         marked = repair_cycle_host._marked_pids(marker) or set()
         assert repair_cycle_host._marked_groups(marked, marker) == {survivor.pid}
@@ -445,6 +451,7 @@ def test_stop_worker_stops_a_marked_tree_it_did_not_launch(host, monkeypatch):
         for child in (survivor, sibling):
             child.kill()
             child.wait()
+        survivor.stdout.close()
     assert adapter.stop_worker(attempt) is True  # nothing left to stop
     monkeypatch.setattr(repair_cycle_host, "_marked_pids", lambda _marker: None)
     assert adapter.stop_worker(attempt) is False
