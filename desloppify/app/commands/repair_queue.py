@@ -69,7 +69,7 @@ def _revalidate(args: argparse.Namespace, client: Any) -> None:
         issue = _issues(state).get(args.issue_id)
         classification = classify(issue or {}, repository, require_revalidation=False)
         candidate = classification.candidate
-        if candidate is None:
+        if candidate is None or issue is None:
             raise CommandError(
                 f"work item is not eligible for revalidation ({classification.reason})"
             )

@@ -13,7 +13,7 @@ import re
 import unicodedata
 from collections import Counter
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from hashlib import sha256
 from typing import Any, ClassVar
 
@@ -165,29 +165,27 @@ def build_brief(
     suggestion = source["fix"]
     try:
         manifest = _manifest(detail)
-        fields = {
-            "key": candidate.key,
-            "identity": candidate.identity,
-            "evidence_digest": candidate.evidence_digest,
-            "manifest_digest": manifest.digest,
-            "revision": manifest.revision,
-            "problem": _text("problem", issue.get("summary")),
-            "consequence": _text("consequence", source["consequence"]),
-            "evidence": _items("evidence", source["evidence"]),
-            "affected": tuple((_text("affected", d.path), d.role) for d in manifest.dependencies),
-            "owner": _text("owner", source["owner"]),
-            "fix": None if _blank(suggestion) else _text("fix", suggestion),
-            "contracts": _items("contracts", source["contracts"]),
-            "verification": _text("verification", source["verification"]),
-            "confidence": _confidence(issue.get("confidence")),
-            "route": candidate.route,
-            "sources": tuple((d.path, d.role, d.object_id) for d in manifest.dependencies),
-        }
-        brief: RepairBrief = (
-            ProposalBrief(**fields, questions=_items("questions", list(concern_failures(issue))))
-            if candidate.kind == "proposal"
-            else RepairBrief(**fields)
+        brief_type = ProposalBrief if candidate.kind == "proposal" else RepairBrief
+        brief = brief_type(
+            key=candidate.key,
+            identity=candidate.identity,
+            evidence_digest=candidate.evidence_digest,
+            manifest_digest=manifest.digest,
+            revision=manifest.revision,
+            problem=_text("problem", issue.get("summary")),
+            consequence=_text("consequence", source["consequence"]),
+            evidence=_items("evidence", source["evidence"]),
+            affected=tuple((_text("affected", d.path), d.role) for d in manifest.dependencies),
+            owner=_text("owner", source["owner"]),
+            fix=None if _blank(suggestion) else _text("fix", suggestion),
+            contracts=_items("contracts", source["contracts"]),
+            verification=_text("verification", source["verification"]),
+            confidence=_confidence(issue.get("confidence")),
+            route=candidate.route,
+            sources=tuple((d.path, d.role, d.object_id) for d in manifest.dependencies),
         )
+        if isinstance(brief, ProposalBrief):
+            brief = replace(brief, questions=_items("questions", list(concern_failures(issue))))
     except _Rejected as exc:
         return ParkedBrief(exc.field, exc.reason)
     if len(render_brief(brief)[1].encode()) > MAX_BODY_BYTES:

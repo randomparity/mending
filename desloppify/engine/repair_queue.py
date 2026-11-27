@@ -9,7 +9,7 @@ import subprocess  # nosec B404 - fixed argv is passed to the installed gh CLI.
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
-from typing import Any
+from typing import Any, TypeGuard
 
 from desloppify.engine.repair_check import passing_check
 from desloppify.engine.repair_manifest import (
@@ -136,9 +136,10 @@ def _finding_hashes(issue: Mapping[str, Any]) -> tuple[str, str] | None:
     detail, file = issue.get("detail"), issue.get("file")
     if issue.get("detector") != "dupes" or not isinstance(detail, Mapping):
         return None
-    functions = [detail.get("fn_a"), detail.get("fn_b")]
-    if not isinstance(file, str) or file in {"", "."} or not all(map(_function, functions)):
+    fn_a, fn_b = detail.get("fn_a"), detail.get("fn_b")
+    if not isinstance(file, str) or file in {"", "."} or not _function(fn_a) or not _function(fn_b):
         return None
+    functions = [fn_a, fn_b]
     names = sorted(fn["name"] for fn in functions)
     anchors = sorted([fn["name"], fn["line"], fn["loc"]] for fn in functions)
     identity = {"schema": 1, "detector": "dupes", "file": file, "names": names}
@@ -146,7 +147,7 @@ def _finding_hashes(issue: Mapping[str, Any]) -> tuple[str, str] | None:
     return _digest(identity), _digest(evidence)
 
 
-def _function(value: object) -> bool:
+def _function(value: object) -> TypeGuard[Mapping[str, Any]]:
     return (
         isinstance(value, Mapping)
         and all(isinstance(value.get(k), str) and value[k] for k in ("file", "name"))
@@ -373,7 +374,7 @@ def matching_record(
     )
 
 
-def _is_digest(value: object) -> bool:
+def _is_digest(value: object) -> TypeGuard[str]:
     return isinstance(value, str) and len(value) == 64 and all(char in "0123456789abcdef" for char in value)
 
 
